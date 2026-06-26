@@ -1,0 +1,11 @@
+// Root build script — minimal. All real config lives in buildSrc convention plugins
+// or per-subproject build.gradle files.
+
+allprojects {
+    group = 'network.vonix.guardian'
+    version = providers.gradleProperty('mod_version').get()
+}
+
+tasks.register('printVersion') {
+    doLast { println version }
+}

@@ -1,0 +1,49 @@
+# Gradle
+.gradle/
+build/
+out/
+classes/
+.gradletasknamecache
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse / VSCode buildship
+.classpath
+.project
+.settings/
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local runs
+run/
+runs/
+logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
+vonixguardian.db*
+
+# Secrets & local config
+.env
+.env.local
+local.properties
+
+# Loader/dev caches
+.fabric/
+.forge/
+.neoforge/
+.cache/
+remappedSrc/
+
+# Distribution artifacts (CI uploads only)
+dist/
+release/

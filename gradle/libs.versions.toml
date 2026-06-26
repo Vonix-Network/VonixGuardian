@@ -1,0 +1,66 @@
+[versions]
+# JDK
+java-1_18 = "17"
+java-1_19 = "17"
+java-1_20 = "17"
+java-1_21 = "21"
+
+# Gradle plugins
+shadow = "8.1.1"
+loom = "1.7-SNAPSHOT"           # fabric-loom 1.7.x supports MC 1.18.2 -> 1.21.x via channels
+forgegradle = "[6.0,6.2)"
+neogradle = "7.0.165"
+
+# Loader / API: MC 1.21.1
+fabric-loader-1_21 = "0.16.5"
+fabric-api-1_21 = "0.116.4+1.21.1"
+neoforge-1_21 = "21.1.93"
+
+# Loader / API: MC 1.20.1
+fabric-loader-1_20 = "0.15.11"
+fabric-api-1_20 = "0.92.2+1.20.1"
+forge-1_20 = "1.20.1-47.3.10"
+
+# Loader / API: MC 1.19.2
+fabric-loader-1_19 = "0.15.11"
+fabric-api-1_19 = "0.77.0+1.19.2"
+forge-1_19 = "1.19.2-43.4.0"
+
+# Loader / API: MC 1.18.2
+fabric-loader-1_18 = "0.15.11"
+fabric-api-1_18 = "0.77.0+1.18.2"
+forge-1_18 = "1.18.2-40.2.10"
+
+# Mojmap parchment (optional pretty names on Forge)
+parchment-1_20 = "2023.09.03"
+parchment-1_19 = "2022.11.27"
+parchment-1_18 = "2022.11.06"
+
+# Storage / runtime (shaded into every jar via Shadow)
+sqlite-jdbc = "3.46.1.0"
+mysql-connector = "8.4.0"
+postgresql = "42.7.4"
+hikaricp = "5.1.0"
+gson = "2.11.0"
+slf4j = "2.0.16"
+
+# Test
+junit = "5.11.0"
+assertj = "3.26.3"
+mockito = "5.14.1"
+
+[libraries]
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
+mysql-connector = { module = "com.mysql:mysql-connector-j", version.ref = "mysql-connector" }
+postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+
+[plugins]
+shadow = { id = "com.github.johnrengelman.shadow", version.ref = "shadow" }

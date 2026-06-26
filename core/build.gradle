@@ -1,0 +1,63 @@
+// VonixGuardian Core — pure-Java engine. ZERO Minecraft deps.
+//
+// This module is the brain: storage, queue, log file, query parser, rollback engine,
+// config. Every loader jar shades this and calls into it via Guardian.java facade.
+//
+// Java 17 (lowest target across MC 1.18.2 -> 1.21.1; all loader modules can consume Java 17).
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Storage backends
+    api libs.sqlite.jdbc
+    compileOnly libs.mysql.connector
+    compileOnly libs.postgresql
+    api libs.hikaricp
+    api libs.gson
+    compileOnly libs.slf4j.api  // Minecraft ships log4j2 + slf4j-impl on loader side
+
+    // Test
+    testImplementation platform(libs.junit.bom)
+    testImplementation libs.junit.jupiter
+    testImplementation libs.assertj.core
+    testImplementation libs.mockito.core
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        showStandardStreams = false
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+    options.compilerArgs += ['-Xlint:all', '-Xlint:-processing', '-Xlint:-serial']
+}
+
+tasks.named('jar') {
+    manifest {
+        attributes(
+            'Implementation-Title': 'VonixGuardian Core',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'Vonix Network'
+        )
+    }
+}

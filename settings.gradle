@@ -1,0 +1,24 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = 'https://maven.fabricmc.net/' }
+        maven { url = 'https://maven.minecraftforge.net/' }
+        maven { url = 'https://maven.neoforged.net/releases/' }
+        maven { url = 'https://maven.parchmentmc.org/' }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+rootProject.name = 'VonixGuardian'
+
+// Pure-Java engine (no MC).
+include 'core'
+
+// Per-MC subprojects. Each contains :common + loader modules.
+['1.18.2', '1.19.2', '1.20.1'].each { mc ->
+    include ":mc-${mc}:common", ":mc-${mc}:fabric", ":mc-${mc}:forge"
+}
+include ':mc-1.21.1:common', ':mc-1.21.1:fabric', ':mc-1.21.1:neoforge'
