@@ -13,14 +13,14 @@ displayURL = "${mod_homepage}"
 
 [[dependencies.${mod_id}]]
 modId = "forge"
-type = "required"
+mandatory = true
 versionRange = "[47,)"
 ordering = "NONE"
 side = "SERVER"
 
 [[dependencies.${mod_id}]]
 modId = "minecraft"
-type = "required"
+mandatory = true
 versionRange = "[1.20.1,1.20.2)"
 ordering = "NONE"
 side = "SERVER"
