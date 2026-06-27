@@ -1,0 +1,119 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-all:
+    name: build ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { module: 'mc-1.21.1:neoforge', profile: 'mc1211', jdk: '21' }
+          - { module: 'mc-1.21.1:fabric',   profile: 'mc1211', jdk: '21' }
+          - { module: 'mc-1.20.1:fabric',   profile: 'mc1201', jdk: '17' }
+          - { module: 'mc-1.20.1:forge',    profile: 'mc1201', jdk: '17' }
+          - { module: 'mc-1.19.2:fabric',   profile: 'mc1192', jdk: '17' }
+          - { module: 'mc-1.19.2:forge',    profile: 'mc1192', jdk: '17' }
+          - { module: 'mc-1.18.2:fabric',   profile: 'mc1182', jdk: '17' }
+          - { module: 'mc-1.18.2:forge',    profile: 'mc1182', jdk: '17' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-release-${{ matrix.module }}-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle*') }}
+      - run: ./gradlew :${{ matrix.module }}:build -PbuildProfile=${{ matrix.profile }} --no-daemon
+      - name: Identify jar
+        id: jar
+        run: |
+          MOD_PATH="${{ matrix.module }}"
+          MOD_PATH="${MOD_PATH//:/\/}"
+          JAR=$(find "$MOD_PATH" -name 'vonixguardian-*-0.1.0.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' | head -1)
+          echo "path=$JAR" >> $GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ matrix.module }}
+          path: ${{ steps.jar.outputs.path }}
+          retention-days: 7
+
+  release:
+    name: cut release
+    runs-on: ubuntu-latest
+    needs: build-all
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: jar-*
+          merge-multiple: true
+      - name: Stage jars + checksums
+        run: |
+          mkdir -p release
+          for j in $(find dist -name '*.jar'); do
+            cp "$j" release/
+          done
+          cd release
+          ls -la
+          sha256sum *.jar > SHA256SUMS
+          cat SHA256SUMS
+      - name: Build release notes
+        id: notes
+        run: |
+          {
+            echo "## VonixGuardian ${GITHUB_REF_NAME}"
+            echo
+            echo "Server-side block / inventory / entity audit + rollback for modded Minecraft. CoreProtect 1:1 feature surface with universal modded-entity griefing attribution."
+            echo
+            echo "### Drop-in jars"
+            echo
+            echo "| MC version | Fabric | Forge / NeoForge |"
+            echo "|---|---|---|"
+            echo "| 1.21.1 | \`vonixguardian-fabric-1.21.1-0.1.0.jar\` | \`vonixguardian-neoforge-1.21.1-0.1.0.jar\` |"
+            echo "| 1.20.1 | \`vonixguardian-fabric-1.20.1-0.1.0.jar\` | \`vonixguardian-forge-1.20.1-0.1.0.jar\` |"
+            echo "| 1.19.2 | \`vonixguardian-fabric-1.19.2-0.1.0.jar\` | \`vonixguardian-forge-1.19.2-0.1.0.jar\` |"
+            echo "| 1.18.2 | \`vonixguardian-fabric-1.18.2-0.1.0.jar\` | \`vonixguardian-forge-1.18.2-0.1.0.jar\` |"
+            echo
+            echo "Pick the matching jar for your server, drop into \`mods/\`, restart."
+            echo
+            echo "### Verifying"
+            echo
+            echo "SHA-256 checksums are in \`SHA256SUMS\`. Run:"
+            echo
+            echo "    sha256sum -c SHA256SUMS"
+            echo
+            echo "### Configuration"
+            echo
+            echo "On first boot, the mod writes \`config/vonixguardian/config.json\`. See [README](https://github.com/Vonix-Network/VonixGuardian#configuration) for the full schema."
+            echo
+            echo "### Commands"
+            echo
+            echo "\`/vg inspect\`, \`/vg lookup\`, \`/vg rollback\`, \`/vg restore\`, \`/vg purge\`, \`/vg near\`, \`/vg undo\`, \`/vg status\`, \`/vg reload\`, \`/vg help\`. Alias: \`/guardian\`."
+            echo
+            echo "See [CHANGELOG.md](https://github.com/Vonix-Network/VonixGuardian/blob/main/CHANGELOG.md) for the full feature surface."
+          } > NOTES.md
+          cat NOTES.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: NOTES.md
+          files: |
+            release/*.jar
+            release/SHA256SUMS
+          draft: false
+          prerelease: false
