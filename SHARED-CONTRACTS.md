@@ -81,7 +81,7 @@ import java.util.UUID;
  * @param timestamp   epoch millis (UTC)
  * @param type        action type
  * @param actorUuid   player UUID if known; null for non-player sources (creeper, lava, etc.)
- * @param actorName   resolved name at time of event ("Notch") or sentinel ("#creeper", "#tnt", "#lava", "#fire", "#water", "#piston", "#fall", "#unknown")
+ * @param actorName   resolved name at time of event ("Notch") or a sentinel string — see § 8 for the canonical sentinel list (e.g. "#creeper", "#tnt", "#lava", "#fall", "#unknown")
  * @param worldId     world / dimension key as string ("minecraft:overworld", "minecraft:the_nether", ...)
  * @param x,y,z       block coords; for non-positional events use 0,0,0 and isPositional()=false
  * @param targetId    string ID of the affected thing — block id ("minecraft:stone"), entity type ("minecraft:zombie"), item id, or message body for chat/command/sign
@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS vg_users (
 
 CREATE TABLE IF NOT EXISTS vg_worlds (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    key          VARCHAR(96)  NOT NULL UNIQUE          -- "minecraft:overworld"
+    world_key    VARCHAR(96)  NOT NULL UNIQUE          -- "minecraft:overworld" — column renamed from `key` to dodge MySQL reserved word
 );
 
 CREATE TABLE IF NOT EXISTS vg_actions (
