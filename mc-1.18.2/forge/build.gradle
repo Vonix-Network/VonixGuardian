@@ -1,0 +1,56 @@
+/*
+ * VonixGuardian — mc-1.18.2 :forge / Forge 40.x / Java 17 / ForgeGradle 5 (1.18.2 era)
+ *
+ * 1.18.2 ships with ForgeGradle 5 historically; the modern MDK (40.3.x) supports
+ * ForgeGradle 6. We target FG6 here for tooling parity.
+ */
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0.16,6.2)'
+    id 'com.gradleup.shadow' version '8.3.5'
+    id 'java-library'
+}
+base { archivesName = 'vonixguardian-forge-1.18.2' }
+java { toolchain { languageVersion = JavaLanguageVersion.of(17) }; withSourcesJar() }
+minecraft {
+    mappings channel: 'official', version: '1.18.2'
+}
+repositories { mavenCentral(); maven { url 'https://maven.minecraftforge.net/' } }
+configurations { shaded; implementation.extendsFrom shaded }
+dependencies {
+    minecraft "net.minecraftforge:forge:1.18.2-40.2.10"
+    shaded project(':core')
+    shaded libs.sqlite.jdbc
+    shaded libs.hikaricp
+    shaded libs.gson
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8'; options.release = 17 }
+tasks.named('processResources') {
+    inputs.property 'mod_version', project.version
+    filesMatching('META-INF/mods.toml') {
+        expand(
+            mod_id: 'vonixguardian', mod_name: 'VonixGuardian',
+            mod_version: project.version, mod_authors: 'Vonix Network',
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mod_license: 'MIT',
+            mod_issue_tracker: 'https://github.com/Vonix-Network/VonixGuardian/issues',
+            mod_homepage: 'https://github.com/Vonix-Network/VonixGuardian',
+            mc_version: '1.18.2', forge_version: '40'
+        )
+    }
+}
+shadowJar {
+    archiveClassifier = ''
+    configurations = [project.configurations.shaded]
+    relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
+    relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
+    relocate 'org.sqlite', 'network.vonix.guardian.shadow.sqlite'
+    minimize {
+        exclude(dependency('org.xerial:sqlite-jdbc:.*'))
+        exclude(dependency('com.zaxxer:HikariCP:.*'))
+    }
+    mergeServiceFiles()
+    exclude 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/maven/**', 'module-info.class'
+}
+tasks.named('jar') { archiveClassifier = 'slim' }
+reobf { shadowJar {} }
+tasks.named('build') { dependsOn 'shadowJar' }
