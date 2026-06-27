@@ -1,0 +1,104 @@
+/*
+ * VonixGuardian — mc-1.21.1 :fabric
+ *
+ * Fabric loader 1.21.1. Shades core + sqlite + Hikari + Gson into the jar.
+ */
+
+plugins {
+    id 'fabric-loom' version '1.7-SNAPSHOT'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'java-library'
+}
+
+base { archivesName = 'vonixguardian-fabric-1.21.1' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    withSourcesJar()
+}
+
+loom {
+    serverOnlyMinecraftJar()
+    runs {
+        server {
+            server()
+            programArgs '--nogui'
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    shaded
+    include
+    implementation.extendsFrom shaded
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:1.21.1"
+    mappings loom.officialMojangMappings()
+    modImplementation "net.fabricmc:fabric-loader:0.16.5"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.116.4+1.21.1"
+
+    // Compile against :common
+    compileOnly project(':mc-1.21.1:common')
+    compileOnly project(':mc-1.21.1:common').sourceSets.main.output
+
+    shaded project(':core')
+    shaded libs.sqlite.jdbc
+    shaded libs.hikaricp
+    shaded libs.gson
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    source sourceSets.main.java
+    source project(':mc-1.21.1:common').sourceSets.main.java
+}
+
+tasks.named('processResources') {
+    inputs.property 'mod_version', project.version
+    filesMatching('fabric.mod.json') {
+        expand(
+            mod_id: 'vonixguardian',
+            mod_name: 'VonixGuardian',
+            mod_version: project.version,
+            mod_authors: 'Vonix Network',
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.'
+        )
+    }
+}
+
+shadowJar {
+    archiveClassifier = 'shadow'
+    configurations = [project.configurations.shaded]
+
+    relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
+    relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
+    relocate 'org.sqlite', 'network.vonix.guardian.shadow.sqlite'
+
+    minimize {
+        exclude(dependency('org.xerial:sqlite-jdbc:.*'))
+        exclude(dependency('com.zaxxer:HikariCP:.*'))
+    }
+
+    mergeServiceFiles()
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/maven/**'
+    exclude 'module-info.class'
+}
+
+// remapJar takes the shaded jar as input so the final jar is BOTH remapped AND fat.
+tasks.named('remapJar') {
+    inputFile = shadowJar.archiveFile
+}
+
+tasks.named('build') {
+    dependsOn 'remapJar'
+}

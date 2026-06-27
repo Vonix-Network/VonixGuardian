@@ -1,0 +1,124 @@
+/*
+ * VonixGuardian — mc-1.21.1 :neoforge
+ *
+ * NeoForge 21.1.x loader module. Bundles `core` + shared common code + sqlite-jdbc
+ * (the default DB driver) via Shadow into a single drop-in jar.
+ *
+ * MySQL/Postgres drivers are NOT shaded — operators using those backends drop
+ * the driver jar alongside ours.
+ */
+
+plugins {
+    id 'net.neoforged.moddev' version '2.0.78'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'java-library'
+}
+
+base { archivesName = 'vonixguardian-neoforge-1.21.1' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    withSourcesJar()
+}
+
+neoForge {
+    version = '21.1.93'
+
+    parchment {
+        mappingsVersion = '2024.07.28'
+        minecraftVersion = '1.21'
+    }
+
+    runs {
+        configureEach {
+            systemProperty('forge.logging.markers', 'REGISTRIES')
+            systemProperty('forge.logging.console.level', 'debug')
+        }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+    }
+
+    mods {
+        vonixguardian {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.parchmentmc.org/' }
+}
+
+configurations {
+    shaded
+    implementation.extendsFrom shaded
+}
+
+dependencies {
+    // Compile against :common (Mojmap-bridged code).
+    compileOnly project(':mc-1.21.1:common')
+    compileOnly project(':mc-1.21.1:common').sourceSets.main.output
+
+    // Shade: the engine + sqlite + Hikari + Gson + SLF4J api.
+    // Other libs come from MC's classpath.
+    shaded project(':core')
+    shaded libs.sqlite.jdbc
+    shaded libs.hikaricp
+    shaded libs.gson
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    source sourceSets.main.java
+    source project(':mc-1.21.1:common').sourceSets.main.java
+}
+
+tasks.named('processResources') {
+    inputs.property 'mod_version', project.version
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand(
+            mod_id: 'vonixguardian',
+            mod_name: 'VonixGuardian',
+            mod_version: project.version,
+            mod_authors: 'Vonix Network',
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mc_version: '1.21.1',
+            neoforge_version: '21.1.93'
+        )
+    }
+}
+
+shadowJar {
+    archiveClassifier = ''
+    configurations = [project.configurations.shaded]
+
+    // Relocate shaded libs so we don't collide with other mods' Gson/Hikari/sqlite shipments.
+    relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
+    relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
+    relocate 'org.sqlite', 'network.vonix.guardian.shadow.sqlite'
+
+    minimize {
+        exclude(dependency('org.xerial:sqlite-jdbc:.*'))
+        exclude(dependency('com.zaxxer:HikariCP:.*'))
+    }
+
+    mergeServiceFiles()
+
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/maven/**'
+    exclude 'module-info.class'
+}
+
+tasks.named('jar') {
+    archiveClassifier = 'slim'
+}
+
+tasks.named('build') {
+    dependsOn shadowJar
+}
