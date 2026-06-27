@@ -44,9 +44,13 @@ jobs:
           MOD_PATH="${MOD_PATH//:/\/}"
           JAR=$(find "$MOD_PATH" -name 'vonixguardian-*-0.1.0.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' | head -1)
           echo "path=$JAR" >> $GITHUB_OUTPUT
+          # Sanitize artifact name: colon is forbidden in upload-artifact@v4 (NTFS portability)
+          SAFE_NAME="${{ matrix.module }}"
+          SAFE_NAME="${SAFE_NAME//:/-}"
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
         with:
-          name: jar-${{ matrix.module }}
+          name: jar-${{ steps.jar.outputs.safe_name }}
           path: ${{ steps.jar.outputs.path }}
           retention-days: 7
 
