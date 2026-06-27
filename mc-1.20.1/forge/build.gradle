@@ -42,9 +42,17 @@ dependencies {
     minecraft "net.minecraftforge:forge:1.20.1-47.3.10"
 
     shaded project(':core')
-    shaded libs.sqlite.jdbc
-    shaded libs.hikaricp
+    // Hikari pulls slf4j-api transitively. Loader provides org.slf4j module
+    // already; leaking ours causes JPMS ResolutionException at boot.
+    shaded(libs.hikaricp) { exclude group: 'org.slf4j' }
     shaded libs.gson
+
+    // sqlite-jdbc has JNI native code. Relocating breaks JNI symbol lookup
+    // (Java_org_sqlite_core_NativeDB_* baked into .so/.dll/.dylib). Use Forge's
+    // JarInJar so the loader dedups across mods by org.xerial:sqlite-jdbc coords.
+    jarJar(group: 'org.xerial', name: 'sqlite-jdbc', version: "[${libs.versions.sqlite.jdbc.get()},)") {
+        jarJar.pin(it, libs.versions.sqlite.jdbc.get())
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -75,13 +83,58 @@ shadowJar {
     configurations = [project.configurations.shaded]
     relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
     relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
-    relocate 'org.sqlite', 'network.vonix.guardian.shadow.sqlite'
+    // Do NOT relocate org.sqlite — it's in the nested JarInJar (JNI symbol parity).
     minimize {
-        exclude(dependency('org.xerial:sqlite-jdbc:.*'))
         exclude(dependency('com.zaxxer:HikariCP:.*'))
     }
     mergeServiceFiles()
     exclude 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/maven/**', 'module-info.class'
+}
+
+// Merge ForgeGradle's jarJar output (META-INF/jarjar/<artifact>.jar + metadata.json)
+// into the shadow output. Shadow's from() pipeline strips nested .jar files,
+// so we do raw zip-append in doLast.
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+
+tasks.named('shadowJar') {
+    dependsOn 'jarJar', 'reobfJarJar'
+    doLast {
+        File shadow = archiveFile.get().asFile
+        // FG6 writes the JarInJar nested artifacts into reobfJarJar/output.jar
+        // under META-INF/jarjar/. Merge those into the final shadow output.
+        File jarjarSource = layout.buildDirectory.file('reobfJarJar/output.jar').get().asFile
+        if (!jarjarSource.exists()) {
+            jarjarSource = layout.buildDirectory.file("libs/${project.name}-${project.version}-all.jar").get().asFile
+        }
+        if (!jarjarSource.exists()) {
+            logger.warn "jarJar source not found at expected paths; skipping nest-merge"
+            return
+        }
+        File tmp = new File(shadow.parentFile, shadow.name + '.tmp')
+        new ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
+            new ZipFile(shadow).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    if (entry.name.startsWith('META-INF/jarjar/')) return
+                    out.putNextEntry(new ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(out) }
+                    out.closeEntry()
+                }
+            }
+            new ZipFile(jarjarSource).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    if (!entry.name.startsWith('META-INF/jarjar/')) return
+                    out.putNextEntry(new ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(out) }
+                    out.closeEntry()
+                }
+            }
+        }
+        shadow.delete()
+        tmp.renameTo(shadow)
+        logger.lifecycle "Embedded jarJar entries from ${jarjarSource.name} into ${shadow.name}"
+    }
 }
 
 tasks.named('jar') { archiveClassifier = 'slim' }

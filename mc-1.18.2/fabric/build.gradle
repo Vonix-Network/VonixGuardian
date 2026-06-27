@@ -18,7 +18,7 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.77.0+1.18.2"
     shaded project(':core')
     shaded libs.sqlite.jdbc
-    shaded libs.hikaricp
+    shaded(libs.hikaricp) { exclude group: 'org.slf4j' }
     shaded libs.gson
 }
 tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8'; options.release = 17 }
@@ -36,7 +36,6 @@ shadowJar {
     configurations = [project.configurations.shaded]
     relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
     relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
-    relocate 'org.sqlite', 'network.vonix.guardian.shadow.sqlite'
     minimize {
         exclude(dependency('org.xerial:sqlite-jdbc:.*'))
         exclude(dependency('com.zaxxer:HikariCP:.*'))
