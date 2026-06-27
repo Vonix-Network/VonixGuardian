@@ -26,8 +26,17 @@ if (profile == 'mc1211' || profile == 'all') {
     include ':mc-1.21.1:fabric'
 }
 
-if (profile == 'all') {
-    ['1.18.2', '1.19.2', '1.20.1'].each { mc ->
-        include ":mc-${mc}:common", ":mc-${mc}:fabric", ":mc-${mc}:forge"
-    }
+if (profile == 'mc1201' || profile == 'all') {
+    include ':mc-1.20.1:fabric'
+    include ':mc-1.20.1:forge'
+}
+
+if (profile == 'mc1192' || profile == 'all') {
+    include ':mc-1.19.2:fabric'
+    include ':mc-1.19.2:forge'
+}
+
+if (profile == 'mc1182' || profile == 'all') {
+    include ':mc-1.18.2:fabric'
+    include ':mc-1.18.2:forge'
 }
