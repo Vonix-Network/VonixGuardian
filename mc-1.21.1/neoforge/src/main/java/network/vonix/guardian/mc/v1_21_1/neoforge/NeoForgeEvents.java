@@ -498,18 +498,48 @@ public final class NeoForgeEvents {
 
     // ====================================================================== commands wiring
 
-    /** Register the {@code /vg} brigadier tree. */
+    /** Pending command dispatcher captured when commands fire before Guardian.boot.
+     * Boot replays this once it has a live Guardian. */
+    private static volatile com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> pendingDispatcher;
+
+    /**
+     * Register the {@code /vg} brigadier tree.
+     * <p>
+     * NeoForge fires {@code RegisterCommandsEvent} during datapack reload, BEFORE
+     * any server-lifecycle event. If Guardian hasn't booted yet (cold start),
+     * we stash the dispatcher and let {@link #replayDeferredCommands(Guardian)}
+     * register the tree once Guardian is live.
+     */
     @SubscribeEvent
     public static void onRegisterCommands(RegisterCommandsEvent ev) {
         try {
             Guardian g = g();
             if (g == null) {
-                LOG.warn(Guardian.MARKER, "Commands fired before Guardian.boot — skipping");
+                pendingDispatcher = ev.getDispatcher();
+                LOG.info(Guardian.MARKER, "Deferred /vg command registration until Guardian.boot");
                 return;
             }
             GuardianCommands.register(ev.getDispatcher(), g);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onRegisterCommands failed", t);
+        }
+    }
+
+    /**
+     * Replay the deferred command registration after Guardian boots.
+     * Called from {@link NeoForgeBootstrap#onServerStarting}.
+     */
+    public static void replayDeferredCommands(Guardian g) {
+        com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> d = pendingDispatcher;
+        if (d != null) {
+            try {
+                GuardianCommands.register(d, g);
+                LOG.info(Guardian.MARKER, "/vg command tree registered (deferred from RegisterCommandsEvent)");
+            } catch (Throwable t) {
+                LOG.warn(Guardian.MARKER, "Deferred command registration failed", t);
+            } finally {
+                pendingDispatcher = null;
+            }
         }
     }
 

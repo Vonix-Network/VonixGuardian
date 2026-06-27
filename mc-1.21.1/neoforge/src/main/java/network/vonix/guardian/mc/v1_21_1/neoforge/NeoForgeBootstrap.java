@@ -5,7 +5,7 @@
 package network.vonix.guardian.mc.v1_21_1.neoforge;
 
 import net.minecraft.server.MinecraftServer;
-import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.DamageHistory;
@@ -20,7 +20,9 @@ import java.util.concurrent.ThreadFactory;
 
 /**
  * Server-lifecycle bootstrap. Builds Guardian and the loader-side wiring on
- * {@link ServerStartingEvent}; shuts it down on {@link ServerStoppingEvent}.
+ * {@link ServerAboutToStartEvent} (fires BEFORE {@code RegisterCommandsEvent} so
+ * the {@code /vg} brigadier tree can register against a live Guardian); shuts
+ * it down on {@link ServerStoppingEvent}.
  */
 public final class NeoForgeBootstrap {
 
@@ -38,11 +40,15 @@ public final class NeoForgeBootstrap {
 
     /**
      * Boot Guardian. Loads config, builds loader-side adapters, wires the facade.
+     * Fires on {@link ServerAboutToStartEvent} — this is the EARLIEST event with
+     * access to the running {@link MinecraftServer}, and importantly fires BEFORE
+     * {@code RegisterCommandsEvent} so the {@code /vg} brigadier tree can see a
+     * non-null Guardian.
      *
-     * @param ev NeoForge server-starting event
+     * @param ev NeoForge server-about-to-start event
      * @throws Exception on config or DAO failure (bubbles to the caller; logged there)
      */
-    public static void onServerStarting(ServerStartingEvent ev) throws Exception {
+    public static void onServerStarting(ServerAboutToStartEvent ev) throws Exception {
         MinecraftServer server = ev.getServer();
         Path dataDir = server.getServerDirectory();
         Path configPath = dataDir.resolve("config").resolve("vonixguardian").resolve("config.json");
@@ -63,6 +69,7 @@ public final class NeoForgeBootstrap {
         resolver = new NeoForgeAttributionResolver(damageHistory, server);
 
         VonixGuardianNeoForge.setGuardian(g);
+        NeoForgeEvents.replayDeferredCommands(g);
         LOG.info(Guardian.MARKER, "VonixGuardian bootstrap complete.");
     }
 

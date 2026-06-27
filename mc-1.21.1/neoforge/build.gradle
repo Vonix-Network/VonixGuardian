@@ -58,12 +58,28 @@ configurations {
 }
 
 dependencies {
-    // Shade: the engine + sqlite + Hikari + Gson + SLF4J api.
-    // Other libs come from MC's classpath.
+    // Shade pure-Java libs (gson, hikaricp) — safe to relocate.
+    // sqlite-jdbc has JNI native code; relocating Java classes breaks JNI symbol lookup.
+    // Ship it as a JarInJar nested jar (NeoForge's official multi-mod-conflict resolution).
     shaded project(':core')
-    shaded libs.sqlite.jdbc
-    shaded libs.hikaricp
+    shaded(libs.hikaricp) {
+        // Hikari pulls slf4j-api transitively. We DO NOT want it in the outer jar
+        // because NeoForge already exports an org.slf4j module — leaking it here
+        // causes JPMS ResolutionException "Module vonixguardian contains package
+        // org.slf4j.spi, module org.slf4j exports package org.slf4j.spi to vonixguardian".
+        exclude group: 'org.slf4j'
+    }
     shaded libs.gson
+
+    // sqlite-jdbc: nested jar via jarJar. Loader extracts at runtime and dedups
+    // by Maven coords across all mods. See LIBRARY-PACKAGING.md for the JNI rationale.
+    jarJar(libs.sqlite.jdbc) {
+        // Pin to exact version we tested with; loader's nested-jar resolver will
+        // dedup against any other mod shipping the same artifact.
+        version {
+            strictly libs.versions.sqlite.jdbc.get()
+        }
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -93,13 +109,11 @@ shadowJar {
     archiveClassifier = ''
     configurations = [project.configurations.shaded]
 
-    // Relocate shaded libs so we don't collide with other mods' Gson/Hikari/sqlite shipments.
+    // Relocate pure-Java shaded libs only. sqlite-jdbc goes via jarJar (see deps block).
     relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
     relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
-    relocate 'org.sqlite', 'network.vonix.guardian.shadow.sqlite'
 
     minimize {
-        exclude(dependency('org.xerial:sqlite-jdbc:.*'))
         exclude(dependency('com.zaxxer:HikariCP:.*'))
     }
 
@@ -110,6 +124,45 @@ shadowJar {
     exclude 'META-INF/*.SF'
     exclude 'META-INF/maven/**'
     exclude 'module-info.class'
+}
+
+// NeoForge's jarJar plugin writes META-INF/jarjar/<artifact>.jar + metadata.json
+// into build/generated/jarJar/. Append both into the shadow output AFTER it builds,
+// because Shadow's `from()` pipeline strips nested .jar files (it treats them as
+// configurations to unpack). Using ant.zip in doLast gives us raw zip-append behaviour.
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+
+tasks.named('shadowJar') {
+    dependsOn 'jarJar'
+    doLast {
+        File shadow = archiveFile.get().asFile
+        File jarjarDir = layout.buildDirectory.dir('generated/jarJar/META-INF/jarjar').get().asFile
+        File tmp = new File(shadow.parentFile, shadow.name + '.tmp')
+
+        new ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
+            // Copy existing entries from shadow output
+            new ZipFile(shadow).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    // Skip any existing META-INF/jarjar/ entries; we're going to rewrite them
+                    if (entry.name.startsWith('META-INF/jarjar/')) return
+                    out.putNextEntry(new ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(out) }
+                    out.closeEntry()
+                }
+            }
+            // Append all jarJar artifacts (both the .jar and metadata.json)
+            jarjarDir.eachFile { f ->
+                out.putNextEntry(new ZipEntry("META-INF/jarjar/${f.name}"))
+                f.withInputStream { it.transferTo(out) }
+                out.closeEntry()
+            }
+        }
+        shadow.delete()
+        tmp.renameTo(shadow)
+        logger.lifecycle "Embedded ${jarjarDir.listFiles().length} jarJar entries into ${shadow.name}"
+    }
 }
 
 tasks.named('jar') {

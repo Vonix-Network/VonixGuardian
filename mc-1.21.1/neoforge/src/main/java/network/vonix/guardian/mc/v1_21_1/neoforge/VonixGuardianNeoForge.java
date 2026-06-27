@@ -9,7 +9,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.mc.v1_21_1.common.Inspector;
@@ -21,7 +21,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The constructor subscribes the lifecycle listeners and event class on the
  * runtime event bus. {@link #guardian()} returns the live facade once the
- * {@link ServerStartingEvent} bootstrap has run, or {@code null} otherwise.
+ * {@link ServerAboutToStartEvent} bootstrap has run, or {@code null} otherwise.
  */
 @Mod("vonixguardian")
 public final class VonixGuardianNeoForge {
@@ -59,9 +59,11 @@ public final class VonixGuardianNeoForge {
         guardian = g;
     }
 
-    /** Server-starting hook — boots Guardian. */
+    /** Boot Guardian on {@link ServerAboutToStartEvent} — runs BEFORE
+     * {@code RegisterCommandsEvent} so the {@code /vg} brigadier tree
+     * sees a non-null Guardian. */
     @SubscribeEvent
-    public static void onServerStarting(ServerStartingEvent ev) {
+    public static void onServerStarting(ServerAboutToStartEvent ev) {
         try {
             NeoForgeBootstrap.onServerStarting(ev);
         } catch (Throwable t) {

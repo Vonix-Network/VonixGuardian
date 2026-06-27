@@ -22,19 +22,33 @@ repositories {
 }
 
 dependencies {
-    // Storage backends
-    api libs.sqlite.jdbc
+    // Storage backends + runtime libs — ALL compileOnly in core/.
+    // RULE: core/ never owns runtime classpath. Every loader explicitly declares
+    // what to ship (shaded+relocated, JarInJar, or compile-only). This prevents
+    // transitive leaks that break JPMS module resolution at boot.
+    //
+    // What each loader does:
+    //   - hikaricp + gson:  shade + relocate
+    //   - sqlite-jdbc:      NF/Forge JarInJar, Fabric shade unrelocated
+    //   - slf4j-api:        provided by loader (Minecraft ships log4j2 + slf4j-impl)
+    //   - mysql/postgres:   user installs separately in mods/
+    compileOnly libs.sqlite.jdbc
     compileOnly libs.mysql.connector
     compileOnly libs.postgresql
-    api libs.hikaricp
-    api libs.gson
-    compileOnly libs.slf4j.api  // Minecraft ships log4j2 + slf4j-impl on loader side
+    compileOnly libs.hikaricp
+    compileOnly libs.gson
+    compileOnly libs.slf4j.api
 
     // Test
     testImplementation platform(libs.junit.bom)
     testImplementation libs.junit.jupiter
     testImplementation libs.assertj.core
     testImplementation libs.mockito.core
+    testRuntimeOnly libs.sqlite.jdbc       // SQLite integration tests
+    testRuntimeOnly libs.hikaricp          // pool integration tests
+    testRuntimeOnly libs.gson              // config JSON parsing
+    testRuntimeOnly libs.slf4j.api         // logger init
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.16'  // route SLF4J output during tests
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
