@@ -23,10 +23,10 @@ include 'core'
 
 if (profile == 'mc1211' || profile == 'all') {
     include ':mc-1.21.1:neoforge'
+    include ':mc-1.21.1:fabric'
 }
 
 if (profile == 'all') {
-    include ':mc-1.21.1:fabric'
     ['1.18.2', '1.19.2', '1.20.1'].each { mc ->
         include ":mc-${mc}:common", ":mc-${mc}:fabric", ":mc-${mc}:forge"
     }

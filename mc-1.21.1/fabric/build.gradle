@@ -5,8 +5,8 @@
  */
 
 plugins {
-    id 'fabric-loom' version '1.7-SNAPSHOT'
-    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'fabric-loom' version '1.7.4'
+    id 'com.gradleup.shadow' version '8.3.5'
     id 'java-library'
 }
 
@@ -43,10 +43,6 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:0.16.5"
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.116.4+1.21.1"
 
-    // Compile against :common
-    compileOnly project(':mc-1.21.1:common')
-    compileOnly project(':mc-1.21.1:common').sourceSets.main.output
-
     shaded project(':core')
     shaded libs.sqlite.jdbc
     shaded libs.hikaricp
@@ -56,8 +52,6 @@ dependencies {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 21
-    source sourceSets.main.java
-    source project(':mc-1.21.1:common').sourceSets.main.java
 }
 
 tasks.named('processResources') {
@@ -68,7 +62,8 @@ tasks.named('processResources') {
             mod_name: 'VonixGuardian',
             mod_version: project.version,
             mod_authors: 'Vonix Network',
-            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.'
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mod_license: 'MIT'
         )
     }
 }
