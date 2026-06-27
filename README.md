@@ -123,6 +123,12 @@ Every command is gated by `vonixguardian.command.<cmd>` (e.g. `vonixguardian.com
 
 MIT. See [LICENSE](LICENSE). Inspired by CoreProtect (Artistic-2.0, separate codebase) and Ledger (LGPL-3, separate codebase) — VonixGuardian is a clean-room implementation.
 
+## Documentation
+
+- [docs/USAGE.md](docs/USAGE.md) — operator's guide: command reference, filters, rollback walkthrough, troubleshooting.
+- [CHANGELOG.md](CHANGELOG.md) — release history (Keep a Changelog format).
+- [SHARED-CONTRACTS.md](SHARED-CONTRACTS.md) — internal contracts (developers).
+
 ## Credits
 
 - **Vonix Network** team — design, implementation, ops.
