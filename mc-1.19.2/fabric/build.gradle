@@ -39,7 +39,7 @@ configurations {
 }
 
 // Exclude slf4j-api from shaded so it doesn't leak into the outer fat jar.
-configurations.shaded.exclude group: 'org.slf4j', module: 'slf4j-api'
+configurations.shaded.exclude group: 'org.slf4j'
 
 dependencies {
     minecraft "com.mojang:minecraft:1.19.2"

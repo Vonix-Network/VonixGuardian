@@ -543,6 +543,12 @@ public final class NeoForgeEvents {
         }
     }
 
+    /** Clears the deferred dispatcher on server stop to avoid retaining the server graph
+     *  across an in-JVM restart. Idempotent. */
+    public static void reset() {
+        pendingDispatcher = null;
+    }
+
     // ====================================================================== helpers
 
     private static String blockId(BlockState state) {

@@ -131,8 +131,11 @@ tasks.named('shadowJar') {
                 }
             }
         }
-        shadow.delete()
-        tmp.renameTo(shadow)
+        java.nio.file.Files.move(
+            tmp.toPath(), shadow.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE
+        )
         logger.lifecycle "Embedded jarJar entries from ${jarjarSource.name} into ${shadow.name}"
     }
 }

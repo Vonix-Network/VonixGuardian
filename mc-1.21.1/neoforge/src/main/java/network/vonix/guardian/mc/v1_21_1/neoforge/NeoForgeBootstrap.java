@@ -91,5 +91,6 @@ public final class NeoForgeBootstrap {
             damageHistory.clear();
         }
         VonixGuardianNeoForge.setGuardian(null);
+        NeoForgeEvents.reset();
     }
 }

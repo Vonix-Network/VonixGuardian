@@ -139,6 +139,10 @@ tasks.named('shadowJar') {
     doLast {
         File shadow = archiveFile.get().asFile
         File jarjarDir = layout.buildDirectory.dir('generated/jarJar/META-INF/jarjar').get().asFile
+        if (!jarjarDir.exists()) {
+            logger.warn 'jarJar output dir missing; skipping nest-merge'
+            return
+        }
         File tmp = new File(shadow.parentFile, shadow.name + '.tmp')
 
         new ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
@@ -159,8 +163,11 @@ tasks.named('shadowJar') {
                 out.closeEntry()
             }
         }
-        shadow.delete()
-        tmp.renameTo(shadow)
+        java.nio.file.Files.move(
+            tmp.toPath(), shadow.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE
+        )
         logger.lifecycle "Embedded ${jarjarDir.listFiles().length} jarJar entries into ${shadow.name}"
     }
 }

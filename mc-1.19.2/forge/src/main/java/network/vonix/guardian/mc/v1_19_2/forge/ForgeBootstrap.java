@@ -73,5 +73,6 @@ public final class ForgeBootstrap {
             damageHistory.clear();
         }
         VonixGuardianForge.setGuardian(null);
+        ForgeEvents.reset();
     }
 }

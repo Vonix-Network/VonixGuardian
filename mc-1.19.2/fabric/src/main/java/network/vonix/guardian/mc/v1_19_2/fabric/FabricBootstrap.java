@@ -85,5 +85,6 @@ public final class FabricBootstrap {
         }
         Inspector.clear();
         VonixGuardianFabric.setGuardian(null);
+        FabricEvents.reset();
     }
 }
