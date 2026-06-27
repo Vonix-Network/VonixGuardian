@@ -64,7 +64,7 @@ jobs:
         run: |
           MOD_PATH="${{ matrix.module }}"
           MOD_PATH="${MOD_PATH//:/\/}"
-          JAR=$(find "$MOD_PATH" -name 'vonixguardian-*-0.1.0.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' | head -1)
+          JAR=$(find "$MOD_PATH/build/libs" -name 'vonixguardian-*.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' ! -name '*all.jar' | head -1)
           echo "path=$JAR" >> $GITHUB_OUTPUT
           echo "name=$(basename $JAR)" >> $GITHUB_OUTPUT
           # Sanitize artifact name: colon is forbidden in upload-artifact@v4 (NTFS portability)

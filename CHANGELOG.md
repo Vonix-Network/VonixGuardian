@@ -5,6 +5,60 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-06-27
+
+**First production-grade release.** All 8 jars live-boot-validated on real servers (NeoForge 1.21.1, Forge 1.18.2/1.19.2/1.20.1, Fabric all 4) with SQLite schema initialised, `/vg` command tree registered, zero JPMS/JNI failures, zero shaded-library leaks. CoreProtect 1:1 feature parity carried over from v0.1.0 — this release fixes the production blockers that would have stopped v0.1.0 from working in the wild.
+
+### Fixed (production blockers from v0.1.0)
+
+- **JNI relocation trap** — `sqlite-jdbc` was previously shaded + relocated to `network.vonix.guardian.shadow.sqlite.*`, which broke the JNI native-library symbol lookup (`Java_org_sqlite_core_NativeDB_*` baked into `.so/.dll/.dylib` files) → guaranteed `UnsatisfiedLinkError` on first DB op in production. **Fix**: `sqlite-jdbc` now nested via JarInJar (NeoForge `jarJar` / Forge FG6 `jarJar`) on Forge family loaders, shade-unrelocated on Fabric loaders. JNI symbol path preserved end-to-end.
+- **Transitive `api` JPMS leak** — `core/build.gradle` used `api libs.sqlite.jdbc` (and Hikari, Gson), which dragged those packages through Shadow into every loader's outer jar even when the loader removed direct shading. On NeoForge 1.21.1, this triggered `java.lang.module.ResolutionException: Module vonixguardian contains package org.sqlite, module org.xerial.sqlitejdbc exports package org.sqlite to vonixguardian` at boot. **Fix**: demoted all runtime deps in `core/build.gradle` from `api` to `compileOnly`; loaders explicitly choose each lib's packaging (shaded+relocated, JarInJar, or external). Tests retained via `testRuntimeOnly`.
+- **`extendsFrom` exclude cascade** — Fabric loaders' `implementation.extendsFrom shaded` caused `shaded.exclude(group: 'org.slf4j')` to propagate into `compileClasspath`, breaking compile-time references to `org.slf4j.Logger`. **Fix**: Fabric loaders now use a standalone `shaded` configuration fed explicitly into Shadow via `shadowJar.configurations = [shaded]`, with explicit `compileOnly libs.slf4j.api` for compile-time access. `org/slf4j/*` leak count = 0 on all 8 outer jars.
+- **`RegisterCommandsEvent` timing race** — NeoForge/Forge `RegisterCommandsEvent` fires on a `Worker-Main-*` thread during datapack reload, BEFORE any server-lifecycle event. Previously, commands were silently skipped on first boot (`Commands fired before Guardian.boot — skipping`), making `/vg` unavailable until a `/reload`. **Fix**: deferred-and-replay pattern — dispatcher is captured at `RegisterCommandsEvent` time in a `volatile` static field, then registered when `Guardian.boot()` completes. Verified on live boot tests across all 8 jars: `Deferred /vg command registration until Guardian.boot` → `/vg command tree registered (deferred from RegisterCommandsEvent)`. Same pattern applied to Fabric `CommandRegistrationCallback` for consistency.
+- **`mods.toml` schema mismatch** — Forge 1.18.2/1.19.2/1.20.1 use the legacy `mandatory = true` schema; NeoForge 1.20.4+ introduced the new `type = "required"` enum. Sharing one `mods.toml` template across loaders silently caused Forge to refuse loading the mod with NO error in the log (no manifest line, no exception, just absent). **Fix**: corrected all three Forge `mods.toml` files to `mandatory = true`. Mod manifest now visible at boot on every loader.
+- **Forge legacy `mods.toml`** also needed correct `versionRange` per loader (Forge 1.18.2 uses `[40,)`, 1.19.2 `[43,)`, 1.20.1 `[47,)`).
+
+### Hardened (defensive fixes from PR code review)
+
+- **`pendingDispatcher` lifecycle** — every `*Events.java` (8 loaders) now exposes `reset()`, wired into the corresponding `*Bootstrap.onServerStopping` after `setGuardian(null)`. Eliminates the cross-restart stale-dispatcher hazard if the JVM survives a server stop (integrated server / LAN flow / dev) AND covers the case where `Guardian.boot()` throws before the replay path runs.
+- **NeoForge `build.gradle` `jarjarDir.eachFile`** now guarded by an existence check mirroring the Forge files — defensive against future refactors that drop JarInJar nesting.
+- **Fabric `shaded.exclude`** broadened from `module: 'slf4j-api'` to `group: 'org.slf4j'` — future-proofs against transitive `slf4j-jdk14` / `slf4j-simple` / `jul-to-slf4j` from a Hikari bump.
+- **Atomic shadow rewrite** — all 8 loader `build.gradle` files now use `java.nio.file.Files.move(REPLACE_EXISTING, ATOMIC_MOVE)` instead of `File.renameTo()` for the post-shadow zip rewrite. `renameTo` silently returns `false` on Windows if antivirus / another tool holds the file; the build would have emitted a half-written or stale jar with no error.
+
+### Added
+
+- `docs/USAGE.md` — comprehensive operator's guide: TL;DR cheat sheet, filter syntax reference, all 39 action types, sentinel tokens for modded griefing attribution, common workflows (inspect / near / lookup / rollback+undo / mass purge), rollback transactional semantics, status/health/reload, LuckPerms node reference, verified-live boot matrix with timings + library packaging per loader, troubleshooting guide.
+- README link to `docs/USAGE.md` + CHANGELOG + SHARED-CONTRACTS.
+- `.coderabbit.yaml` — auto-review config including `release/*` and `baseline-*` base branches.
+
+### Build / CI
+
+- `core` test job now passes `-PbuildProfile=core` so `settings.gradle` skips configuring loader subprojects. Resolves the `fabric-loom` `BuildSharedServiceManager$Inject` configure-time crash that previously failed `:core:test` on CI.
+- Build workflow now triggers on push to `main` and any `release/**` branch, and on PRs targeting any branch (was: `main` only).
+- Artifact names sanitised: `:` → `-` in matrix module names (Gradle `mc-1.21.1:neoforge` → upload-artifact `mc-1.21.1-neoforge`) because `actions/upload-artifact@v4` rejects colons in artifact names (NTFS portability).
+
+### Verified-live boot matrix (v1.0.0)
+
+| Loader | MC | Library packaging | Boot time | SQLite | Status |
+|---|---|---|---|---|---|
+| NeoForge | 1.21.1 | JarInJar (sqlite-jdbc + slf4j-api nested) | 1.4s | ✅ 69632B | 🟢 |
+| Fabric   | 1.21.1 | shade-unrelocated sqlite-jdbc, slf4j excluded | 0.9s | ✅ 69632B | 🟢 |
+| Forge    | 1.20.1 | FG6 jarJar (sqlite-jdbc + slf4j-api nested) | 3.4s | ✅ 69632B | 🟢 |
+| Fabric   | 1.20.1 | shade-unrelocated, slf4j excluded | ≤2s | ✅ 69632B | 🟢 |
+| Forge    | 1.19.2 | FG6 jarJar | 8.3s | ✅ 69632B | 🟢 |
+| Fabric   | 1.19.2 | shade-unrelocated | ≤2s | ✅ 69632B | 🟢 |
+| Forge    | 1.18.2 | FG6 jarJar | 44s (cold worldgen) | ✅ 69632B | 🟢 |
+| Fabric   | 1.18.2 | shade-unrelocated | ≤2s | ✅ 69632B | 🟢 |
+
+Every jar verified to: load mod manifest, boot Guardian engine, initialise SQLite schema (8 tables), register `/vg` command tree, complete bootstrap before MC `Done`, survive zero `ResolutionException` / `UnsatisfiedLinkError` / shaded-library leak (`org/slf4j/*` = 0 on all outer jars).
+
+### Deferred to v1.1.0
+
+- Fabric mixins for `LivingDestroyBlock` / `Explosion.Detonate` / piston / `ItemToss` / `ItemPickup` / container — Fabric currently has player-driven coverage only; mob/explosion griefing capture needs per-MC-version mixins (~20 files).
+- WorldEdit soft-dep region lookup via pure reflection.
+- MySQL / PostgreSQL live integration smoke-test (code path wired but never exercised against a real DB).
+- Forge/NeoForge `shaded` configuration decoupling (currently relies on Minecraft re-exporting slf4j; not broken today, less defensive than the Fabric pattern).
+
 ## [0.1.0] — 2026-06-27
 
 First public release. CoreProtect 1:1 feature surface with universal modded-entity griefing attribution. **8 drop-in jars** covering the four most-deployed modded Minecraft versions × {Fabric, Forge/NeoForge}.

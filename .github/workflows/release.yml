@@ -42,7 +42,10 @@ jobs:
         run: |
           MOD_PATH="${{ matrix.module }}"
           MOD_PATH="${MOD_PATH//:/\/}"
-          JAR=$(find "$MOD_PATH" -name 'vonixguardian-*-0.1.0.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' | head -1)
+          # Strip leading 'v' from the tag, e.g. 'v1.0.0' -> '1.0.0'
+          VERSION="${GITHUB_REF_NAME#v}"
+          JAR=$(find "$MOD_PATH" -name "vonixguardian-*-${VERSION}.jar" ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' | head -1)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "path=$JAR" >> $GITHUB_OUTPUT
           # Sanitize artifact name: colon is forbidden in upload-artifact@v4 (NTFS portability)
           SAFE_NAME="${{ matrix.module }}"
@@ -78,6 +81,7 @@ jobs:
       - name: Build release notes
         id: notes
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           {
             echo "## VonixGuardian ${GITHUB_REF_NAME}"
             echo
@@ -87,10 +91,10 @@ jobs:
             echo
             echo "| MC version | Fabric | Forge / NeoForge |"
             echo "|---|---|---|"
-            echo "| 1.21.1 | \`vonixguardian-fabric-1.21.1-0.1.0.jar\` | \`vonixguardian-neoforge-1.21.1-0.1.0.jar\` |"
-            echo "| 1.20.1 | \`vonixguardian-fabric-1.20.1-0.1.0.jar\` | \`vonixguardian-forge-1.20.1-0.1.0.jar\` |"
-            echo "| 1.19.2 | \`vonixguardian-fabric-1.19.2-0.1.0.jar\` | \`vonixguardian-forge-1.19.2-0.1.0.jar\` |"
-            echo "| 1.18.2 | \`vonixguardian-fabric-1.18.2-0.1.0.jar\` | \`vonixguardian-forge-1.18.2-0.1.0.jar\` |"
+            echo "| 1.21.1 | \`vonixguardian-fabric-1.21.1-${VERSION}.jar\` | \`vonixguardian-neoforge-1.21.1-${VERSION}.jar\` |"
+            echo "| 1.20.1 | \`vonixguardian-fabric-1.20.1-${VERSION}.jar\` | \`vonixguardian-forge-1.20.1-${VERSION}.jar\` |"
+            echo "| 1.19.2 | \`vonixguardian-fabric-1.19.2-${VERSION}.jar\` | \`vonixguardian-forge-1.19.2-${VERSION}.jar\` |"
+            echo "| 1.18.2 | \`vonixguardian-fabric-1.18.2-${VERSION}.jar\` | \`vonixguardian-forge-1.18.2-${VERSION}.jar\` |"
             echo
             echo "Pick the matching jar for your server, drop into \`mods/\`, restart."
             echo
