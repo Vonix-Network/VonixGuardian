@@ -41,7 +41,7 @@ sqlite-jdbc = "3.46.1.0"
 mysql-connector = "8.4.0"
 postgresql = "42.7.4"
 hikaricp = "5.1.0"
-gson = "2.11.0"
+gson = "2.10.1"
 slf4j = "2.0.16"
 
 # Test

@@ -14,11 +14,20 @@ plugins {
 
 rootProject.name = 'VonixGuardian'
 
+// Build profile: 'core' builds only :core; 'mc1211' adds 1.21.1 NeoForge + common;
+// 'all' adds every MC version + loader. Default = 'all' when unset.
+def profile = providers.gradleProperty('buildProfile').getOrElse('all')
+
 // Pure-Java engine (no MC).
 include 'core'
 
-// Per-MC subprojects. Each contains :common + loader modules.
-['1.18.2', '1.19.2', '1.20.1'].each { mc ->
-    include ":mc-${mc}:common", ":mc-${mc}:fabric", ":mc-${mc}:forge"
+if (profile == 'mc1211' || profile == 'all') {
+    include ':mc-1.21.1:neoforge'
 }
-include ':mc-1.21.1:common', ':mc-1.21.1:fabric', ':mc-1.21.1:neoforge'
+
+if (profile == 'all') {
+    include ':mc-1.21.1:fabric'
+    ['1.18.2', '1.19.2', '1.20.1'].each { mc ->
+        include ":mc-${mc}:common", ":mc-${mc}:fabric", ":mc-${mc}:forge"
+    }
+}

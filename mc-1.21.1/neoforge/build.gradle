@@ -10,7 +10,7 @@
 
 plugins {
     id 'net.neoforged.moddev' version '2.0.78'
-    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'com.gradleup.shadow' version '8.3.5'
     id 'java-library'
 }
 
@@ -58,10 +58,6 @@ configurations {
 }
 
 dependencies {
-    // Compile against :common (Mojmap-bridged code).
-    compileOnly project(':mc-1.21.1:common')
-    compileOnly project(':mc-1.21.1:common').sourceSets.main.output
-
     // Shade: the engine + sqlite + Hikari + Gson + SLF4J api.
     // Other libs come from MC's classpath.
     shaded project(':core')
@@ -73,8 +69,6 @@ dependencies {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 21
-    source sourceSets.main.java
-    source project(':mc-1.21.1:common').sourceSets.main.java
 }
 
 tasks.named('processResources') {
@@ -86,6 +80,9 @@ tasks.named('processResources') {
             mod_version: project.version,
             mod_authors: 'Vonix Network',
             mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mod_license: 'MIT',
+            mod_issue_tracker: 'https://github.com/Vonix-Network/VonixGuardian/issues',
+            mod_homepage: 'https://github.com/Vonix-Network/VonixGuardian',
             mc_version: '1.21.1',
             neoforge_version: '21.1.93'
         )
