@@ -88,7 +88,8 @@ public final class FabricEvents {
             try {
                 Guardian g = VonixGuardianFabric.guardian();
                 if (g == null) {
-                    LOG.warn(Guardian.MARKER, "Commands fired before Guardian.boot — skipping");
+                    pendingDispatcher = dispatcher;
+                    LOG.info(Guardian.MARKER, "Deferred /vg command registration until Guardian.boot");
                     return;
                 }
                 GuardianCommands.register(dispatcher, g);
@@ -338,6 +339,24 @@ public final class FabricEvents {
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onCommandMessage failed", t);
+        }
+    }
+
+    // ====================================================================== commands replay
+
+    private static volatile com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> pendingDispatcher;
+
+    public static void replayDeferredCommands(Guardian g) {
+        com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> d = pendingDispatcher;
+        if (d != null) {
+            try {
+                GuardianCommands.register(d, g);
+                LOG.info(Guardian.MARKER, "/vg command tree registered (deferred from CommandRegistrationCallback)");
+            } catch (Throwable t) {
+                LOG.warn(Guardian.MARKER, "Deferred command registration failed", t);
+            } finally {
+                pendingDispatcher = null;
+            }
         }
     }
 

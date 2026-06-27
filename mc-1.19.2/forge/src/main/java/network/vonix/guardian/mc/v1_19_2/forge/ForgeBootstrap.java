@@ -56,6 +56,7 @@ public final class ForgeBootstrap {
         resolver = new ForgeAttributionResolver(damageHistory, server);
 
         VonixGuardianForge.setGuardian(g);
+        ForgeEvents.replayDeferredCommands(g);
         LOG.info(Guardian.MARKER, "VonixGuardian bootstrap complete.");
     }
 

@@ -64,6 +64,7 @@ public final class FabricBootstrap {
             resolver = new FabricAttributionResolver(damageHistory, server);
 
             VonixGuardianFabric.setGuardian(g);
+            FabricEvents.replayDeferredCommands(g);
             LOG.info(Guardian.MARKER, "VonixGuardian bootstrap complete.");
         } catch (Throwable t) {
             LOG.error(Guardian.MARKER, "Failed to boot VonixGuardian", t);

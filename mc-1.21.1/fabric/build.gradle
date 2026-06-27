@@ -32,10 +32,15 @@ repositories {
 }
 
 configurations {
+    // shaded is INDEPENDENT — does NOT extend implementation. We feed it
+    // to shadowJar explicitly. We also re-add it as compileOnly via the
+    // dependencies block so source compiles against the same classes.
     shaded
     include
-    implementation.extendsFrom shaded
 }
+
+// Exclude slf4j-api from shaded so it doesn't leak into the outer fat jar.
+configurations.shaded.exclude group: 'org.slf4j', module: 'slf4j-api'
 
 dependencies {
     minecraft "com.mojang:minecraft:1.21.1"
@@ -43,18 +48,20 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:0.16.5"
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.116.4+1.21.1"
 
+    // shaded is for ShadowJar packaging only — does NOT extend implementation.
+    // We mirror each as compileOnly below so source compiles.
     shaded project(':core')
-    // sqlite-jdbc: SHADE UNRELOCATED. Relocating breaks JNI symbol lookup
-    // (Java_org_sqlite_core_NativeDB_* baked into native .so/.dll/.dylib).
-    // Fabric's classloader is more permissive than NF's JPMS-strict one;
-    // we accept the (tiny) collision risk with any other Fabric mod shading
-    // the same lib. See LIBRARY-PACKAGING.md.
-    shaded libs.sqlite.jdbc
-    // Hikari pulls slf4j-api transitively. Loader provides org.slf4j;
-    // bundling ours either no-ops (no impl binding) or fights the loader's
-    // logging config. Always exclude.
+    shaded libs.sqlite.jdbc                       // unrelocated (JNI parity)
     shaded(libs.hikaricp) { exclude group: 'org.slf4j' }
     shaded libs.gson
+
+    // Mirror onto compileClasspath so source compiles. slf4j-api is here too
+    // (excluded from shaded, but loader provides at runtime).
+    compileOnly project(':core')
+    compileOnly libs.sqlite.jdbc
+    compileOnly libs.hikaricp
+    compileOnly libs.gson
+    compileOnly libs.slf4j.api
 }
 
 tasks.withType(JavaCompile).configureEach {

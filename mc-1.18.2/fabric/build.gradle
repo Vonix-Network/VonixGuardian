@@ -1,47 +1,113 @@
 /*
  * VonixGuardian — mc-1.18.2 :fabric
+ *
+ * Fabric loader 1.18.2. Shades core + sqlite + Hikari + Gson into the jar.
  */
+
 plugins {
     id 'fabric-loom' version '1.4.6'
     id 'com.gradleup.shadow' version '8.3.5'
     id 'java-library'
 }
-base { archivesName = 'vonixguardian-fabric-1.18.2' }
-java { toolchain { languageVersion = JavaLanguageVersion.of(17) }; withSourcesJar() }
 
-repositories { mavenCentral() }
-configurations { shaded; implementation.extendsFrom shaded }
+base { archivesName = 'vonixguardian-fabric-1.18.2' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(17) }
+    withSourcesJar()
+}
+
+loom {
+    runs {
+        server {
+            server()
+            programArgs '--nogui'
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    // shaded is INDEPENDENT — does NOT extend implementation. We feed it
+    // to shadowJar explicitly. We also re-add it as compileOnly via the
+    // dependencies block so source compiles against the same classes.
+    shaded
+    include
+}
+
+// Exclude slf4j-api from shaded so it doesn't leak into the outer fat jar.
+configurations.shaded.exclude group: 'org.slf4j', module: 'slf4j-api'
+
 dependencies {
     minecraft "com.mojang:minecraft:1.18.2"
     mappings loom.officialMojangMappings()
     modImplementation "net.fabricmc:fabric-loader:0.15.11"
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.77.0+1.18.2"
+
+    // shaded is for ShadowJar packaging only — does NOT extend implementation.
+    // We mirror each as compileOnly below so source compiles.
     shaded project(':core')
-    shaded libs.sqlite.jdbc
+    shaded libs.sqlite.jdbc                       // unrelocated (JNI parity)
     shaded(libs.hikaricp) { exclude group: 'org.slf4j' }
     shaded libs.gson
+
+    // Mirror onto compileClasspath so source compiles. slf4j-api is here too
+    // (excluded from shaded, but loader provides at runtime).
+    compileOnly project(':core')
+    compileOnly libs.sqlite.jdbc
+    compileOnly libs.hikaricp
+    compileOnly libs.gson
+    compileOnly libs.slf4j.api
 }
-tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8'; options.release = 17 }
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
 tasks.named('processResources') {
     inputs.property 'mod_version', project.version
     filesMatching('fabric.mod.json') {
-        expand(mod_id: 'vonixguardian', mod_name: 'VonixGuardian',
-               mod_version: project.version, mod_authors: 'Vonix Network',
-               mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
-               mod_license: 'MIT')
+        expand(
+            mod_id: 'vonixguardian',
+            mod_name: 'VonixGuardian',
+            mod_version: project.version,
+            mod_authors: 'Vonix Network',
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mod_license: 'MIT'
+        )
     }
 }
+
 shadowJar {
     archiveClassifier = 'shadow'
     configurations = [project.configurations.shaded]
+
     relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
     relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
+    // Do NOT relocate org.sqlite — JNI symbols hardcoded against package path.
+
     minimize {
         exclude(dependency('org.xerial:sqlite-jdbc:.*'))
         exclude(dependency('com.zaxxer:HikariCP:.*'))
     }
+
     mergeServiceFiles()
-    exclude 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/maven/**', 'module-info.class'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/maven/**'
+    exclude 'module-info.class'
 }
-tasks.named('remapJar') { inputFile = shadowJar.archiveFile }
-tasks.named('build') { dependsOn 'remapJar' }
+
+// remapJar takes the shaded jar as input so the final jar is BOTH remapped AND fat.
+tasks.named('remapJar') {
+    inputFile = shadowJar.archiveFile
+}
+
+tasks.named('build') {
+    dependsOn 'remapJar'
+}
