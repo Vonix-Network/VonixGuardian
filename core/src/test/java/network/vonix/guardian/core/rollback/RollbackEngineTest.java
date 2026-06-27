@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -43,6 +44,7 @@ class RollbackEngineTest {
             List.of(), null, null, null, null,
             null, null, null,
             List.of(), List.of(), List.of(),
+            null,
             false, false, false, false
         );
     }
@@ -175,9 +177,11 @@ class RollbackEngineTest {
 
     @Test
     void rollbackIgnoresAlreadyRolledBackRows() throws Exception {
-        Action a = action(9L, 100L, ActionType.BLOCK_PLACE,
-            "w", 0, 0, 0, "minecraft:stone", null, 1, true /* already rolled back */);
-        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(a));
+        // SQL-side filtering: engine calls dao with rolledBack=FALSE, so the DAO
+        // would not return a rolledBack=true row in production. We simulate that
+        // by returning an empty list when the filter requests rolledBack=FALSE.
+        when(dao.query(argThat(qf -> qf != null && Boolean.FALSE.equals(qf.rolledBack())),
+                       anyInt(), anyInt())).thenReturn(List.of());
 
         RollbackResult r = engine.rollback(filter, false);
 
@@ -252,11 +256,13 @@ class RollbackEngineTest {
 
     @Test
     void restoreOnlyTouchesRolledBackRows() throws Exception {
-        Action placeLive = action(20L, 100L, ActionType.BLOCK_PLACE,
-            "w", 0, 0, 0, "minecraft:stone", null, 1, false);
+        // SQL-side filtering: restore() builds a filter with rolledBack=TRUE so
+        // the DAO only returns rolledBack=true rows in production. The mock here
+        // returns only the rolled-back row when the filter requests it.
         Action placeUndone = action(21L, 100L, ActionType.BLOCK_PLACE,
             "w", 1, 1, 1, "minecraft:stone", null, 1, true);
-        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(placeLive, placeUndone));
+        when(dao.query(argThat(qf -> qf != null && Boolean.TRUE.equals(qf.rolledBack())),
+                       anyInt(), anyInt())).thenReturn(List.of(placeUndone));
 
         RollbackResult r = engine.restore(filter, false);
 

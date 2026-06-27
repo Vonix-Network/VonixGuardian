@@ -4,11 +4,8 @@ import network.vonix.guardian.core.action.ActionType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -43,17 +40,6 @@ public final class QueryParser {
      * @param z  player block Z
      */
     public record QueryParseContext(int x, int y, int z) {}
-
-    /** Family roots for signed action tokens (e.g. {@code +block} / {@code -block}). */
-    private static final Map<String, ActionType[]> SIGNED_FAMILIES;
-    static {
-        Map<String, ActionType[]> m = new LinkedHashMap<>();
-        m.put("block",     new ActionType[]{ActionType.BLOCK_PLACE,       ActionType.BLOCK_BREAK});
-        m.put("container", new ActionType[]{ActionType.CONTAINER_DEPOSIT, ActionType.CONTAINER_WITHDRAW});
-        m.put("item",      new ActionType[]{ActionType.ITEM_PICKUP,       ActionType.ITEM_DROP});
-        m.put("session",   new ActionType[]{ActionType.SESSION_JOIN,      ActionType.SESSION_LEAVE});
-        SIGNED_FAMILIES = Collections.unmodifiableMap(m);
-    }
 
     /** Parses a raw filter expression.
      *
@@ -315,13 +301,16 @@ public final class QueryParser {
         } catch (IllegalArgumentException ignored) {
             // fall through to family handling
         }
-        // 2) bare family (e.g. `a:block`) — expand to both halves with Sign.ANY
-        ActionType[] family = SIGNED_FAMILIES.get(lower);
-        if (family != null) {
-            for (ActionType t : family) {
-                b.addAction(new QueryFilter.ActionSelect(t, QueryFilter.ActionSelect.Sign.ANY));
+        // 2) bare family (e.g. `a:block`) — expand to ALL ActionTypes in the
+        //    matching Category with Sign.ANY. Iterates Category.values() so
+        //    new categories Just Work as they are added to ActionType.
+        for (ActionType.Category cat : ActionType.Category.values()) {
+            if (cat.name().toLowerCase(Locale.ROOT).equals(lower)) {
+                for (ActionType t : ActionType.family(cat)) {
+                    b.addAction(new QueryFilter.ActionSelect(t, QueryFilter.ActionSelect.Sign.ANY));
+                }
+                return;
             }
-            return;
         }
         throw bad(tok, "unknown action '" + value + "' — " + actionSuggestion());
     }
@@ -330,7 +319,10 @@ public final class QueryParser {
         String tokens = Arrays.stream(ActionType.values())
             .map(ActionType::token)
             .collect(Collectors.joining(", "));
-        return "valid actions: " + tokens + " (or families: block, container, item, session)";
+        String families = Arrays.stream(ActionType.Category.values())
+            .map(c -> c.name().toLowerCase(Locale.ROOT))
+            .collect(Collectors.joining(", "));
+        return "valid actions: " + tokens + " (or families: " + families + ")";
     }
 
     // --- i: / e: ------------------------------------------------------------

@@ -143,4 +143,28 @@ class QueryCompilerTest {
         assertThat(c.sql()).contains("(u.uuid = ? OR u.name = ?)");
         assertThat(c.binds()).containsExactly(u.toString(), "#tnt");
     }
+
+    @Test
+    void rolled_back_null_emits_no_clause() {
+        QueryFilter f = QueryFilter.builder().rolledBack(null).build();
+        QueryCompiler.Compiled c = QueryCompiler.compileCount(f);
+        assertThat(c.sql()).doesNotContain("rolled_back");
+        assertThat(c.binds()).isEmpty();
+    }
+
+    @Test
+    void rolled_back_true_binds_one() {
+        QueryFilter f = QueryFilter.builder().rolledBack(Boolean.TRUE).build();
+        QueryCompiler.Compiled c = QueryCompiler.compileCount(f);
+        assertThat(c.sql()).contains("a.rolled_back = ?");
+        assertThat(c.binds()).containsExactly(1);
+    }
+
+    @Test
+    void rolled_back_false_binds_zero() {
+        QueryFilter f = QueryFilter.builder().rolledBack(Boolean.FALSE).build();
+        QueryCompiler.Compiled c = QueryCompiler.compileCount(f);
+        assertThat(c.sql()).contains("a.rolled_back = ?");
+        assertThat(c.binds()).containsExactly(0);
+    }
 }

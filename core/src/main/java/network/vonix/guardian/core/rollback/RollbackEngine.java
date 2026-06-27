@@ -1,5 +1,7 @@
 package network.vonix.guardian.core.rollback;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
@@ -10,7 +12,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -21,13 +25,17 @@ import java.util.concurrent.Executor;
  * <p>Workflow:</p>
  * <ol>
  *   <li>Query the {@link GuardianDao} (caller thread — caller is a worker, not
- *       the server thread, per the DAO contract).</li>
+ *       the server thread, per the DAO contract). The filter carries an
+ *       SQL-side {@code rolledBack} predicate so we don't pull rows we'll
+ *       throw away.</li>
  *   <li>Build a {@link RollbackPlan} that deduplicates by position and orders
  *       newest-first.</li>
+ *   <li>Open a {@code vg_rollback_batches} audit record so a server crash
+ *       mid-dispatch leaves recoverable state.</li>
  *   <li>If not a preview, submit the world mutations to the
  *       {@code mainThreadExecutor} in batches of {@link #BATCH_SIZE}.</li>
  *   <li>Mark the affected IDs in the DAO ({@code rolled_back=1} for rollback,
- *       {@code rolled_back=0} for restore).</li>
+ *       {@code rolled_back=0} for restore), then close the batch record.</li>
  * </ol>
  *
  * <p>The actual world mutations are delegated to a {@link WorldMutator}
@@ -40,8 +48,13 @@ public final class RollbackEngine {
     /** Max mutations dispatched per server tick. */
     public static final int BATCH_SIZE = 1000;
 
+    /** Page size for {@link #fetchMatches}. */
+    static final int PAGE_SIZE = 5000;
+
     /** Inert block id used to clear a {@code BLOCK_PLACE}. */
     static final String AIR = "minecraft:air";
+
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     private final GuardianDao dao;
     private final WorldMutator mutator;
@@ -59,59 +72,37 @@ public final class RollbackEngine {
         this.mainThreadExecutor = Objects.requireNonNull(mainThreadExecutor, "mainThreadExecutor");
     }
 
-    /**
-     * Roll back actions matched by {@code filter} that have not already been
-     * rolled back.
-     *
-     * @param filter  query filter; must not be {@code null}
-     * @param preview when {@code true}, no mutations are dispatched and the DAO
-     *                is not modified
-     * @return result describing what was (or would be) done
-     * @throws Exception on DAO failure
-     */
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
         return execute(filter, preview, RollbackResult.Mode.ROLLBACK, null);
     }
 
-    /**
-     * Re-apply actions matched by {@code filter} that are currently in the
-     * rolled-back state.
-     *
-     * @param filter  query filter; must not be {@code null}
-     * @param preview when {@code true}, no mutations are dispatched and the DAO
-     *                is not modified
-     * @return result describing what was (or would be) done
-     * @throws Exception on DAO failure
-     */
     public RollbackResult restore(QueryFilter filter, boolean preview) throws Exception {
         return execute(filter, preview, RollbackResult.Mode.RESTORE, null);
     }
 
-    /**
-     * Variant of {@link #rollback} that tags the result with an originating
-     * actor (used by callers that push onto an {@link UndoStack}).
-     *
-     * @param filter   query filter
-     * @param preview  preview-only flag
-     * @param actorUuid actor UUID; may be {@code null} for console
-     * @return result
-     * @throws Exception on DAO failure
-     */
     public RollbackResult rollback(QueryFilter filter, boolean preview, UUID actorUuid) throws Exception {
         return execute(filter, preview, RollbackResult.Mode.ROLLBACK, actorUuid);
     }
 
-    /**
-     * Variant of {@link #restore} that tags the result with an originating actor.
-     *
-     * @param filter   query filter
-     * @param preview  preview-only flag
-     * @param actorUuid actor UUID; may be {@code null} for console
-     * @return result
-     * @throws Exception on DAO failure
-     */
     public RollbackResult restore(QueryFilter filter, boolean preview, UUID actorUuid) throws Exception {
         return execute(filter, preview, RollbackResult.Mode.RESTORE, actorUuid);
+    }
+
+    /**
+     * Startup recovery: scan for batches that were opened but never closed
+     * (server crashed mid-rollback) and log a WARN per affected action so
+     * operators can decide whether to re-run rollback or accept the state.
+     */
+    public void recoverIncompleteBatches() throws Exception {
+        List<Long> ids = dao.findIncompleteBatchActionIds();
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        LOG.warn("RollbackEngine: found {} action(s) in incomplete rollback batches — operator review required",
+            ids.size());
+        for (Long id : ids) {
+            LOG.warn("RollbackEngine: incomplete batch contains action id={} (use /vg lookup to inspect)", id);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -123,7 +114,9 @@ public final class RollbackEngine {
         Objects.requireNonNull(filter, "filter");
         Objects.requireNonNull(mode, "mode");
 
-        List<Action> matches = fetchMatches(filter, mode);
+        QueryFilter effective = withRolledBack(filter, mode == RollbackResult.Mode.RESTORE);
+
+        List<Action> matches = fetchMatches(effective);
         if (matches.isEmpty()) {
             LOG.debug("RollbackEngine.{}: 0 matches", mode);
             return new RollbackResult(actorUuid, mode, preview,
@@ -143,47 +136,104 @@ public final class RollbackEngine {
             return new RollbackResult(actorUuid, mode, preview, affectedIds, skippedIds, planned, 0);
         }
 
-        int dispatched = dispatchBatches(plan.ordered(), mode);
+        String filterJson = encodeFilter(effective);
+        long batchId = dao.openRollbackBatch(actorUuid, mode.ordinal(), filterJson, affectedIds);
 
-        // Mark IDs *after* dispatch is enqueued. Mutation completion is async on
-        // the main-thread executor; the DB state reflects intent, not landing.
-        boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
+        int dispatched;
         try {
+            dispatched = dispatchBatches(plan.ordered(), mode);
+
+            // Mark IDs *after* dispatch is enqueued. Mutation completion is async on
+            // the main-thread executor; the DB state reflects intent, not landing.
+            boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
             dao.markRolledBack(affectedIds, targetFlag);
         } catch (Exception e) {
-            LOG.error("RollbackEngine.{}: failed to mark {} ids rolled_back={}",
-                mode, affectedIds.size(), targetFlag, e);
+            LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
+                mode, batchId, e);
+            throw e;
+        }
+
+        try {
+            dao.closeRollbackBatch(batchId);
+        } catch (Exception e) {
+            LOG.error("RollbackEngine.{}: failed to close batch id={}", mode, batchId, e);
             throw e;
         }
 
         return new RollbackResult(actorUuid, mode, false, affectedIds, skippedIds, planned, dispatched);
     }
 
-    private List<Action> fetchMatches(QueryFilter filter, RollbackResult.Mode mode) throws Exception {
-        // We page through the DAO; restoration only touches rolled_back=1 rows,
-        // rollback only rolled_back=0 rows. The DAO does not filter by that
-        // flag (per contract), so we filter client-side.
-        final int pageSize = 5000;
+    /**
+     * Pages the DAO with the filter as given. The {@code rolledBack} predicate
+     * MUST already be set on {@code filter} — this method no longer filters
+     * client-side, which is the whole point of the v0.1.1 perf fix.
+     */
+    private List<Action> fetchMatches(QueryFilter filter) throws Exception {
         List<Action> out = new ArrayList<>();
         int offset = 0;
         while (true) {
-            List<Action> page = dao.query(filter, offset, pageSize);
+            List<Action> page = dao.query(filter, offset, PAGE_SIZE);
             if (page == null || page.isEmpty()) {
                 break;
             }
-            for (Action a : page) {
-                if (mode == RollbackResult.Mode.ROLLBACK && !a.rolledBack()) {
-                    out.add(a);
-                } else if (mode == RollbackResult.Mode.RESTORE && a.rolledBack()) {
-                    out.add(a);
-                }
-            }
-            if (page.size() < pageSize) {
+            out.addAll(page);
+            if (page.size() < PAGE_SIZE) {
                 break;
             }
-            offset += pageSize;
+            offset += PAGE_SIZE;
         }
         return out;
+    }
+
+    /**
+     * Returns a copy of {@code base} with {@code rolledBack} forced to the
+     * requested value. Other fields are preserved verbatim. We do NOT use the
+     * builder because the builder collapses null lists to empty — which is
+     * fine, but a record-component copy is clearer here.
+     */
+    private static QueryFilter withRolledBack(QueryFilter base, boolean rolledBack) {
+        return new QueryFilter(
+            base.users(),
+            base.sinceMillis(),
+            base.untilMillis(),
+            base.radius(),
+            base.worldSel(),
+            base.centerX(), base.centerY(), base.centerZ(),
+            base.actions(),
+            base.include(),
+            base.exclude(),
+            rolledBack,
+            base.countOnly(),
+            base.preview(),
+            base.verbose(),
+            base.silent()
+        );
+    }
+
+    /**
+     * Compact JSON snapshot of a filter, persisted on the batch record for
+     * operator forensics. Built as a plain {@link LinkedHashMap} so we don't
+     * depend on Gson reflectively grokking every record component.
+     */
+    static String encodeFilter(QueryFilter f) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("users", f.users());
+        m.put("sinceMillis", f.sinceMillis());
+        m.put("untilMillis", f.untilMillis());
+        m.put("radius", f.radius());
+        m.put("worldSel", f.worldSel());
+        m.put("centerX", f.centerX());
+        m.put("centerY", f.centerY());
+        m.put("centerZ", f.centerZ());
+        m.put("actions", f.actions());
+        m.put("include", f.include());
+        m.put("exclude", f.exclude());
+        m.put("rolledBack", f.rolledBack());
+        m.put("countOnly", f.countOnly());
+        m.put("preview", f.preview());
+        m.put("verbose", f.verbose());
+        m.put("silent", f.silent());
+        return GSON.toJson(m);
     }
 
     private int dispatchBatches(List<Action> ordered, RollbackResult.Mode mode) {
@@ -226,7 +276,6 @@ public final class RollbackEngine {
                 mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()), a.targetMeta());
             case ITEM_DROP ->
-                // best-effort: clear the dropped stack from the ground
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             case ITEM_PICKUP ->
@@ -238,6 +287,8 @@ public final class RollbackEngine {
                 restoreExplosion(a);
             case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE ->
                 LOG.warn("RollbackEngine: refusing to roll back non-rollbackable {} (id={})", a.type(), a.id());
+            default ->
+                LOG.warn("RollbackEngine: rollback not implemented for {} (id={})", a.type(), a.id());
         }
     }
 
@@ -261,22 +312,16 @@ public final class RollbackEngine {
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             case ENTITY_KILL ->
-                // restoring a kill = re-killing the respawn we just made: best-effort no-op
                 LOG.debug("RollbackEngine: restore of ENTITY_KILL id={} is best-effort no-op", a.id());
             case EXPLOSION ->
-                // Re-detonate by clearing all blocks the explosion originally removed.
                 clearExplosionBlocks(a);
             case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE ->
                 LOG.warn("RollbackEngine: refusing to restore non-rollbackable {} (id={})", a.type(), a.id());
+            default ->
+                LOG.warn("RollbackEngine: restore not implemented for {} (id={})", a.type(), a.id());
         }
     }
 
-    /**
-     * EXPLOSION target field format (per shared contracts § 8):
-     * comma-joined affected-block list, each entry {@code "x:y:z=id"} or
-     * {@code "x:y:z=id|meta"} truncated at 4KB. Unknown / malformed entries are
-     * skipped with a warning.
-     */
     private void restoreExplosion(Action a) {
         String target = a.targetId();
         if (target == null || target.isEmpty()) {
@@ -360,6 +405,7 @@ public final class RollbackEngine {
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE -> false;
+            default -> false;
         };
     }
 

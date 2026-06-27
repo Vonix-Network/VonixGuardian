@@ -152,6 +152,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         EventGate gate = new EventGate(config.actions());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
         RollbackEngine rollback = new RollbackEngine(dao, mutator, mainThreadExec);
+        try {
+            rollback.recoverIncompleteBatches();
+        } catch (Exception e) {
+            LOG.warn(MARKER, "Recovery scan failed (non-fatal)", e);
+        }
         UndoStack undo = new UndoStack(20);
         Theme theme = ThemeRegistry.get(config.theme());
 
@@ -293,6 +298,180 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         submit(seed(ActionType.USERNAME_CHANGE, actorUuid, newName, worldId)
                 .targetId((oldName != null ? oldName : "?") + " -> " + (newName != null ? newName : "?"))
                 .build());
+    }
+
+    // -------------------------------------------------------------------- expansion: block
+
+    @Override
+    public void submitBurn(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.BURN, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitIgnite(UUID actorUuid, String actorName, String worldId,
+                             int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.IGNITE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitFade(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.FADE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitForm(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.FORM, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitSpread(UUID actorUuid, String actorName, String worldId,
+                             int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.SPREAD, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitDispense(UUID actorUuid, String actorName, String worldId,
+                               int x, int y, int z, String itemId, String sourceTag) {
+        submit(seed(ActionType.DISPENSE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitPistonExtend(UUID actorUuid, String actorName, String worldId,
+                                   int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.PISTON_EXTEND, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitPistonRetract(UUID actorUuid, String actorName, String worldId,
+                                    int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.PISTON_RETRACT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitBucketEmpty(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String fluidOrBlockId, String sourceTag) {
+        submit(seed(ActionType.BUCKET_EMPTY, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(fluidOrBlockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitBucketFill(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String fluidOrBlockId, String sourceTag) {
+        submit(seed(ActionType.BUCKET_FILL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(fluidOrBlockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitLeavesDecay(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.LEAVES_DECAY, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z,
+                                        String oldBlockId, String newBlockId, String sourceTag) {
+        String target = (oldBlockId != null ? oldBlockId : "?") + " -> "
+                + (newBlockId != null ? newBlockId : "?");
+        submit(seed(ActionType.ENTITY_CHANGE_BLOCK, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(target).sourceTag(sourceTag).build());
+    }
+
+    // -------------------------------------------------------------------- expansion: container/item
+
+    @Override
+    public void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                       int x, int y, int z, String itemId, int amount, String sourceTag) {
+        submit(seed(ActionType.INVENTORY_DEPOSIT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z, String itemId, int amount, String sourceTag) {
+        submit(seed(ActionType.INVENTORY_WITHDRAW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag) {
+        submit(seed(ActionType.HOPPER_PUSH, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag) {
+        submit(seed(ActionType.HOPPER_PULL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitItemCraft(UUID actorUuid, String actorName, String worldId,
+                                int x, int y, int z, String itemId, int amount, String sourceTag) {
+        submit(seed(ActionType.ITEM_CRAFT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag).build());
+    }
+
+    // -------------------------------------------------------------------- expansion: entities
+
+    @Override
+    public void submitEntitySpawn(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String entityType, String sourceTag) {
+        submit(seed(ActionType.ENTITY_SPAWN, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitEntityInteract(UUID actorUuid, String actorName, String worldId,
+                                     int x, int y, int z, String entityType, String sourceTag) {
+        submit(seed(ActionType.ENTITY_INTERACT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitHangingPlace(UUID actorUuid, String actorName, String worldId,
+                                   int x, int y, int z, String entityType, String sourceTag) {
+        submit(seed(ActionType.HANGING_PLACE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitHangingBreak(UUID actorUuid, String actorName, String worldId,
+                                   int x, int y, int z, String entityType, String sourceTag) {
+        submit(seed(ActionType.HANGING_BREAK, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag).build());
+    }
+
+    // -------------------------------------------------------------------- expansion: world
+
+    @Override
+    public void submitStructureGrow(UUID actorUuid, String actorName, String worldId,
+                                    int x, int y, int z, String structureId, String sourceTag) {
+        submit(seed(ActionType.STRUCTURE_GROW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(structureId).sourceTag(sourceTag).build());
+    }
+
+    // -------------------------------------------------------------------- expansion: interact
+
+    @Override
+    public void submitClick(UUID actorUuid, String actorName, String worldId,
+                            int x, int y, int z, String targetId, String sourceTag) {
+        submit(seed(ActionType.CLICK, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(targetId).sourceTag(sourceTag).build());
     }
 
     // -------------------------------------------------------------------- lifecycle

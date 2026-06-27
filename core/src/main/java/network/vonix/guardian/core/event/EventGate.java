@@ -67,8 +67,7 @@ public final class EventGate {
             return false;
         }
         ActionType t = a.type();
-        if ((t == ActionType.BLOCK_PLACE || t == ActionType.BLOCK_BREAK)
-                && blockBlacklist.contains(a.targetId())) {
+        if (t.category() == ActionType.Category.BLOCK && blockBlacklist.contains(a.targetId())) {
             return false;
         }
         if (a.sourceTag() != null && sourceBlacklist.contains(a.sourceTag())) {
@@ -78,16 +77,20 @@ public final class EventGate {
     }
 
     private boolean typeEnabled(ActionType t) {
-        return switch (t) {
-            case BLOCK_PLACE, BLOCK_BREAK -> cfg.logBlocks();
-            case CONTAINER_DEPOSIT, CONTAINER_WITHDRAW -> cfg.logContainers();
-            case ITEM_DROP, ITEM_PICKUP -> cfg.logItems();
-            case ENTITY_KILL -> cfg.logEntities();
-            case EXPLOSION -> cfg.logExplosions();
-            case CHAT -> cfg.logChat();
-            case COMMAND -> cfg.logCommands();
-            case SIGN -> cfg.logSigns();
-            case SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE -> cfg.logSessions();
+        return switch (t.category()) {
+            case BLOCK -> cfg.logBlocks();
+            case CONTAINER -> cfg.logContainers();
+            case ITEM -> cfg.logItems();
+            case ENTITY -> cfg.logEntities();
+            case WORLD -> (t == ActionType.EXPLOSION) ? cfg.logExplosions() : cfg.logWorldEvents();
+            case MESSAGE -> switch (t) {
+                case CHAT -> cfg.logChat();
+                case COMMAND -> cfg.logCommands();
+                case SIGN -> cfg.logSigns();
+                default -> true;
+            };
+            case SESSION -> cfg.logSessions();
+            case INTERACT -> cfg.logInteractions();
         };
     }
 }

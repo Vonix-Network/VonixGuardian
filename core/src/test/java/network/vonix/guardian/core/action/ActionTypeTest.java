@@ -2,6 +2,9 @@ package network.vonix.guardian.core.action;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -77,11 +80,52 @@ class ActionTypeTest {
     }
 
     @Test
-    void idsAreUniqueAndContiguous() {
+    void idsAreUniqueContiguousAndExpanded() {
         ActionType[] values = ActionType.values();
-        assertThat(values).hasSize(14);
+        assertThat(values).hasSize(39);
+        Set<Integer> ids = new HashSet<>();
         for (int i = 0; i < values.length; i++) {
             assertThat(values[i].id()).isEqualTo(i + 1);
+            assertThat(ids.add(values[i].id())).as("id %d must be unique", values[i].id()).isTrue();
         }
+    }
+
+    @Test
+    void allTokensAreUnique() {
+        Set<String> tokens = new HashSet<>();
+        for (ActionType t : ActionType.values()) {
+            assertThat(tokens.add(t.token()))
+                .as("token '%s' must be unique", t.token()).isTrue();
+        }
+    }
+
+    @Test
+    void allValuesHaveNonNullCategoryAndSign() {
+        for (ActionType t : ActionType.values()) {
+            assertThat(t.category()).as("%s.category()", t).isNotNull();
+            assertThat(t.sign()).as("%s.sign()", t).isNotNull();
+        }
+    }
+
+    @Test
+    void familyReturnsAllValuesInCategory() {
+        for (ActionType.Category c : ActionType.Category.values()) {
+            Set<ActionType> fam = ActionType.family(c);
+            assertThat(fam).as("family(%s) must be non-null", c).isNotNull();
+            for (ActionType t : fam) {
+                assertThat(t.category()).isEqualTo(c);
+            }
+            for (ActionType t : ActionType.values()) {
+                if (t.category() == c) {
+                    assertThat(fam).contains(t);
+                }
+            }
+        }
+    }
+
+    @Test
+    void familyThrowsOnNull() {
+        assertThatThrownBy(() -> ActionType.family(null))
+            .isInstanceOf(IllegalArgumentException.class);
     }
 }

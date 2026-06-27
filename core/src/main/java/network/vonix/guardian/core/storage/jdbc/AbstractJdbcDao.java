@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 
 /**
  * Shared JDBC implementation. Subclasses supply a {@link Connection} per call and the
@@ -24,6 +25,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Concurrency: {@code getConnection()} returns either a pooled connection (Hikari) or a
  * single serialised connection (SQLite). The DAO contract states callers are worker
  * threads, never the server thread.
+ *
+ * <p>Read-side rate limit: {@link #query} and {@link #count} acquire a permit from
+ * {@code lookupSemaphore} (sized at construction by {@code config.lookup().maxConcurrent()})
+ * for the duration of the call, providing simple back-pressure for ad-hoc operator
+ * queries. If the semaphore is {@code null}, no rate limit is applied (test-only path).
+ *
+ * <p>Result-size cap: {@link #query} clamps the {@code limit} argument to
+ * {@code min(limit, maxResultRows)}. A value of {@code 0} disables the cap.
  */
 public abstract class AbstractJdbcDao implements GuardianDao {
 
@@ -37,6 +46,27 @@ public abstract class AbstractJdbcDao implements GuardianDao {
     /** name -> id, used for sentinels and uuid-less lookups. */
     private final ConcurrentHashMap<String, Integer> userIdByName = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Integer> worldIdByKey = new ConcurrentHashMap<>();
+
+    /** Optional read-side rate limit. May be {@code null} (no limit). */
+    private final Semaphore lookupSemaphore;
+
+    /** Maximum rows materialised per {@link #query}. {@code 0} disables the cap. */
+    private final int maxResultRows;
+
+    /** Default constructor: no rate limit, no result cap. */
+    protected AbstractJdbcDao() {
+        this(null, 0);
+    }
+
+    /**
+     * @param lookupSemaphore optional read-side rate limit; may be {@code null}
+     * @param maxResultRows   absolute cap on {@code limit} passed to {@link #query};
+     *                        {@code 0} disables the cap
+     */
+    protected AbstractJdbcDao(Semaphore lookupSemaphore, int maxResultRows) {
+        this.lookupSemaphore = lookupSemaphore;
+        this.maxResultRows = Math.max(0, maxResultRows);
+    }
 
     /** Acquire a connection. Implementations decide pooling semantics. */
     protected abstract Connection borrow() throws SQLException;
@@ -124,33 +154,60 @@ public abstract class AbstractJdbcDao implements GuardianDao {
 
     @Override
     public List<Action> query(QueryFilter filter, int offset, int limit) throws SQLException {
-        QueryCompiler.Compiled q = QueryCompiler.compileSelect(filter, offset, limit);
-        Connection c = borrow();
-        try (PreparedStatement ps = c.prepareStatement(q.sql())) {
-            bind(ps, q.binds());
-            try (ResultSet rs = ps.executeQuery()) {
-                List<Action> out = new ArrayList<>();
-                while (rs.next()) {
-                    out.add(readAction(rs));
+        int effectiveLimit = (maxResultRows > 0) ? Math.min(limit, maxResultRows) : limit;
+        acquireLookupPermit();
+        try {
+            QueryCompiler.Compiled q = QueryCompiler.compileSelect(filter, offset, effectiveLimit);
+            Connection c = borrow();
+            try (PreparedStatement ps = c.prepareStatement(q.sql())) {
+                bind(ps, q.binds());
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<Action> out = new ArrayList<>();
+                    while (rs.next()) {
+                        out.add(readAction(rs));
+                    }
+                    return out;
                 }
-                return out;
+            } finally {
+                release(c);
             }
         } finally {
-            release(c);
+            releaseLookupPermit();
         }
     }
 
     @Override
     public long count(QueryFilter filter) throws SQLException {
-        QueryCompiler.Compiled q = QueryCompiler.compileCount(filter);
-        Connection c = borrow();
-        try (PreparedStatement ps = c.prepareStatement(q.sql())) {
-            bind(ps, q.binds());
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
+        acquireLookupPermit();
+        try {
+            QueryCompiler.Compiled q = QueryCompiler.compileCount(filter);
+            Connection c = borrow();
+            try (PreparedStatement ps = c.prepareStatement(q.sql())) {
+                bind(ps, q.binds());
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getLong(1) : 0L;
+                }
+            } finally {
+                release(c);
             }
         } finally {
-            release(c);
+            releaseLookupPermit();
+        }
+    }
+
+    private void acquireLookupPermit() {
+        if (lookupSemaphore == null) return;
+        try {
+            lookupSemaphore.acquire();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting for lookup permit", ex);
+        }
+    }
+
+    private void releaseLookupPermit() {
+        if (lookupSemaphore != null) {
+            lookupSemaphore.release();
         }
     }
 
@@ -205,6 +262,90 @@ public abstract class AbstractJdbcDao implements GuardianDao {
         try (PreparedStatement ps = c.prepareStatement(q.sql())) {
             bind(ps, q.binds());
             return ps.executeUpdate();
+        } finally {
+            release(c);
+        }
+    }
+
+    // ------------------------------------------------------------ ROLLBACK BATCH
+
+    @Override
+    public long openRollbackBatch(UUID actorUuid, int mode, String filterJson, List<Long> actionIds)
+            throws SQLException {
+        List<Long> ids = (actionIds == null) ? List.of() : actionIds;
+        Connection c = borrow();
+        boolean prevAutoCommit = c.getAutoCommit();
+        try {
+            c.setAutoCommit(false);
+            long batchId;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO vg_rollback_batches(ts, actor_uuid, mode, affected, completed, filter_json) "
+                  + "VALUES (?,?,?,?,0,?)",
+                    Statement.RETURN_GENERATED_KEYS)) {
+                ps.setLong(1, System.currentTimeMillis());
+                if (actorUuid != null) ps.setString(2, actorUuid.toString());
+                else ps.setNull(2, java.sql.Types.VARCHAR);
+                ps.setShort(3, (short) mode);
+                ps.setInt(4, ids.size());
+                if (filterJson != null) ps.setString(5, filterJson);
+                else ps.setNull(5, java.sql.Types.VARCHAR);
+                ps.executeUpdate();
+                try (ResultSet keys = ps.getGeneratedKeys()) {
+                    if (keys.next()) {
+                        batchId = keys.getLong(1);
+                    } else {
+                        throw new SQLException("Failed to obtain generated batch id");
+                    }
+                }
+            }
+            if (!ids.isEmpty()) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO vg_rollback_batch_actions(batch_id, action_id) VALUES (?,?)")) {
+                    for (Long aid : ids) {
+                        ps.setLong(1, batchId);
+                        ps.setLong(2, aid);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
+            c.commit();
+            return batchId;
+        } catch (SQLException ex) {
+            try { c.rollback(); } catch (SQLException ignored) {}
+            throw ex;
+        } finally {
+            try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            release(c);
+        }
+    }
+
+    @Override
+    public int closeRollbackBatch(long batchId) throws SQLException {
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE vg_rollback_batches SET completed = 1 WHERE id = ?")) {
+            ps.setLong(1, batchId);
+            return ps.executeUpdate();
+        } finally {
+            release(c);
+        }
+    }
+
+    @Override
+    public List<Long> findIncompleteBatchActionIds() throws SQLException {
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT ba.action_id FROM vg_rollback_batch_actions ba "
+              + "JOIN vg_rollback_batches b ON b.id = ba.batch_id "
+              + "WHERE b.completed = 0 ORDER BY ba.batch_id, ba.action_id")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                List<Long> out = new ArrayList<>();
+                while (rs.next()) {
+                    out.add(rs.getLong(1));
+                }
+                return out;
+            }
         } finally {
             release(c);
         }

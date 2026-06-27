@@ -3,19 +3,29 @@ package network.vonix.guardian.core.storage;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Dialect-aware DDL for the VonixGuardian schema (v1).
+ * Dialect-aware DDL for the VonixGuardian schema.
  *
  * <p>The canonical schema lives in {@code SHARED-CONTRACTS.md} § 3.1. This class substitutes
  * the per-dialect auto-increment specifier and applies the DDL idempotently, recording the
  * applied version in {@code vg_schema_version}.
+ *
+ * <p>Versions:
+ * <ul>
+ *   <li><b>v1</b> — initial: {@code vg_users}, {@code vg_worlds}, {@code vg_actions}, indexes.</li>
+ *   <li><b>v2</b> — additive: {@code vg_rollback_batches} + {@code vg_rollback_batch_actions}
+ *       (crash-recovery audit for rollback/restore operations). Migration is purely additive
+ *       (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS), so it is safe to run on a
+ *       fresh database or an existing v1 database without any data movement.</li>
+ * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -25,7 +35,7 @@ public final class Schema {
     private Schema() {}
 
     /**
-     * Create all v1 tables + indexes for the given dialect, then stamp the schema_version
+     * Create all tables + indexes for the given dialect, then stamp the schema_version
      * table. Safe to call repeatedly — every statement is {@code IF NOT EXISTS}.
      */
     public static void createTables(Connection c, Dialect dialect) throws SQLException {
@@ -37,18 +47,24 @@ public final class Schema {
         stampVersion(c, CURRENT_VERSION);
     }
 
-    /** Return the ordered DDL statements for the given dialect. */
+    /** Return the ordered DDL statements for the given dialect (current version, all-in-one). */
     public static List<String> ddlFor(Dialect d) {
-        return List.of(
-            users(d),
-            worlds(d),
-            actions(d),
-            "CREATE INDEX IF NOT EXISTS vg_actions_pos    ON vg_actions(world_id, x, z, y, ts)",
-            "CREATE INDEX IF NOT EXISTS vg_actions_user_t ON vg_actions(user_id, ts)",
-            "CREATE INDEX IF NOT EXISTS vg_actions_type_t ON vg_actions(type, ts)",
-            "CREATE INDEX IF NOT EXISTS vg_actions_ts     ON vg_actions(ts)",
-            schemaVersion(d)
-        );
+        List<String> out = new ArrayList<>();
+        // --- v1 ---
+        out.add(users(d));
+        out.add(worlds(d));
+        out.add(actions(d));
+        out.add("CREATE INDEX IF NOT EXISTS vg_actions_pos    ON vg_actions(world_id, x, z, y, ts)");
+        out.add("CREATE INDEX IF NOT EXISTS vg_actions_user_t ON vg_actions(user_id, ts)");
+        out.add("CREATE INDEX IF NOT EXISTS vg_actions_type_t ON vg_actions(type, ts)");
+        out.add("CREATE INDEX IF NOT EXISTS vg_actions_ts     ON vg_actions(ts)");
+        // --- v2 (additive) ---
+        out.add(rollbackBatches(d));
+        out.add("CREATE INDEX IF NOT EXISTS vg_rollback_batches_ts ON vg_rollback_batches(ts)");
+        out.add(rollbackBatchActions(d));
+        // --- schema_version table ---
+        out.add(schemaVersion(d));
+        return List.copyOf(out);
     }
 
     private static String pk(Dialect d) {
@@ -104,6 +120,26 @@ public final class Schema {
             + "amount INTEGER NOT NULL DEFAULT 1, "
             + "rolled_back " + tinyint(d) + " NOT NULL DEFAULT 0, "
             + "source_tag VARCHAR(64) NULL"
+            + ")";
+    }
+
+    private static String rollbackBatches(Dialect d) {
+        return "CREATE TABLE IF NOT EXISTS vg_rollback_batches ("
+            + "id " + pk(d) + ", "
+            + "ts BIGINT NOT NULL, "
+            + "actor_uuid CHAR(36) NULL, "
+            + "mode SMALLINT NOT NULL, "
+            + "affected INTEGER NOT NULL, "
+            + "completed " + tinyint(d) + " NOT NULL DEFAULT 0, "
+            + "filter_json " + textType(d) + " NULL"
+            + ")";
+    }
+
+    private static String rollbackBatchActions(Dialect d) {
+        return "CREATE TABLE IF NOT EXISTS vg_rollback_batch_actions ("
+            + "batch_id INTEGER NOT NULL, "
+            + "action_id INTEGER NOT NULL, "
+            + "PRIMARY KEY (batch_id, action_id)"
             + ")";
     }
 

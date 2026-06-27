@@ -101,12 +101,16 @@ First boot writes `config/vonixguardian/config.json`:
     "logCommands": true,
     "logSessions": true,
     "logSigns": true,
+    "logInteractions": true,
+    "logWorldEvents": true,
     "worldBlacklist": [],
     "blockBlacklist": ["minecraft:air"],
     "sourceBlacklist": []
   },
   "permissions": { "useLuckPerms": true, "defaultOpLevel": 3 },
-  "lookup": { "defaultPageSize": 7, "maxRadius": 10000 },
+  "lookup": { "defaultPageSize": 7, "maxRadius": 10000, "maxResultRows": 100000, "maxConcurrent": 4 },
+  "privacy": { "hashIps": false, "salt": "vonix-guardian-default-salt-CHANGE-ME" },
+  "purge": { "minAgeSecondsConsole": 86400, "minAgeSecondsInGame": 2592000 },
   "theme": "aqua"
 }
 ```

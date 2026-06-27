@@ -102,6 +102,9 @@ public final class RollbackPlan {
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE -> false;
+            // v0.1.0 expansion (15-39) lands in a follow-up wave; until the loader bridges
+            // wire mutators for them, treat as not-rollbackable so the engine refuses cleanly.
+            default -> false;
         };
     }
 

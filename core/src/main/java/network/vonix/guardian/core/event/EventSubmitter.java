@@ -218,4 +218,121 @@ public interface EventSubmitter {
      * @param oldName   the previous player name
      */
     void submitUsernameChange(UUID actorUuid, String newName, String worldId, String oldName);
+
+    // ---- v0.1.0 expansion: vanilla griefing block events --------------
+
+    /** Convenience for {@code BlockBurnEvent}. */
+    void submitBurn(UUID actorUuid, String actorName, String worldId,
+                    int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code BlockIgniteEvent}. */
+    void submitIgnite(UUID actorUuid, String actorName, String worldId,
+                      int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code BlockFadeEvent}. */
+    void submitFade(UUID actorUuid, String actorName, String worldId,
+                    int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code BlockFormEvent}. */
+    void submitForm(UUID actorUuid, String actorName, String worldId,
+                    int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code BlockSpreadEvent}. */
+    void submitSpread(UUID actorUuid, String actorName, String worldId,
+                      int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code BlockDispenseEvent}. */
+    void submitDispense(UUID actorUuid, String actorName, String worldId,
+                        int x, int y, int z, String itemId, String sourceTag);
+
+    /** Convenience for {@code BlockPistonExtendEvent}. */
+    void submitPistonExtend(UUID actorUuid, String actorName, String worldId,
+                            int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code BlockPistonRetractEvent}. */
+    void submitPistonRetract(UUID actorUuid, String actorName, String worldId,
+                             int x, int y, int z, String blockId, String sourceTag);
+
+    /** Convenience for {@code PlayerBucketEmptyEvent}. */
+    void submitBucketEmpty(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String fluidOrBlockId, String sourceTag);
+
+    /** Convenience for {@code PlayerBucketFillEvent}. */
+    void submitBucketFill(UUID actorUuid, String actorName, String worldId,
+                          int x, int y, int z, String fluidOrBlockId, String sourceTag);
+
+    /** Convenience for {@code LeavesDecayEvent}. */
+    void submitLeavesDecay(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String blockId, String sourceTag);
+
+    /**
+     * Convenience for {@code EntityChangeBlockEvent} — THE modded griefing path
+     * (ravager, dragon, modded dragons such as Skrills, etc.).
+     *
+     * @param actorUuid   typically {@code null} (mob source)
+     * @param actorName   entity-type sentinel string, e.g. {@code "#mob:minecraft:ravager"}
+     *                    or {@code "#mob:isleofberk:skrill"}
+     * @param worldId     dimension key
+     * @param x           block x
+     * @param y           block y
+     * @param z           block z
+     * @param oldBlockId  block id before mutation
+     * @param newBlockId  block id after mutation
+     * @param sourceTag   optional classifier or {@code null}
+     */
+    void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z,
+                                 String oldBlockId, String newBlockId, String sourceTag);
+
+    // ---- v0.1.0 expansion: inventory + crafting ------------------------
+
+    /** Convenience for player-inventory deposit (slot delta &gt; 0). */
+    void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    /** Convenience for player-inventory withdraw (slot delta &lt; 0). */
+    void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    /** Convenience for hopper push (item moved into a container). */
+    void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                          int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    /** Convenience for hopper pull (item moved out of a container). */
+    void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                          int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    /** Convenience for {@code CraftItemEvent}. */
+    void submitItemCraft(UUID actorUuid, String actorName, String worldId,
+                         int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    // ---- v0.1.0 expansion: entities ------------------------------------
+
+    /** Convenience for {@code EntitySpawnEvent}. */
+    void submitEntitySpawn(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String entityType, String sourceTag);
+
+    /** Convenience for {@code PlayerInteractEntityEvent}. */
+    void submitEntityInteract(UUID actorUuid, String actorName, String worldId,
+                              int x, int y, int z, String entityType, String sourceTag);
+
+    /** Convenience for {@code HangingPlaceEvent} (item frame, painting, etc.). */
+    void submitHangingPlace(UUID actorUuid, String actorName, String worldId,
+                            int x, int y, int z, String entityType, String sourceTag);
+
+    /** Convenience for {@code HangingBreakEvent}. */
+    void submitHangingBreak(UUID actorUuid, String actorName, String worldId,
+                            int x, int y, int z, String entityType, String sourceTag);
+
+    // ---- v0.1.0 expansion: world events --------------------------------
+
+    /** Convenience for {@code StructureGrowEvent} (tree/sapling/mushroom growth). */
+    void submitStructureGrow(UUID actorUuid, String actorName, String worldId,
+                             int x, int y, int z, String structureId, String sourceTag);
+
+    // ---- v0.1.0 expansion: generic interaction -------------------------
+
+    /** Convenience for {@code PlayerInteractEvent} (buttons, levers, doors, plates). */
+    void submitClick(UUID actorUuid, String actorName, String worldId,
+                     int x, int y, int z, String targetId, String sourceTag);
 }

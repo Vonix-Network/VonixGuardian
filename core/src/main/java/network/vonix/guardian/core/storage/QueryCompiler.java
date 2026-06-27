@@ -152,6 +152,12 @@ public final class QueryCompiler {
             binds.addAll(f.exclude());
         }
 
+        // rolled_back SQL-side filter
+        if (f.rolledBack() != null) {
+            clauses.add("a.rolled_back = ?");
+            binds.add(f.rolledBack() ? 1 : 0);
+        }
+
         if (!clauses.isEmpty()) {
             sb.append(" WHERE ").append(String.join(" AND ", clauses));
         }

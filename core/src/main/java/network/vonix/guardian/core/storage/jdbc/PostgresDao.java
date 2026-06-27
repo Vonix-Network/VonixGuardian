@@ -7,6 +7,7 @@ import network.vonix.guardian.core.storage.Schema;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.concurrent.Semaphore;
 
 /**
  * PostgreSQL-backed DAO. Connection pool managed by HikariCP. <b>Beta in v0.1.0</b>.
@@ -16,6 +17,11 @@ public final class PostgresDao extends AbstractJdbcDao {
     private final HikariDataSource ds;
 
     public PostgresDao(GuardianConfig.Database cfg) {
+        this(cfg, null, 0);
+    }
+
+    public PostgresDao(GuardianConfig.Database cfg, Semaphore lookupSemaphore, int maxResultRows) {
+        super(lookupSemaphore, maxResultRows);
         HikariConfig hc = new HikariConfig();
         hc.setJdbcUrl(cfg.jdbcUrl());
         if (cfg.user() != null) hc.setUsername(cfg.user());

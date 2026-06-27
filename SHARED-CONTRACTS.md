@@ -39,30 +39,79 @@ network.vonix.guardian
 
 ### 2.1 ActionType (enum)
 
+> **Locked for v0.1.0. Stable integer IDs MUST NOT be reordered.** This list is now 1:1 with the CoreProtect listener surface plus the modded-entity griefing path (`ENTITY_CHANGE_BLOCK`). Adding new types appends to the end with the next free integer.
+
 ```java
 package network.vonix.guardian.core.action;
 
 public enum ActionType {
-    BLOCK_PLACE(1, "+block"),
-    BLOCK_BREAK(2, "-block"),
-    CONTAINER_DEPOSIT(3, "+container"),
-    CONTAINER_WITHDRAW(4, "-container"),
-    ITEM_DROP(5, "-item"),
-    ITEM_PICKUP(6, "+item"),
-    ENTITY_KILL(7, "kill"),
-    EXPLOSION(8, "explosion"),
-    CHAT(9, "chat"),
-    COMMAND(10, "command"),
-    SIGN(11, "sign"),
-    SESSION_JOIN(12, "+session"),
-    SESSION_LEAVE(13, "-session"),
-    USERNAME_CHANGE(14, "username");
+    // --- core block events (1-2) ---
+    BLOCK_PLACE             ( 1, "+block",      Category.BLOCK,     Sign.PLACE),
+    BLOCK_BREAK             ( 2, "-block",      Category.BLOCK,     Sign.BREAK),
+    // --- player container surface (3-4) ---
+    CONTAINER_DEPOSIT       ( 3, "+container",  Category.CONTAINER, Sign.PLACE),
+    CONTAINER_WITHDRAW      ( 4, "-container",  Category.CONTAINER, Sign.BREAK),
+    // --- item flow (5-6) ---
+    ITEM_DROP               ( 5, "-item",       Category.ITEM,      Sign.BREAK),
+    ITEM_PICKUP             ( 6, "+item",       Category.ITEM,      Sign.PLACE),
+    // --- entity surface (7) ---
+    ENTITY_KILL             ( 7, "kill",        Category.ENTITY,    Sign.NEUTRAL),
+    // --- environment (8) ---
+    EXPLOSION               ( 8, "explosion",   Category.WORLD,     Sign.BREAK),
+    // --- communication (9-11) ---
+    CHAT                    ( 9, "chat",        Category.MESSAGE,   Sign.NEUTRAL),
+    COMMAND                 (10, "command",     Category.MESSAGE,   Sign.NEUTRAL),
+    SIGN                    (11, "sign",        Category.MESSAGE,   Sign.NEUTRAL),
+    // --- session (12-14) ---
+    SESSION_JOIN            (12, "+session",    Category.SESSION,   Sign.PLACE),
+    SESSION_LEAVE           (13, "-session",    Category.SESSION,   Sign.BREAK),
+    USERNAME_CHANGE         (14, "username",    Category.SESSION,   Sign.NEUTRAL),
+    // --- v0.1.0 expansion: vanilla griefing surface (15-26) ---
+    BURN                    (15, "burn",        Category.BLOCK,     Sign.BREAK),
+    IGNITE                  (16, "ignite",      Category.BLOCK,     Sign.PLACE),
+    FADE                    (17, "fade",        Category.BLOCK,     Sign.BREAK),
+    FORM                    (18, "form",        Category.BLOCK,     Sign.PLACE),
+    SPREAD                  (19, "spread",      Category.BLOCK,     Sign.PLACE),
+    DISPENSE                (20, "dispense",    Category.BLOCK,     Sign.NEUTRAL),
+    PISTON_EXTEND           (21, "+piston",     Category.BLOCK,     Sign.PLACE),
+    PISTON_RETRACT          (22, "-piston",     Category.BLOCK,     Sign.BREAK),
+    BUCKET_EMPTY            (23, "+bucket",     Category.BLOCK,     Sign.PLACE),
+    BUCKET_FILL             (24, "-bucket",     Category.BLOCK,     Sign.BREAK),
+    LEAVES_DECAY            (25, "decay",       Category.BLOCK,     Sign.BREAK),
+    /** Mob/dragon/ravager-driven block change. THE modded griefing path. */
+    ENTITY_CHANGE_BLOCK     (26, "entityblock", Category.BLOCK,     Sign.NEUTRAL),
+    // --- v0.1.0 expansion: player inventory + crafting (27-31) ---
+    INVENTORY_DEPOSIT       (27, "+inventory",  Category.CONTAINER, Sign.PLACE),
+    INVENTORY_WITHDRAW      (28, "-inventory",  Category.CONTAINER, Sign.BREAK),
+    HOPPER_PUSH             (29, "+hopper",     Category.CONTAINER, Sign.PLACE),
+    HOPPER_PULL             (30, "-hopper",     Category.CONTAINER, Sign.BREAK),
+    ITEM_CRAFT              (31, "craft",       Category.ITEM,      Sign.NEUTRAL),
+    // --- v0.1.0 expansion: entities (32-35) ---
+    ENTITY_SPAWN            (32, "spawn",       Category.ENTITY,    Sign.PLACE),
+    ENTITY_INTERACT         (33, "einteract",   Category.ENTITY,    Sign.NEUTRAL),
+    HANGING_PLACE           (34, "+hanging",    Category.ENTITY,    Sign.PLACE),
+    HANGING_BREAK           (35, "-hanging",    Category.ENTITY,    Sign.BREAK),
+    // --- v0.1.0 expansion: world events (36-38) ---
+    STRUCTURE_GROW          (36, "grow",        Category.WORLD,     Sign.PLACE),
+    PORTAL_CREATE           (37, "portal",      Category.WORLD,     Sign.PLACE),
+    CHUNK_POPULATE          (38, "populate",    Category.WORLD,     Sign.PLACE),
+    // --- v0.1.0 expansion: generic interaction (39) ---
+    CLICK                   (39, "click",       Category.INTERACT,  Sign.NEUTRAL);
 
-    private final int id;          // stable DB id, do NOT reorder
-    private final String token;    // CLI token used in /vg lookup a:<token>
+    public enum Category { BLOCK, CONTAINER, ITEM, ENTITY, WORLD, MESSAGE, SESSION, INTERACT }
+    public enum Sign     { PLACE, BREAK, NEUTRAL }
+
     // standard ctor + getters
-    public static ActionType byId(int id) { ... }
-    public static ActionType byToken(String token) { ... }
+    public int      id();
+    public String   token();
+    public Category category();
+    public Sign     sign();
+
+    public static ActionType byId(int id);          // throws IllegalArgumentException on miss
+    public static ActionType byToken(String token); // throws IllegalArgumentException on miss
+
+    /** Returns all ActionTypes in a Category — used by /vg lookup `a:block` family expansion. */
+    public static java.util.Set<ActionType> family(Category cat);
 }
 ```
 
@@ -241,6 +290,7 @@ public record QueryFilter(
     List<ActionSelect> actions,           // a:block, a:+container, etc.
     List<String> include,                 // i:stone,oak_log
     List<String> exclude,                 // e:tnt,dirt
+    Boolean rolledBack,                   // SQL-side filter. null = either; TRUE = only rolled back; FALSE = only not rolled back
     boolean countOnly,                    // #count
     boolean preview,                      // #preview
     boolean verbose,                      // #verbose
@@ -376,6 +426,8 @@ public record GuardianConfig(
     Actions actions,
     Permissions permissions,
     Lookup lookup,
+    Privacy privacy,
+    Purge purge,
     String theme
 ) {
     public record Database(String type, String file,
@@ -386,14 +438,25 @@ public record GuardianConfig(
     public record Actions(boolean logBlocks, boolean logContainers, boolean logItems,
                           boolean logEntities, boolean logExplosions, boolean logChat,
                           boolean logCommands, boolean logSessions, boolean logSigns,
+                          boolean logInteractions, boolean logWorldEvents,
                           List<String> worldBlacklist, List<String> blockBlacklist,
                           List<String> sourceBlacklist) {}
     public record Permissions(boolean useLuckPerms, int defaultOpLevel) {}
-    public record Lookup(int defaultPageSize, int maxRadius) {}
+    public record Lookup(int defaultPageSize, int maxRadius, int maxResultRows, int maxConcurrent) {}
+    /** IP hashing for SESSION_JOIN. salt must be >= 16 chars when hashIps is true. */
+    public record Privacy(boolean hashIps, String salt) {}
+    /** Minimum age in seconds for /vg purge. CoreProtect parity: 86400 from console, 2592000 in-game. */
+    public record Purge(long minAgeSecondsConsole, long minAgeSecondsInGame) {}
 }
 ```
 
-Defaults (per README). Gson, pretty-printed, comments stripped at load (lenient parsing).
+Defaults match `README.md` plus:
+* `actions.logInteractions = true`, `actions.logWorldEvents = true`
+* `lookup.maxResultRows = 100_000`, `lookup.maxConcurrent = 4`
+* `privacy.hashIps = false`, `privacy.salt = "vonix-guardian-default-salt-CHANGE-ME"` (validator WARN if default in production)
+* `purge.minAgeSecondsConsole = 86_400`, `purge.minAgeSecondsInGame = 2_592_000`
+
+Gson, pretty-printed, comments stripped at load (lenient parsing).
 
 ---
 

@@ -20,6 +20,8 @@ import java.util.UUID;
  *   <li>{@code sinceMillis} / {@code untilMillis} — {@code null} means no
  *       temporal bound on that side.</li>
  *   <li>{@code actions} — empty list means "all action types".</li>
+ *   <li>{@code rolledBack} — {@code null} means "either"; {@code TRUE} only
+ *       rolled-back rows; {@code FALSE} only not-rolled-back rows.</li>
  * </ul>
  *
  * @param users        user selectors from {@code u:} tokens; never {@code null}
@@ -34,6 +36,9 @@ import java.util.UUID;
  * @param actions      action selectors from {@code a:} tokens; empty = all
  * @param include      identifiers from {@code i:} tokens (e.g. {@code minecraft:stone})
  * @param exclude      identifiers from {@code e:} tokens
+ * @param rolledBack   SQL-side rollback-state filter; {@code null} = either,
+ *                     {@code TRUE} = only rolled-back rows, {@code FALSE} = only
+ *                     not-yet-rolled-back rows
  * @param countOnly    {@code #count} flag
  * @param preview      {@code #preview} flag
  * @param verbose      {@code #verbose} flag
@@ -49,6 +54,7 @@ public record QueryFilter(
     List<ActionSelect> actions,
     List<String> include,
     List<String> exclude,
+    Boolean rolledBack,
     boolean countOnly,
     boolean preview,
     boolean verbose,
@@ -72,6 +78,7 @@ public record QueryFilter(
             List.of(), null, null, null, null,
             null, null, null,
             List.of(), List.of(), List.of(),
+            null,
             false, false, false, false
         );
     }
@@ -134,6 +141,7 @@ public record QueryFilter(
         private final List<ActionSelect> actions = new ArrayList<>();
         private final List<String> include = new ArrayList<>();
         private final List<String> exclude = new ArrayList<>();
+        private Boolean rolledBack;
         private boolean countOnly;
         private boolean preview;
         private boolean verbose;
@@ -152,6 +160,7 @@ public record QueryFilter(
         public Builder addAction(ActionSelect a) { actions.add(a); return this; }
         public Builder addInclude(String s) { include.add(s); return this; }
         public Builder addExclude(String s) { exclude.add(s); return this; }
+        public Builder rolledBack(Boolean v) { this.rolledBack = v; return this; }
         public Builder countOnly(boolean v) { this.countOnly = v; return this; }
         public Builder preview(boolean v)   { this.preview   = v; return this; }
         public Builder verbose(boolean v)   { this.verbose   = v; return this; }
@@ -168,6 +177,7 @@ public record QueryFilter(
         public Integer          centerX() { return centerX; }
         public Integer          centerY() { return centerY; }
         public Integer          centerZ() { return centerZ; }
+        public Boolean          rolledBack() { return rolledBack; }
         public boolean          countOnly() { return countOnly; }
         public boolean          preview()   { return preview; }
         public boolean          verbose()   { return verbose; }
@@ -179,6 +189,7 @@ public record QueryFilter(
                 users, sinceMillis, untilMillis, radius, worldSel,
                 centerX, centerY, centerZ,
                 actions, include, exclude,
+                rolledBack,
                 countOnly, preview, verbose, silent
             );
         }

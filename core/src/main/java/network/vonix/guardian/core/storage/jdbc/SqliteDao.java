@@ -6,6 +6,7 @@ import network.vonix.guardian.core.storage.Schema;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -20,6 +21,11 @@ public final class SqliteDao extends AbstractJdbcDao {
     private volatile Connection connection;
 
     public SqliteDao(GuardianConfig.Database cfg) {
+        this(cfg, null, 0);
+    }
+
+    public SqliteDao(GuardianConfig.Database cfg, Semaphore lookupSemaphore, int maxResultRows) {
+        super(lookupSemaphore, maxResultRows);
         String url = cfg != null ? cfg.jdbcUrl() : null;
         if (url == null || url.isBlank()) {
             String file = (cfg != null && cfg.file() != null && !cfg.file().isBlank())
@@ -32,6 +38,12 @@ public final class SqliteDao extends AbstractJdbcDao {
 
     /** Test-only constructor for explicit URLs (e.g. {@code jdbc:sqlite::memory:}). */
     public SqliteDao(String jdbcUrl) {
+        this(jdbcUrl, null, 0);
+    }
+
+    /** Test-only constructor for explicit URLs + rate-limit / row-cap wiring. */
+    public SqliteDao(String jdbcUrl, Semaphore lookupSemaphore, int maxResultRows) {
+        super(lookupSemaphore, maxResultRows);
         this.jdbcUrl = jdbcUrl;
     }
 

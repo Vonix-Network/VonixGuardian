@@ -1,5 +1,8 @@
 package network.vonix.guardian.core.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -21,6 +24,8 @@ import java.util.Set;
  * @param actions      per-category logging toggles + blacklists
  * @param permissions  permission resolution settings
  * @param lookup       {@code /vg lookup} UX settings
+ * @param privacy      IP hashing settings for SESSION_JOIN rows
+ * @param purge        minimum-age floors for {@code /vg purge}
  * @param theme        chat theme key; must be a known {@link ThemeRegistry} entry
  * @since 0.1.0
  */
@@ -31,8 +36,15 @@ public record GuardianConfig(
     Actions actions,
     Permissions permissions,
     Lookup lookup,
+    Privacy privacy,
+    Purge purge,
     String theme
 ) {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GuardianConfig.class);
+
+    /** Default placeholder salt value — validate() emits a WARN if this ships to production with hashIps=true. */
+    public static final String DEFAULT_PRIVACY_SALT = "vonix-guardian-default-salt-CHANGE-ME";
 
     /** Known theme keys (matches the theme registry shipped in {@code core.theme}). */
     public static final Set<String> KNOWN_THEMES =
@@ -84,6 +96,8 @@ public record GuardianConfig(
      * @param logCommands     master toggle for commands
      * @param logSessions     master toggle for join / quit
      * @param logSigns        master toggle for sign edits
+     * @param logInteractions master toggle for player interactions (buttons, levers, doors, etc.)
+     * @param logWorldEvents  master toggle for non-player world events (fire spread, leaf decay, etc.)
      * @param worldBlacklist  world keys (e.g. {@code minecraft:overworld}) to skip
      * @param blockBlacklist  block ids to skip (e.g. {@code minecraft:air})
      * @param sourceBlacklist sourceTag values to skip (e.g. {@code explosion:tnt})
@@ -98,6 +112,8 @@ public record GuardianConfig(
         boolean logCommands,
         boolean logSessions,
         boolean logSigns,
+        boolean logInteractions,
+        boolean logWorldEvents,
         List<String> worldBlacklist,
         List<String> blockBlacklist,
         List<String> sourceBlacklist
@@ -116,8 +132,26 @@ public record GuardianConfig(
      *
      * @param defaultPageSize rows per page (1..50)
      * @param maxRadius       max radius accepted in {@code r:<n>}
+     * @param maxResultRows   absolute cap on result rows materialised per query (100..10_000_000)
+     * @param maxConcurrent   max concurrent lookup queries serviced at once (1..64)
      */
-    public record Lookup(int defaultPageSize, int maxRadius) {}
+    public record Lookup(int defaultPageSize, int maxRadius, int maxResultRows, int maxConcurrent) {}
+
+    /**
+     * IP hashing settings for SESSION_JOIN rows.
+     *
+     * @param hashIps if {@code true}, IP / hostname values are hashed with {@link IpHasher} before persistence
+     * @param salt    HMAC-style salt prefix; must be &ge; 16 chars when {@code hashIps} is {@code true}
+     */
+    public record Privacy(boolean hashIps, String salt) {}
+
+    /**
+     * Minimum-age floors for {@code /vg purge} (CoreProtect parity).
+     *
+     * @param minAgeSecondsConsole minimum age (seconds) for a purge invoked from the server console (&ge; 60)
+     * @param minAgeSecondsInGame  minimum age (seconds) for a purge invoked in-game (&ge; 3600)
+     */
+    public record Purge(long minAgeSecondsConsole, long minAgeSecondsInGame) {}
 
     /**
      * Build the canonical default config matching README &sect; Configuration.
@@ -134,10 +168,13 @@ public record GuardianConfig(
             new LogFile(true, "logs/vonixguardian", true, 30),
             new Actions(
                 true, true, true, true, true, true, true, true, true,
+                true, true,
                 worldBlacklist, blockBlacklist, sourceBlacklist
             ),
             new Permissions(true, 3),
-            new Lookup(7, 10_000),
+            new Lookup(7, 10_000, 100_000, 4),
+            new Privacy(false, DEFAULT_PRIVACY_SALT),
+            new Purge(86_400L, 2_592_000L),
             "aqua"
         );
     }
@@ -158,9 +195,17 @@ public record GuardianConfig(
      *   <li>{@code permissions.defaultOpLevel} ∈ [0, 4]</li>
      *   <li>{@code lookup.defaultPageSize} ∈ [1, 50]</li>
      *   <li>{@code lookup.maxRadius >= 1}</li>
+     *   <li>{@code lookup.maxResultRows} ∈ [100, 10_000_000]</li>
+     *   <li>{@code lookup.maxConcurrent} ∈ [1, 64]</li>
+     *   <li>If {@code privacy.hashIps}: {@code privacy.salt} non-null AND length &ge; 16</li>
+     *   <li>{@code purge.minAgeSecondsConsole >= 60}</li>
+     *   <li>{@code purge.minAgeSecondsInGame >= 3600}</li>
      *   <li>{@code theme} ∈ {@link #KNOWN_THEMES}</li>
      *   <li>No {@code null} elements in any of the {@link Actions} blacklists</li>
      * </ul>
+     *
+     * <p>A WARN is logged (without failing validation) when {@code privacy.hashIps} is true and
+     * {@code privacy.salt} is still the shipped {@link #DEFAULT_PRIVACY_SALT} placeholder.
      *
      * @throws IllegalStateException if any problem is detected; the message lists every problem
      */
@@ -235,6 +280,37 @@ public record GuardianConfig(
             if (lookup.maxRadius < 1) {
                 errors.add("lookup.maxRadius: must be >= 1 (got " + lookup.maxRadius + ")");
             }
+            if (lookup.maxResultRows < 100 || lookup.maxResultRows > 10_000_000) {
+                errors.add("lookup.maxResultRows: must be in [100,10000000] (got " + lookup.maxResultRows + ")");
+            }
+            if (lookup.maxConcurrent < 1 || lookup.maxConcurrent > 64) {
+                errors.add("lookup.maxConcurrent: must be in [1,64] (got " + lookup.maxConcurrent + ")");
+            }
+        }
+
+        boolean warnDefaultSalt = false;
+        if (privacy == null) {
+            errors.add("privacy: section missing");
+        } else if (privacy.hashIps) {
+            if (privacy.salt == null) {
+                errors.add("privacy.salt: must be non-null when privacy.hashIps is true");
+            } else if (privacy.salt.length() < 16) {
+                errors.add("privacy.salt: must be >= 16 chars when privacy.hashIps is true (got "
+                    + privacy.salt.length() + ")");
+            } else if (DEFAULT_PRIVACY_SALT.equals(privacy.salt)) {
+                warnDefaultSalt = true;
+            }
+        }
+
+        if (purge == null) {
+            errors.add("purge: section missing");
+        } else {
+            if (purge.minAgeSecondsConsole < 60L) {
+                errors.add("purge.minAgeSecondsConsole: must be >= 60 (got " + purge.minAgeSecondsConsole + ")");
+            }
+            if (purge.minAgeSecondsInGame < 3600L) {
+                errors.add("purge.minAgeSecondsInGame: must be >= 3600 (got " + purge.minAgeSecondsInGame + ")");
+            }
         }
 
         if (theme == null || !KNOWN_THEMES.contains(theme)) {
@@ -249,6 +325,10 @@ public record GuardianConfig(
                 sb.append("\n  - ").append(e);
             }
             throw new IllegalStateException(sb.toString());
+        }
+
+        if (warnDefaultSalt) {
+            LOG.warn("Privacy.salt is still the default placeholder — change it in production!");
         }
     }
 

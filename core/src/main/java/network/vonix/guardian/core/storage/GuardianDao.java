@@ -39,6 +39,37 @@ public interface GuardianDao extends AutoCloseable {
     /** Resolve / insert world, return world_id. */
     int resolveWorld(String key) throws Exception;
 
+    /**
+     * Open a rollback/restore batch in the audit table. The batch row + all action ids
+     * are inserted in a single JDBC transaction; the batch is left with
+     * {@code completed=0} until {@link #closeRollbackBatch(long)} is called.
+     *
+     * @param actorUuid initiating actor (nullable for console)
+     * @param mode      {@code 0=ROLLBACK}, {@code 1=RESTORE}
+     * @param filterJson the original filter JSON; nullable
+     * @param actionIds the action ids affected by this batch
+     * @return the new batch id
+     * @throws Exception on DB failure (transaction rolled back)
+     */
+    long openRollbackBatch(UUID actorUuid, int mode, String filterJson, List<Long> actionIds) throws Exception;
+
+    /**
+     * Mark a previously opened rollback batch as completed.
+     *
+     * @param batchId the batch id returned by {@link #openRollbackBatch}
+     * @return number of rows updated (0 if no such batch, 1 on success)
+     */
+    int closeRollbackBatch(long batchId) throws Exception;
+
+    /**
+     * Crash-recovery: return the action ids belonging to rollback batches that were opened
+     * but never completed. Used by {@code Guardian} on startup to either complete or roll
+     * back the in-flight operations from the previous process lifetime.
+     *
+     * @return action ids in incomplete batches, in insertion order (may be empty)
+     */
+    List<Long> findIncompleteBatchActionIds() throws Exception;
+
     /** Health check. */
     boolean isHealthy();
 
