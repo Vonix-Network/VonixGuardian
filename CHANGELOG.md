@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `docs/USAGE.md` — comprehensive operator's guide: TL;DR cheat sheet, filter syntax reference, all 39 action types, sentinel tokens for modded griefing attribution, common workflows (inspect / near / lookup / rollback+undo / mass purge), rollback transactional semantics, status/health/reload, LuckPerms node reference, verified-live boot matrix with timings + library packaging per loader, troubleshooting guide.
+- `docs/INSTALL.md` — server-side install procedure, prerequisites per loader+MC, SHA-256 verification, first-boot verification.
+- `docs/CONFIG.md` — full `config.json` reference: every field with type, default, valid range, reload-vs-restart matrix.
+- `docs/PERMISSIONS.md` — every LuckPerms node, op-level fallback, `bypass` + `viewothers` security semantics.
+- `docs/MIGRATION.md` — storage backend switching, version upgrade procedure, no-import-from-CoreProtect-yet status.
+- `docs/DATABASE.md` — full schema reference (8 tables, 4 indices, ER diagram), backup/restore procedures per backend, direct SQL query examples.
+- `docs/DEVELOPMENT.md` — contributor environment setup, IDE config (IntelliJ + Loom/ForgeGradle/NeoGradle), adding an ActionType, CI overview.
+- `docs/ARCHITECTURE.md` — deep-dive: core/ engine → mc-common → loader glue layering, event flow, threading model, soft-dep pattern.
+- `docs/API.md` — public Java API for third-party mods: soft-dep reflection pattern, `EventSubmitter` reference, `Guardian` facade, worked example.
+- `docs/MODDED-ATTRIBUTION.md` — the differentiating feature documented in depth: TamableAnimal/OwnableEntity/Projectile/passenger chain, sentinel tokens, worked examples (Dragon Mounts, Create, wither).
+- `docs/FAQ.md` — 40 Q&A covering compatibility (Create, Pixelmon, Dragon Mounts, MineColonies, WorldEdit), performance, security, operations, contributing.
+- `CONTRIBUTING.md` — contribution workflow, branch + commit conventions, DCO sign-off, code style, PR process, what we will not accept.
+- `SECURITY.md` — public disclosure policy, response SLA, scope, separate from internal `SECURITY-AUDIT.md`.
 - README link to `docs/USAGE.md` + CHANGELOG + SHARED-CONTRACTS.
 - `.coderabbit.yaml` — auto-review config including `release/*` and `baseline-*` base branches.
 

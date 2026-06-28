@@ -125,9 +125,28 @@ MIT. See [LICENSE](LICENSE). Inspired by CoreProtect (Artistic-2.0, separate cod
 
 ## Documentation
 
-- [docs/USAGE.md](docs/USAGE.md) — operator's guide: command reference, filters, rollback walkthrough, troubleshooting.
-- [CHANGELOG.md](CHANGELOG.md) — release history (Keep a Changelog format).
-- [SHARED-CONTRACTS.md](SHARED-CONTRACTS.md) — internal contracts (developers).
+**Operator guides**
+- [docs/INSTALL.md](docs/INSTALL.md) — install procedure, prerequisites, SHA-256 verification, first boot.
+- [docs/USAGE.md](docs/USAGE.md) — command reference, filter syntax, rollback walkthrough, troubleshooting.
+- [docs/CONFIG.md](docs/CONFIG.md) — full `config.json` reference: every field with type, default, valid values, reload-vs-restart matrix.
+- [docs/PERMISSIONS.md](docs/PERMISSIONS.md) — LuckPerms nodes, op-level fallback, `bypass` + `viewothers` semantics.
+- [docs/DATABASE.md](docs/DATABASE.md) — schema (ER diagram), backup/restore per backend, direct SQL examples.
+- [docs/MIGRATION.md](docs/MIGRATION.md) — switching storage backends, version upgrades, downgrade safety.
+- [docs/FAQ.md](docs/FAQ.md) — compatibility (Create, Pixelmon, Dragon Mounts, WorldEdit, …), performance, security, ops.
+
+**Developer reference**
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — engine layering, event flow, threading model, soft-dep pattern.
+- [docs/API.md](docs/API.md) — public Java API for third-party mods (soft-dep reflection pattern, `EventSubmitter`).
+- [docs/MODDED-ATTRIBUTION.md](docs/MODDED-ATTRIBUTION.md) — universal griefing-attribution chain (the differentiating feature).
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — environment setup, IDE config, adding an `ActionType`, CI overview.
+- [SHARED-CONTRACTS.md](SHARED-CONTRACTS.md) — internal type contracts.
+- [SHARED-LOADER-CONTRACTS.md](SHARED-LOADER-CONTRACTS.md) — loader-glue contracts.
+- [LIBRARY-PACKAGING.md](LIBRARY-PACKAGING.md) — shade-unrelocated vs JarInJar strategy per loader.
+
+**Project**
+- [CHANGELOG.md](CHANGELOG.md) — release history (Keep a Changelog).
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution workflow, commit conventions, DCO.
+- [SECURITY.md](SECURITY.md) — public security disclosure policy.
 
 ## Credits
 

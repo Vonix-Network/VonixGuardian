@@ -178,9 +178,12 @@ vonixguardian.command.viewothers  ← lookup/rollback can target other users wit
 
 Without LP, permission level 3 (`op`) is required for all commands.
 
-## Verified-live boot matrix (v0.1.0)
+## Verified-live boot matrix (v1.0.0)
 
-All 8 jars boot cleanly on a real server with SQLite schema initialised:
+All 8 jars boot cleanly on a real server with SQLite schema initialised.
+Three jars (NeoForge 1.21.1, Forge 1.20.1, Fabric 1.21.1) were re-verified against the
+final v1.0.0 release artifacts downloaded from GitHub on 2026-06-28 — all green, SHA-256
+matches `SHA256SUMS` published with the release.
 
 | Loader | MC | Library packaging | Boot time | Status |
 |---|---|---|---|---|
