@@ -16,27 +16,38 @@ rootProject.name = 'VonixGuardian'
 
 // Build profile: 'core' builds only :core; 'mc1211' adds 1.21.1 NeoForge + common;
 // 'all' adds every MC version + loader. Default = 'all' when unset.
+// 'forgeonly' = every Forge + NeoForge module, skipping Fabric (avoids fabric-loom
+// classloader conflict during cross-version builds; v1.0.1 hotfix only touches
+// Forge-family loaders, so this profile is the canonical hotfix-build profile).
 def profile = providers.gradleProperty('buildProfile').getOrElse('all')
 
 // Pure-Java engine (no MC).
 include 'core'
 
-if (profile == 'mc1211' || profile == 'all') {
+if (profile == 'mc1211' || profile == 'all' || profile == 'forgeonly') {
     include ':mc-1.21.1:neoforge'
+}
+if (profile == 'mc1211' || profile == 'all') {
     include ':mc-1.21.1:fabric'
 }
 
-if (profile == 'mc1201' || profile == 'all') {
-    include ':mc-1.20.1:fabric'
+if (profile == 'mc1201' || profile == 'all' || profile == 'forgeonly') {
     include ':mc-1.20.1:forge'
 }
-
-if (profile == 'mc1192' || profile == 'all') {
-    include ':mc-1.19.2:fabric'
-    include ':mc-1.19.2:forge'
+if (profile == 'mc1201' || profile == 'all') {
+    include ':mc-1.20.1:fabric'
 }
 
+if (profile == 'mc1192' || profile == 'all' || profile == 'forgeonly') {
+    include ':mc-1.19.2:forge'
+}
+if (profile == 'mc1192' || profile == 'all') {
+    include ':mc-1.19.2:fabric'
+}
+
+if (profile == 'mc1182' || profile == 'all' || profile == 'forgeonly') {
+    include ':mc-1.18.2:forge'
+}
 if (profile == 'mc1182' || profile == 'all') {
     include ':mc-1.18.2:fabric'
-    include ':mc-1.18.2:forge'
 }

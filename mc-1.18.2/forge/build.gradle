@@ -88,7 +88,15 @@ shadowJar {
         exclude(dependency('com.zaxxer:HikariCP:.*'))
     }
     mergeServiceFiles()
-    exclude 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/maven/**', 'module-info.class'
+    // Exclude module-info at top level AND every multi-release variant
+    // (META-INF/versions/N/module-info.class). Gson 2.10.1 ships its module
+    // descriptor as a Java-9+ multi-release entry; without the wildcard exclude
+    // it survives shading and conflicts with Forge's own Gson module when
+    // Sinytra Connector's ModuleLayerMigrator rewrites the module layer at
+    // boot. The conflict is silent — no crash report, JVM is killed during
+    // ModuleLayer construction. See VonixGuardian#1.0.1 root cause.
+    exclude 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/maven/**',
+            'module-info.class', 'META-INF/versions/*/module-info.class'
 }
 
 // Merge ForgeGradle's jarJar output (META-INF/jarjar/<artifact>.jar + metadata.json)

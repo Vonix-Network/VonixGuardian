@@ -123,7 +123,15 @@ shadowJar {
     exclude 'META-INF/*.RSA'
     exclude 'META-INF/*.SF'
     exclude 'META-INF/maven/**'
+    // Exclude module-info at top level AND every multi-release variant
+    // (META-INF/versions/N/module-info.class). Gson 2.10.1 ships its module
+    // descriptor as a Java-9+ multi-release entry; without the wildcard exclude
+    // it survives shading and conflicts with NeoForge's own Gson module when
+    // any Fabric-on-Forge compatibility layer (e.g. Sinytra Connector) rewrites
+    // the module layer at boot. The conflict is silent — no crash report, JVM
+    // is killed during ModuleLayer construction. See VonixGuardian#1.0.1.
     exclude 'module-info.class'
+    exclude 'META-INF/versions/*/module-info.class'
 }
 
 // NeoForge's jarJar plugin writes META-INF/jarjar/<artifact>.jar + metadata.json

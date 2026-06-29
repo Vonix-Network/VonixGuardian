@@ -37,7 +37,7 @@ public final class ForgeBootstrap {
 
     public static void onServerStarting(ServerStartingEvent ev) throws Exception {
         MinecraftServer server = ev.getServer();
-        Path dataDir = server.getServerDirectory().toPath();
+        Path dataDir = resolveServerDir(server);
         Path configPath = dataDir.resolve("config").resolve("vonixguardian").resolve("config.json");
         GuardianConfig config = ConfigLoader.load(configPath);
 
@@ -74,5 +74,23 @@ public final class ForgeBootstrap {
         }
         VonixGuardianForge.setGuardian(null);
         ForgeEvents.reset();
+    }
+
+    /**
+     * Sinytra Connector remaps {@code MinecraftServer.getServerDirectory()} to return
+     * {@code java.nio.file.Path} instead of {@code java.io.File}. Resolve via
+     * reflection so both signatures work. See VonixGuardian#1.0.1.
+     */
+    private static java.nio.file.Path resolveServerDir(net.minecraft.server.MinecraftServer server) {
+        try {
+            java.lang.reflect.Method m = server.getClass().getMethod("getServerDirectory");
+            Object r = m.invoke(server);
+            if (r instanceof java.nio.file.Path p) return p;
+            if (r instanceof java.io.File f) return f.toPath();
+            return java.nio.file.Paths.get("").toAbsolutePath();
+        } catch (ReflectiveOperationException e) {
+            LOG.warn(Guardian.MARKER, "getServerDirectory() reflection failed, using cwd", e);
+            return java.nio.file.Paths.get("").toAbsolutePath();
+        }
     }
 }

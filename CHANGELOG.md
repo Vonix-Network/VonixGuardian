@@ -5,7 +5,43 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — 2026-06-27
+## [1.0.1] — 2026-06-29
+
+**Hotfix: silent boot kill on Forge/NeoForge servers running Sinytra Connector.**
+
+### Fixed (critical, all Forge-family loaders)
+
+#### 1. Silent boot kill from leaked Gson module descriptor
+
+- **Leaked `META-INF/versions/9/module-info.class` from shaded Gson 2.10.1.** Gson 2.10.1 ships its module descriptor (`module com.google.gson@2.10.1`) as a Java-9+ multi-release entry under `META-INF/versions/9/module-info.class`. The Shadow `exclude 'module-info.class'` directive only stripped the top-level entry, leaving the multi-release variant intact. When a Fabric-on-Forge compatibility layer (e.g. Sinytra Connector ≥ `1.0.0-beta.46+1.20.1`) rewrites the module layer at boot via `org.sinytra.connector.service.hacks.ModuleLayerMigrator`, the JPMS sees VonixGuardian's outer jar claiming to be the `com.google.gson` module — which conflicts with the loader's own Gson module already in the layer. ModuleLayer construction fails inside a native frame, so no Forge crash report is written; the JVM is killed silently mid-boot. Symptom: log truncates at the line `Successfully made module authlib transformable`, no FML failure, no `crash-reports/*.txt`, Wings sees the server go offline within ~10s of start.
+- **Fix:** all 4 Forge-family `build.gradle` files now exclude both `module-info.class` and `META-INF/versions/*/module-info.class` from the Shadow output. Verified `unzip -l vonixguardian-forge-1.20.1-1.0.1.jar | grep versions/9/module-info` returns nothing.
+
+#### 2. `NoSuchMethodError: MinecraftServer.getServerDirectory()` on Sinytra-Connector servers
+
+- **Cause.** Sinytra Connector remaps `MinecraftServer.getServerDirectory()` to return `java.nio.file.Path` (the post-1.21.2 Mojang signature) instead of the Forge-1.20.1-compiled `java.io.File`. VG's bootstrap call site, compiled against the official Forge MDK signature, throws `NoSuchMethodError` at `onServerStarting` on Connector-enabled servers. Stack trace points at `ForgeBootstrap.java:40`.
+- **Fix.** Replaced direct call with `resolveServerDir(server)` reflection helper in all 3 Forge bootstraps (`mc-1.18.2`, `mc-1.19.2`, `mc-1.20.1`). The helper invokes `getServerDirectory()` via `Method.invoke()` and accepts both `Path` and `File` return types (fallback: `Paths.get("").toAbsolutePath()` which equals the Wings working directory). NeoForge 1.21.1 unaffected (vanilla signature is already `Path`).
+
+### Build system
+
+- Added `buildProfile=forgeonly` to `settings.gradle` to skip Fabric modules during Forge-family-only builds. Works around a fabric-loom-1.7.4 cross-version classloader conflict when configuring Loom plugins from multiple sibling Fabric subprojects simultaneously (`BuildSharedServiceManager$Inject` ClassCastException). Hotfix-build canonical command: `./gradlew -PbuildProfile=forgeonly :mc-1.18.2:forge:shadowJar :mc-1.19.2:forge:shadowJar :mc-1.20.1:forge:shadowJar :mc-1.21.1:neoforge:shadowJar`.
+
+### Known issues (deferred to v1.0.2)
+
+- On Sinytra Connector servers, the `/vg` command tree fails to register with `NoSuchMethodError: 'LiteralArgumentBuilder net.minecraft.commands.Commands.literal(String)'`. Connector remaps `Commands.literal()` similarly to `getServerDirectory()`. VG's core auditing and rollback engine still function — only the in-game command surface is missing. Console-side use is unaffected. Permission-based `/co i` interop layer is unaffected.
+
+### Verified
+
+- All 4 Forge-family jars rebuilt clean. `META-INF/versions/9/module-info.class` confirmed absent in every jar.
+- Boot-tested `vonixguardian-forge-1.20.1-1.0.1.jar` against Sinytra Connector `1.0.0-beta.47+1.20.1` (matching production Linggango server). Result: Forge `Done (3.248s)!` reached, `VonixGuardian online` log line emitted, server stays running. Boot kill regression fixed.
+
+### Scope of impact (v1.0.0 → v1.0.1)
+
+- Fabric jars (4): unaffected by the bug, identical behavior to v1.0.0. Upgrade is optional (re-released for version-string consistency).
+- Forge/NeoForge jars (4): **mandatory upgrade** for any server running Sinytra Connector, Forgix, or any other mod that rewrites the JPMS module layer at boot. Servers without layer manipulation will also benefit (defensive fix).
+
+---
+
+
 
 **First production-grade release.** All 8 jars live-boot-validated on real servers (NeoForge 1.21.1, Forge 1.18.2/1.19.2/1.20.1, Fabric all 4) with SQLite schema initialised, `/vg` command tree registered, zero JPMS/JNI failures, zero shaded-library leaks. CoreProtect 1:1 feature parity carried over from v0.1.0 — this release fixes the production blockers that would have stopped v0.1.0 from working in the wild.
 
