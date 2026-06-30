@@ -143,6 +143,32 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void steadyTrickle_stillFlushesWithinWindow() throws Exception {
+        // REGRESSION: previously, the worker only flushed when poll() timed out (head ==
+        // null) or batchSize was reached. A steady arrival rate that kept poll() returning
+        // a non-null head while never filling batchSize meant the batch sat forever, hence
+        // /vg lookup couldn't see events until shutdown forced drainAndFlush. This test
+        // submits items at a cadence faster than flushIntervalMs (50 ms here: one every
+        // ~10 ms) but slower than batchSize=100, and asserts they reach the sink within
+        // one flush-window-and-change. Don't change the flushIntervalMs / cadence ratio
+        // without thinking about what's being asserted.
+        CapturingSink sink = new CapturingSink(20);
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(256, 50L, 100, sink, DAEMON)) {
+            for (int i = 0; i < 20; i++) {
+                q.submit(action(i));
+                Thread.sleep(10);  // steady trickle, never lets the poll() time out
+            }
+            // 20 items at one-every-10ms = ~200ms wall, plus one flush window (50ms).
+            // 1 second is generous.
+            assertThat(sink.latch.await(1, TimeUnit.SECONDS))
+                    .as("steady trickle must flush within window even without batchSize")
+                    .isTrue();
+            assertThat(sink.seen).hasSize(20);
+            assertThat(q.dropped()).isZero();
+        }
+    }
+
+    @Test
     void close_terminatesWorkerThread() throws Exception {
         CapturingSink sink = new CapturingSink(0);
         List<Thread> spawned = new ArrayList<>();

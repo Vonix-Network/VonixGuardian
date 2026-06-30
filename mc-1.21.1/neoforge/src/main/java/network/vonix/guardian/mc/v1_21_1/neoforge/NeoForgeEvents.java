@@ -22,6 +22,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.CommandEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
@@ -286,6 +287,13 @@ public final class NeoForgeEvents {
             if (!c.actions().logEntities()) return;
             Entity e = ev.getEntity();
             if (!(e instanceof LivingEntity) || e instanceof Player) return;
+            // P0-7 classification: filter chunk-load reanimations. EntityJoinLevelEvent
+            // fires for every entity, INCLUDING entities loading back into memory when a
+            // chunk re-loads — that produced the ENTITY_SPAWN flood (213M dropped events
+            // in 16 min on SB4). The full MobSpawnType classifier (NATURAL/SPAWNER/EGG/
+            // BREEDING/etc.) needs LivingSpawnEvent.CheckSpawn or a Mixin and is queued for
+            // 1.0.5; this filter cuts the bulk of the noise in 1.0.4.
+            if (ev.loadedFromDisk()) return;
             String type = EntitySentinel.of(e);
             long now = System.currentTimeMillis();
             Long last = SPAWN_LIMIT.get(type);
@@ -294,7 +302,7 @@ public final class NeoForgeEvents {
             BlockPos pos = e.blockPosition();
             s.submitEntitySpawn(null, type,
                     WorldKey.of(ev.getLevel()),
-                    pos.getX(), pos.getY(), pos.getZ(), type, null);
+                    pos.getX(), pos.getY(), pos.getZ(), type, "spawn:join");
         } catch (Throwable t) {
             // Rate-limit: one warn per minute per error class, otherwise this
             // can fire thousands of times per second on heavy modpacks where
@@ -360,8 +368,15 @@ public final class NeoForgeEvents {
 
     // ====================================================================== chat / commands
 
-    /** Server chat -> CHAT row. */
-    @SubscribeEvent
+    /**
+     * Capture chat at {@code EventPriority.HIGHEST} with {@code receiveCanceled=true} so we
+     * log the message BEFORE any other mod (anti-spam, chat-filter, mute) gets a chance to
+     * cancel it, AND we still receive cancelled events from earlier listeners. NeoForge's
+     * event-bus order is HIGHEST→HIGH→NORMAL→LOW→LOWEST, so HIGHEST runs first; pair with
+     * receiveCanceled to match CoreProtect's contract: "log the chat as the user typed it,
+     * even if downstream cancels broadcast".
+     */
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public static void onServerChat(ServerChatEvent ev) {
         try {
             EventSubmitter s = sub();
@@ -594,7 +609,7 @@ public final class NeoForgeEvents {
             if (ev.getPistonMoveType() == PistonEvent.PistonMoveType.EXTEND) {
                 s.submitPistonExtend(null, Sentinel.PISTON, worldId,
                         pos.getX(), pos.getY(), pos.getZ(), blockId, Sentinel.PISTON);
-            } else {
+            } else if (ev.getPistonMoveType() == PistonEvent.PistonMoveType.RETRACT) {
                 s.submitPistonRetract(null, Sentinel.PISTON, worldId,
                         pos.getX(), pos.getY(), pos.getZ(), blockId, Sentinel.PISTON);
             }
@@ -602,6 +617,14 @@ public final class NeoForgeEvents {
             LOG.warn(Guardian.MARKER, "onPistonPre failed", t);
         }
     }
+
+    // ====================================================================== buckets
+
+    // TODO(1.0.5): NeoForge 21.1 removed the public FillBucketEvent that 1.20.1 Forge
+    // exposes — the bucket fill/empty path is now handled internally by BucketItem /
+    // CommonHooks#onFillBucket without a fire-able event. CoreProtect-parity bucket
+    // logging here requires either (a) a Mixin into BucketItem#use, or (b) listening
+    // to BlockEvent.FluidPlaceBlockEvent + a UseItemOnBlockEvent pre-check. Deferred.
 
     // ====================================================================== commands wiring
 

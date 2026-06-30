@@ -118,6 +118,17 @@ public final class GuardianCommands {
         return new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z);
     }
 
+    /**
+     * Returns the caller's current world-id when the source is a player, else
+     * {@code null}. Used to default {@link QueryFilter#worldSel()} so player-issued
+     * lookups stay scoped to the player's current dimension (CoreProtect default)
+     * instead of leaking events from every dimension. Console callers get
+     * {@code null} → no default → global (intentional).
+     */
+    private static String playerWorldOf(CommandSourceStack src) {
+        return src.getEntity() instanceof ServerPlayer p ? WorldKey.of(p.level()) : null;
+    }
+
     private static UUID actorUuid(CommandSourceStack src) {
         return src.getEntity() instanceof ServerPlayer p ? p.getUUID() : null;
     }
@@ -170,7 +181,7 @@ public final class GuardianCommands {
         private static int runWithFilter(CommandSourceStack src, Guardian g, String raw) {
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src));
+                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
@@ -210,7 +221,7 @@ public final class GuardianCommands {
             String raw = StringArgumentType.getString(ctx, "filter");
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src));
+                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
@@ -250,7 +261,7 @@ public final class GuardianCommands {
             String raw = StringArgumentType.getString(ctx, "filter");
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src));
+                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
@@ -288,7 +299,7 @@ public final class GuardianCommands {
             String raw = StringArgumentType.getString(ctx, "filter");
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src));
+                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;

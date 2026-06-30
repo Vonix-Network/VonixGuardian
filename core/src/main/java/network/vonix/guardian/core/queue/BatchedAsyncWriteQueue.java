@@ -151,18 +151,40 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
 
     private void runWorker() {
         final List<Action> batch = new ArrayList<>(batchSize);
+        final long flushIntervalNs = TimeUnit.MILLISECONDS.toNanos(flushIntervalMs);
+        long lastFlushNs = System.nanoTime();
         while (!shutdown || !queue.isEmpty()) {
             try {
-                Action head = queue.poll(flushIntervalMs, TimeUnit.MILLISECONDS);
+                // Time-budgeted poll: never wait longer than the remaining slice of the
+                // current flush window. Guarantees any submitted action lands in the sink
+                // within flushIntervalMs even under a steady trickle of arrivals that
+                // would otherwise keep poll() returning a non-null head forever and never
+                // letting batchSize fill — that was the read-after-write visibility bug
+                // (admins ran /vg lookup, saw nothing, restarted to "surface" rows; in
+                // reality drainAndFlush was force-flushing what runWorker never had cause
+                // to flush). See Kafka producer linger.ms / log4j2 AsyncAppender for
+                // prior art.
+                long elapsedNs = System.nanoTime() - lastFlushNs;
+                long remainingNs = flushIntervalNs - elapsedNs;
+                long pollMs = remainingNs > 0
+                        ? Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNs))
+                        : 1L;
+                Action head = queue.poll(pollMs, TimeUnit.MILLISECONDS);
                 if (head != null) {
                     batch.add(head);
                     queue.drainTo(batch, batchSize - batch.size());
                 }
-                // Flush if we hit batchSize, or if we have anything pending and the poll timed
-                // out (head == null), or if we're shutting down with leftovers.
-                if (!batch.isEmpty() && (batch.size() >= batchSize || head == null || shutdown)) {
+                boolean windowExpired = (System.nanoTime() - lastFlushNs) >= flushIntervalNs;
+                // Flush if we hit batchSize, the flush window expired (time-up), or we're
+                // shutting down with leftovers.
+                if (!batch.isEmpty() && (batch.size() >= batchSize || windowExpired || shutdown)) {
                     flushWithRetry(new ArrayList<>(batch));
                     batch.clear();
+                    lastFlushNs = System.nanoTime();
+                } else if (batch.isEmpty() && windowExpired) {
+                    // Reset the window so an idle queue doesn't perpetually report
+                    // "windowExpired" the moment the next action arrives.
+                    lastFlushNs = System.nanoTime();
                 }
             } catch (InterruptedException ie) {
                 // Treated as a shutdown signal; loop condition will re-check `shutdown` and
@@ -170,6 +192,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 if (!batch.isEmpty()) {
                     flushWithRetry(new ArrayList<>(batch));
                     batch.clear();
+                    lastFlushNs = System.nanoTime();
                 }
                 if (shutdown) {
                     break;

@@ -88,6 +88,28 @@ public record QueryFilter(
         return new Builder();
     }
 
+    /**
+     * Returns a copy of this filter with {@link #worldSel} defaulted to the given
+     * {@code worldId} when the caller did not specify {@code w:} / {@code r:#world_*}
+     * / {@code r:#global}. Used by player-issued lookups so the implicit default
+     * matches CoreProtect: the caller's current world. Console-issued lookups
+     * should NOT use this — they intentionally see global.
+     *
+     * <p>If this filter already has any {@link #worldSel} set (either a specific
+     * world or {@code global=true}), this returns {@code this} unchanged.
+     */
+    public QueryFilter withDefaultWorld(String worldId) {
+        if (worldSel != null) return this;
+        if (worldId == null || worldId.isBlank()) return this;
+        return new QueryFilter(
+            users, sinceMillis, untilMillis, radius,
+            new WorldSel(worldId, false),
+            centerX, centerY, centerZ,
+            actions, include, exclude,
+            rolledBack, countOnly, preview, verbose, silent
+        );
+    }
+
     // --- nested value types -------------------------------------------------
 
     /**

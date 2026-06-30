@@ -5,6 +5,82 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] — 2026-06-30
+
+**Read-after-write fix + CoreProtect parity hotfix wave.**
+
+### Fixed
+
+- **`/vg lookup` returned stale results until server restart** (user report:
+  "admin breaks something then runs lookup and it doesn't show recent
+  interactions; restart brings the interactions to the surface"). Root cause
+  was a flush-trigger bug in `BatchedAsyncWriteQueue.runWorker()`: it only
+  flushed the in-memory batch when `poll()` timed out OR the batch hit
+  `batchSize`. A steady arrival rate (anything faster than `flushIntervalMs`)
+  kept `poll()` returning a non-null head, so the batch grew without ever
+  flushing to SQLite. `drainAndFlush()` on shutdown then dumped the buffer,
+  which is what made restart appear to "surface" the rows. **Fix**: switched
+  to a **time-budgeted poll** (Kafka `linger.ms` / log4j2 `AsyncAppender`
+  pattern). Worker now computes the remaining slice of the current
+  flush-window for every `poll()` call and force-flushes when the window
+  expires, regardless of batch fill. Verified end-to-end with a 10-command
+  trickle smoketest at /root/staging/vg-smoketest/forge-1.20.1: all rows
+  landed within one flush window.
+- **`/vg lookup` cross-dimension scoping** (user report: "Lookup appears to
+  see cross dimensions?"). `AbstractJdbcDao.buildWhereClause` only applied
+  the world filter when `WorldSel` was explicitly set, so player-issued
+  lookups without an explicit `w:` token returned events from every
+  dimension. CoreProtect's default = caller's current world. Fixed in
+  `QueryParser.parse` — when the source is a player and no `w:` token is
+  present, the caller's current world is now folded into the filter at
+  parse-time. NeoForge inspector-wand path was already correct.
+- **`PISTON_RETRACT` action type never emitted**. `onPistonPre` had a binary
+  `else` branch on `PistonMoveType` that fell into the `RETRACT` submit even
+  for non-EXTEND/non-RETRACT pulses, but the `Pre` event fires both
+  directions — net effect was that the EXTEND branch took everything and
+  RETRACT was dead. Replaced with explicit `else if (RETRACT)`; both
+  directions now produce their own rows. Across all 4 Forge-family loaders.
+- **`ENTITY_SPAWN` flood**. `EntityJoinLevelEvent` fires for every entity,
+  *including* chunk-load reanimations (the cause of the 213M dropped events
+  observed on SB4 in 16 min after a restart). Now skipped when
+  `ev.loadedFromDisk()` returns true, and the surviving rows tag
+  `sourceTag = "spawn:join"` so future log-mining can spot them. Full
+  `MobSpawnType` classification (`NATURAL` vs `SPAWNER` vs `EGG` vs
+  `BREEDING`) is queued for 1.0.5 — needs `LivingSpawnEvent.CheckSpawn` plus
+  a small spawn-cause cache; this filter alone cuts the bulk of the noise.
+
+### Added
+
+- **`BUCKET_FILL` / `BUCKET_EMPTY` parity**. New `onFillBucket` handler on
+  every Forge/NeoForge loader using `FillBucketEvent`. Distinguishes
+  fill-vs-empty by inspecting the player's held item (`minecraft:bucket` =
+  fill, anything else = empty). Resolves the affected block via the
+  raytrace `BlockHitResult`. Water/lava grief is the canonical CoreProtect
+  rescue case; it now has 0% → 100% Forge-family coverage.
+- **Chat captured at `EventPriority.HIGHEST` with `receiveCanceled=true`**
+  (Forge 1.18.2/1.19.2/1.20.1, NeoForge 1.21.1). Previously VG ran at default
+  priority, so any anti-spam/chat-filter mod that cancelled `ServerChatEvent`
+  first would have its cancelled messages dropped from VG too. Forge's bus
+  order is `HIGHEST→HIGH→NORMAL→LOW→LOWEST` (higher fires first), so HIGHEST
+  guarantees VG runs before any default-priority canceller; `receiveCanceled`
+  closes the remaining hole where an even-higher-priority listener cancels
+  the event. Net result: we now log the chat as the user typed it, even when
+  a downstream mod cancels broadcast — matches CP's contract.
+
+### Notes
+
+- The `/root/staging/coreprotect-parity-matrix-v2.md` audit (generated this
+  release) catalogues every CoreProtect listener vs VG handler across all
+  four MC versions × three loaders. 8 P0 items identified; this release
+  closes 4 (chat priority, piston retract, spawn filter, bucket
+  fill/empty). The remaining 4 P0 items (Fabric BLOCK_PLACE; SIGN edits
+  via mixin; HANGING place/break; deeper `ENTITY_CHANGE_BLOCK` beyond
+  LivingDestroyBlock) are tracked for 1.0.5 because they require
+  mixin scaffolding rather than `@SubscribeEvent` additions.
+- Wave A (queue flush) is the user-visible fix. Wave B (parity matrix)
+  is the documentation artefact. Wave C (this release's P0 closures)
+  is the listener wiring. Wave D (1.0.5) will be the mixin wave.
+
 ## [1.0.3] — 2026-06-30
 
 **Rollback handler completion: `/vg rollback` and `/vg restore` now cover the v0.1.0 griefing expansion.**

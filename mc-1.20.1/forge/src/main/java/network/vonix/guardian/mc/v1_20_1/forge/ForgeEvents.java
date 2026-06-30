@@ -17,10 +17,13 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
@@ -30,12 +33,14 @@ import net.minecraftforge.event.entity.item.ItemTossEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingDestroyBlockEvent;
+import net.minecraftforge.event.entity.player.FillBucketEvent;
 import net.minecraftforge.event.entity.player.PlayerContainerEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.event.level.ExplosionEvent;
 import net.minecraftforge.event.level.PistonEvent;
+import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.Attribution;
@@ -285,6 +290,13 @@ public final class ForgeEvents {
             if (!c.actions().logEntities()) return;
             Entity e = ev.getEntity();
             if (!(e instanceof LivingEntity) || e instanceof Player) return;
+            // P0-7 classification: filter chunk-load reanimations. EntityJoinLevelEvent
+            // fires for every entity, INCLUDING entities loading back into memory when a
+            // chunk re-loads — that produced the ENTITY_SPAWN flood (213M dropped events
+            // in 16 min on SB4). The full MobSpawnType classifier (NATURAL/SPAWNER/EGG/
+            // BREEDING/etc.) needs LivingSpawnEvent.CheckSpawn or a Mixin and is queued for
+            // 1.0.5; this filter cuts the bulk of the noise in 1.0.4.
+            if (ev.loadedFromDisk()) return;
             String type = EntitySentinel.of(e);
             long now = System.currentTimeMillis();
             Long last = SPAWN_LIMIT.get(type);
@@ -293,7 +305,7 @@ public final class ForgeEvents {
             BlockPos pos = e.blockPosition();
             s.submitEntitySpawn(null, type,
                     WorldKey.of(ev.getLevel()),
-                    pos.getX(), pos.getY(), pos.getZ(), type, null);
+                    pos.getX(), pos.getY(), pos.getZ(), type, "spawn:join");
         } catch (Throwable t) {
             // Rate-limit: one warn per minute per error class, otherwise this
             // can fire thousands of times per second on heavy modpacks where
@@ -357,7 +369,15 @@ public final class ForgeEvents {
 
     // ====================================================================== chat / commands
 
-    @SubscribeEvent
+    /**
+     * Capture chat at {@code EventPriority.HIGHEST} with {@code receiveCanceled=true} so we
+     * log the message BEFORE any other mod (anti-spam, chat-filter, mute) gets a chance to
+     * cancel it, AND we still receive cancelled events from earlier listeners. Forge's
+     * event-bus order is HIGHEST→HIGH→NORMAL→LOW→LOWEST, so HIGHEST runs first; pair with
+     * receiveCanceled to match CoreProtect's contract: "log the chat as the user typed it,
+     * even if downstream cancels broadcast".
+     */
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public static void onServerChat(ServerChatEvent ev) {
         try {
             EventSubmitter s = sub();
@@ -591,15 +611,66 @@ public final class ForgeEvents {
             String worldId = WorldKey.of((Level) ev.getLevel());
             BlockState state = ev.getState();
             String blockId = blockId(state);
+            // PistonEvent.PistonMoveType: EXTEND fires on extend, RETRACT fires on retract.
+            // Previously the else-branch was dead code because every Pre fires both — fixed
+            // so RETRACT actually emits its own action type for parity with CoreProtect.
             if (ev.getPistonMoveType() == PistonEvent.PistonMoveType.EXTEND) {
                 s.submitPistonExtend(null, Sentinel.PISTON, worldId,
                         pos.getX(), pos.getY(), pos.getZ(), blockId, Sentinel.PISTON);
-            } else {
+            } else if (ev.getPistonMoveType() == PistonEvent.PistonMoveType.RETRACT) {
                 s.submitPistonRetract(null, Sentinel.PISTON, worldId,
                         pos.getX(), pos.getY(), pos.getZ(), blockId, Sentinel.PISTON);
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onPistonPre failed", t);
+        }
+    }
+
+    // ====================================================================== buckets
+
+    /**
+     * P0-3: bucket fill / empty parity with CoreProtect.
+     * {@link FillBucketEvent} fires for BOTH directions; distinguish by inspecting the
+     * stack the player is holding when the event fires:
+     *  - empty bucket in hand → fill (water/lava/powder_snow into bucket)
+     *  - filled bucket in hand → empty (place liquid in world)
+     * Coordinates resolve from the raytrace target — that's the affected block.
+     */
+    @SubscribeEvent
+    public static void onFillBucket(FillBucketEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            Player p = ev.getEntity();
+            if (p == null) return;
+            HitResult target = ev.getTarget();
+            if (!(target instanceof BlockHitResult bhr)) return;
+            BlockPos pos = bhr.getBlockPos();
+            ItemStack held = ev.getEmptyBucket();
+            Item heldItem = held != null ? held.getItem() : null;
+            String heldId = heldItem != null
+                    ? BuiltInRegistries.ITEM.getKey(heldItem).toString()
+                    : "minecraft:bucket";
+            String worldId = WorldKey.of(p.level());
+            // Heuristic: stack passed via getEmptyBucket() is what the player CURRENTLY
+            // holds. If it's a plain bucket they're filling; otherwise they're emptying.
+            if (heldItem != null && "minecraft:bucket".equals(heldId)) {
+                // FILL — block becomes air, bucket gains content
+                BlockState state = p.level().getBlockState(pos);
+                String fluidId = blockId(state);
+                s.submitBucketFill(p.getUUID(), p.getName().getString(), worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), fluidId, null);
+            } else {
+                // EMPTY — bucket loses content, block becomes liquid
+                // Use the held-bucket id minus _bucket suffix as the fluid hint.
+                String fluid = heldId.endsWith("_bucket")
+                        ? "minecraft:" + heldId.substring(heldId.lastIndexOf(':') + 1).replace("_bucket", "")
+                        : heldId;
+                s.submitBucketEmpty(p.getUUID(), p.getName().getString(), worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), fluid, null);
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onFillBucket failed", t);
         }
     }
 
