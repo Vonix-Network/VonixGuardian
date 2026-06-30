@@ -5,6 +5,53 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-06-30
+
+**Hotfix release: MySQL dialect compatibility.**
+
+v1.1.1 successfully bundled the MySQL JDBC driver, but the schema
+initialization in `Schema.java` used `CREATE INDEX IF NOT EXISTS` —
+which is supported by SQLite and MariaDB but **not by stock MySQL**
+(8.0.46 confirmed rejecting it). The mod booted fine on MariaDB
+panels but failed on real MySQL with:
+
+```
+java.sql.SQLSyntaxErrorException: You have an error in your SQL syntax;
+... near 'IF NOT EXISTS vg_actions_pos ON vg_actions(world_id, x, z, y, ts)'
+```
+
+This was hidden in v1.1.0 (the driver wasn't bundled — failed earlier)
+and v1.1.1 (every successful boot in dev was against MariaDB). The
+mismatch only surfaced when the first real MySQL backend connected
+successfully and tried to run the index DDL.
+
+### Fixed
+
+- **`Schema.java`**: split DDL into table-DDL and index-DDL. Index DDL
+  branches on `Dialect.MYSQL`: emit bare `CREATE INDEX` (no `IF NOT
+  EXISTS`) and swallow MySQL error code 1061 (`ER_DUP_KEYNAME`) for
+  idempotency. SQLite/PostgreSQL paths unchanged.
+- **`stampVersion()`**: rewrote `INSERT ... SELECT ?, ? WHERE NOT
+  EXISTS (...)` to use a derived-table form (`SELECT v, a FROM (SELECT
+  ? AS v, ? AS a) AS src WHERE NOT EXISTS ...`) — MySQL refuses
+  `SELECT ... WHERE NOT EXISTS` without a `FROM`. SQLite and PostgreSQL
+  accept both forms; the derived-table form is portable.
+
+### Backward compatibility
+
+- **No data migration.** Pure DDL/SQL dialect change.
+- **MariaDB / SQLite / PostgreSQL behavior unchanged** — they still
+  use `CREATE INDEX IF NOT EXISTS` directly.
+- **The `ddlFor(Dialect)` static API is preserved** for tests + tooling
+  but a Javadoc warning notes that callers running the list verbatim
+  against MySQL must catch `SQLException` with error code 1061. The
+  primary `createTables(Connection, Dialect)` entrypoint always takes
+  the safe code path.
+
+### Tests
+
+380/380 core tests still pass (no test-shape changes).
+
 ## [1.1.1] — 2026-06-30
 
 **Hotfix release: bundle MySQL + PostgreSQL JDBC drivers.**
