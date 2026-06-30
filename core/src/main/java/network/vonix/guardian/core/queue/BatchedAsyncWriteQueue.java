@@ -48,6 +48,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
 
     private volatile boolean shutdown = false;
     private volatile boolean closed = false;
+    private volatile boolean paused = false;
 
     /**
      * @param maxSize         capacity of the underlying ring buffer; must be &gt; 0
@@ -147,6 +148,16 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         drainAndFlush(30_000L);
     }
 
+    @Override
+    public void setPaused(boolean p) {
+        this.paused = p;
+    }
+
+    @Override
+    public boolean isPaused() {
+        return paused;
+    }
+
     // ---------------------------------------------------------------- internals
 
     private void runWorker() {
@@ -177,7 +188,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 boolean windowExpired = (System.nanoTime() - lastFlushNs) >= flushIntervalNs;
                 // Flush if we hit batchSize, the flush window expired (time-up), or we're
                 // shutting down with leftovers.
-                if (!batch.isEmpty() && (batch.size() >= batchSize || windowExpired || shutdown)) {
+                if (!batch.isEmpty() && (batch.size() >= batchSize || windowExpired || shutdown) && (!paused || shutdown)) {
                     flushWithRetry(new ArrayList<>(batch));
                     batch.clear();
                     lastFlushNs = System.nanoTime();

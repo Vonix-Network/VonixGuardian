@@ -39,4 +39,23 @@ public interface AsyncWriteQueue {
      * @return total number of actions dropped due to backpressure since startup
      */
     long dropped();
+
+    /**
+     * Pause or resume the consumer worker. Paused queues continue to accept
+     * submissions (which still count toward the bounded {@code maxSize} budget
+     * and may be dropped if the queue fills), but the worker thread will not
+     * flush batches to the sink until {@code setPaused(false)} is called. Used
+     * by {@code /co consumer pause|resume} for maintenance windows. Default
+     * implementation is a no-op for backward compatibility.
+     *
+     * @param paused {@code true} to halt flushes, {@code false} to resume
+     */
+    default void setPaused(boolean paused) {
+        // no-op default
+    }
+
+    /** @return {@code true} if the consumer is currently paused. */
+    default boolean isPaused() {
+        return false;
+    }
 }
