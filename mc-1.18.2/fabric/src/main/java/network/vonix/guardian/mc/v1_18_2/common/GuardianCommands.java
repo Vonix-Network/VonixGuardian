@@ -27,19 +27,35 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Brigadier command tree for {@code /vg ...} on 1.18.2.
+ * Brigadier command tree for {@code /vg ...} (primary), with aliases
+ * {@code /co} and {@code /guardian}.
  *
- * <p>1.18.2 quirk: {@code CommandSourceStack.sendSuccess} takes a {@link Component}
- * directly (no {@code Supplier<Component>} overload — that arrived in 1.20).
+ * <p>Implements the CoreProtect 1:1 command surface (rooted at {@code /vg}
+ * for Vonix branding; {@code /co} provided as a CoreProtect-muscle-memory
+ * alias for operators migrating from CoreProtect) — see
+ * <a href="https://docs.coreprotect.net/commands/">CoreProtect command docs</a>
+ * — including the short subcommand aliases ({@code i}, {@code l}, {@code rb},
+ * {@code rs}), {@code consumer pause|resume|toggle}, and {@code near}.
+ *
+ * <p>1.18.2 differences: {@code CommandSourceStack.sendSuccess(Component,
+ * boolean)} takes the {@link Component} directly (no {@code Supplier}); and
+ * {@code ServerPlayer.level} is a public field rather than a method.
  */
 public final class GuardianCommands {
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianCommands.class);
     private static final QueryParser PARSER = new QueryParser();
-    private static final int PAGE_SIZE = 10;
+    private static final int DEFAULT_PAGE_SIZE = 10;
+    private static final int DEFAULT_ROLLBACK_RADIUS = 10;
 
+    /** Matches a pure page token, optionally with {@code :perPage}. */
+    private static final Pattern PAGE_TOKEN = Pattern.compile("^(\\d+)(?::(\\d+))?$");
+
+    /** Shared worker pool for command-driven DB queries. Daemonized. */
     private static final ExecutorService WORKER = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "VonixGuardian-Cmd");
         t.setDaemon(true);
@@ -50,40 +66,91 @@ public final class GuardianCommands {
         // utility
     }
 
+    /**
+     * Register the {@code /vg} command tree (and aliases {@code /co} /
+     * {@code /guardian}).
+     *
+     * @param dispatcher brigadier dispatcher
+     * @param g          the live Guardian facade
+     */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, Guardian g) {
         LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("vg")
                 .requires(s -> hasPerm(s, "vonixguardian.command.use", g))
+                // inspect (long + short)
                 .then(Commands.literal("inspect")
                         .requires(s -> hasPerm(s, "vonixguardian.command.inspect", g))
                         .executes(ctx -> Inspect.toggle(ctx, g)))
+                .then(Commands.literal("i")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.inspect", g))
+                        .executes(ctx -> Inspect.toggle(ctx, g)))
+                // lookup (long + short)
                 .then(Commands.literal("lookup")
                         .requires(s -> hasPerm(s, "vonixguardian.command.lookup", g))
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Lookup.run(ctx, g))))
+                .then(Commands.literal("l")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.lookup", g))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Lookup.run(ctx, g))))
+                // rollback (long + short)
                 .then(Commands.literal("rollback")
                         .requires(s -> hasPerm(s, "vonixguardian.command.rollback", g))
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Rollback.run(ctx, g, false))))
+                .then(Commands.literal("rb")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.rollback", g))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Rollback.run(ctx, g, false))))
+                // restore (long + short)
                 .then(Commands.literal("restore")
                         .requires(s -> hasPerm(s, "vonixguardian.command.restore", g))
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Restore.run(ctx, g))))
+                .then(Commands.literal("rs")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.restore", g))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Restore.run(ctx, g))))
+                // purge
                 .then(Commands.literal("purge")
                         .requires(s -> hasPerm(s, "vonixguardian.command.purge", g))
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Purge.run(ctx, g))))
+                // undo
                 .then(Commands.literal("undo")
                         .requires(s -> hasPerm(s, "vonixguardian.command.rollback", g))
                         .executes(ctx -> Undo.run(ctx, g)))
+                // near (CP parity: radius=5 t:1h, current player only)
+                .then(Commands.literal("near")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.near", g))
+                        .executes(ctx -> Near.run(ctx, g)))
+                // consumer pause/resume/toggle
+                .then(Commands.literal("consumer")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.consumer", g))
+                        .executes(ctx -> Consumer.status(ctx, g))
+                        .then(Commands.literal("pause").executes(ctx -> Consumer.pause(ctx, g)))
+                        .then(Commands.literal("resume").executes(ctx -> Consumer.resume(ctx, g)))
+                        .then(Commands.literal("toggle").executes(ctx -> Consumer.toggle(ctx, g))))
+                // status
                 .then(Commands.literal("status")
                         .requires(s -> hasPerm(s, "vonixguardian.command.status", g))
                         .executes(ctx -> Status.run(ctx, g)))
+                // reload
                 .then(Commands.literal("reload")
                         .requires(s -> hasPerm(s, "vonixguardian.command.reload", g))
                         .executes(ctx -> Reload.run(ctx, g)))
+                // help
                 .then(Commands.literal("help").executes(ctx -> Help.run(ctx, g)));
 
         dispatcher.register(root);
+        // Aliases: /co (CoreProtect muscle memory) and /guardian both redirect to the /vg tree.
+        dispatcher.register(Commands.literal("co").redirect(dispatcher.getRoot().getChild("vg")));
         dispatcher.register(Commands.literal("guardian").redirect(dispatcher.getRoot().getChild("vg")));
     }
 
@@ -111,14 +178,8 @@ public final class GuardianCommands {
         return new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z);
     }
 
-    /**
-     * Returns the caller's current world-id when the source is a player, else
-     * {@code null}. Used to default {@link QueryFilter#worldSel()} so player-issued
-     * lookups stay scoped to the player's current dimension (CoreProtect default)
-     * instead of leaking events from every dimension. Console callers get
-     * {@code null} → no default → global (intentional).
-     */
     private static String playerWorldOf(CommandSourceStack src) {
+        // 1.18.2: ServerPlayer.level is a public field (becomes a method in 1.20).
         return src.getEntity() instanceof ServerPlayer p ? WorldKey.of(p.level) : null;
     }
 
@@ -126,8 +187,35 @@ public final class GuardianCommands {
         return src.getEntity() instanceof ServerPlayer p ? p.getUUID() : null;
     }
 
+    /**
+     * Returns a copy of {@code qf} with a default radius of {@code 10} centered
+     * on the caller, if the caller did not supply a radius selector. Mirrors
+     * CoreProtect's {@code /co rollback} / {@code /co restore} defaults. No-op
+     * when the source has no position (console).
+     */
+    private static QueryFilter withDefaultRollbackRadius(QueryFilter qf, CommandSourceStack src) {
+        if (qf.radius() != null) {
+            return qf;
+        }
+        Vec3 v = src.getPosition();
+        if (v == null) {
+            return qf;
+        }
+        return new QueryFilter(
+                qf.users(), qf.sinceMillis(), qf.untilMillis(),
+                DEFAULT_ROLLBACK_RADIUS,
+                qf.worldSel(),
+                qf.centerX() != null ? qf.centerX() : (int) v.x,
+                qf.centerY() != null ? qf.centerY() : (int) v.y,
+                qf.centerZ() != null ? qf.centerZ() : (int) v.z,
+                qf.actions(), qf.include(), qf.exclude(),
+                qf.rolledBack(), qf.countOnly(), qf.preview(), qf.verbose(), qf.silent(), qf.optimize()
+        );
+    }
+
     // ====================================================================== Inspect
 
+    /** {@code /vg inspect} (alias {@code /vg i}) — toggle inspection mode. */
     public static final class Inspect {
         private Inspect() {}
 
@@ -150,38 +238,71 @@ public final class GuardianCommands {
 
     // ====================================================================== Lookup
 
+    /** {@code /vg lookup <filter>} — supports CoreProtect-style pagination. */
     public static final class Lookup {
         private Lookup() {}
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
-            String filter = StringArgumentType.getString(ctx, "filter");
-            return runWithFilter(src, g, filter);
+            String raw = StringArgumentType.getString(ctx, "filter");
+
+            // CP pagination: if the FIRST whitespace token is `<n>` or `<n>:<m>`
+            // treat it as page (and optional per-page) and strip it from the filter.
+            int page = 1;
+            int perPage = DEFAULT_PAGE_SIZE;
+            String filter = raw;
+            String trimmed = raw == null ? "" : raw.trim();
+            if (!trimmed.isEmpty()) {
+                int sp = trimmed.indexOf(' ');
+                String first = sp < 0 ? trimmed : trimmed.substring(0, sp);
+                Matcher m = PAGE_TOKEN.matcher(first);
+                if (m.matches()) {
+                    try {
+                        page = Math.max(1, Integer.parseInt(m.group(1)));
+                        if (m.group(2) != null) {
+                            perPage = Math.max(1, Math.min(50, Integer.parseInt(m.group(2))));
+                        }
+                    } catch (NumberFormatException ignore) {
+                        // fall through with defaults
+                    }
+                    filter = sp < 0 ? "" : trimmed.substring(sp + 1);
+                }
+            }
+            return runWithFilter(src, g, filter, page, perPage);
         }
 
+        /** Run a lookup at a specific block position (used by the inspector). */
         public static void atPos(Guardian g, int x, int y, int z, String worldId, CommandSourceStack src) {
             String f = "r:1 t:30d";
-            runWithFilter(src, g, f + " r:#world_" + worldId);
+            runWithFilter(src, g, f + " r:#world_" + worldId, 1, DEFAULT_PAGE_SIZE);
         }
 
-        private static int runWithFilter(CommandSourceStack src, Guardian g, String raw) {
+        /** Back-compat overload — kept for existing callers (inspector). */
+        public static int runWithFilter(CommandSourceStack src, Guardian g, String raw) {
+            return runWithFilter(src, g, raw, 1, DEFAULT_PAGE_SIZE);
+        }
+
+        public static int runWithFilter(CommandSourceStack src, Guardian g, String raw, int page, int perPage) {
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
+                qf = PARSER.parse(raw == null ? "" : raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
             }
             MinecraftServer server = src.getServer();
             final QueryFilter filter = qf;
+            final int pageF = page;
+            final int perPageF = perPage;
             WORKER.submit(() -> {
                 try {
                     long total = g.dao().count(filter);
-                    List<Action> rows = g.dao().query(filter, 0, PAGE_SIZE);
+                    int offset = (pageF - 1) * perPageF;
+                    List<Action> rows = g.dao().query(filter, offset, perPageF);
                     long now = System.currentTimeMillis();
-                    List<Component> page = LookupFormatter.page(g.theme(), rows, total, 1, PAGE_SIZE, now);
+                    List<Component> pageOut = LookupFormatter.page(g.theme(), rows, total, pageF, perPageF, now);
                     server.execute(() -> {
-                        for (Component c : page) {
+                        for (Component c : pageOut) {
                             send(src, c);
                         }
                     });
@@ -195,8 +316,25 @@ public final class GuardianCommands {
         }
     }
 
+    // ====================================================================== Near
+
+    /** {@code /vg near} — quick lookup r:5 t:1h centered on the caller. */
+    public static final class Near {
+        private Near() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer)) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg near must be run by a player."));
+                return 0;
+            }
+            return Lookup.runWithFilter(src, g, "r:5 t:1h", 1, DEFAULT_PAGE_SIZE);
+        }
+    }
+
     // ====================================================================== Rollback
 
+    /** {@code /vg rollback <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
     public static final class Rollback {
         private Rollback() {}
 
@@ -210,6 +348,7 @@ public final class GuardianCommands {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
             }
+            qf = withDefaultRollbackRadius(qf, src);
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
             final QueryFilter filter = qf;
@@ -235,6 +374,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Restore
 
+    /** {@code /vg restore <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
     public static final class Restore {
         private Restore() {}
 
@@ -248,6 +388,7 @@ public final class GuardianCommands {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
             }
+            qf = withDefaultRollbackRadius(qf, src);
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
             final QueryFilter filter = qf;
@@ -271,6 +412,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Purge
 
+    /** {@code /vg purge <filter>} */
     public static final class Purge {
         private Purge() {}
 
@@ -303,6 +445,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Undo
 
+    /** {@code /vg undo} — reverse the last rollback/restore. */
     public static final class Undo {
         private Undo() {}
 
@@ -322,8 +465,51 @@ public final class GuardianCommands {
         }
     }
 
+    // ====================================================================== Consumer
+
+    /** {@code /vg consumer [pause|resume|toggle]} — manage the writer queue. */
+    public static final class Consumer {
+        private Consumer() {}
+
+        public static int status(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            send(ctx.getSource(), ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] Consumer is currently "
+                            + (g.queue().isPaused() ? "PAUSED" : "RUNNING")
+                            + " (queue.depth=" + g.queue().depth() + ")"));
+            return 1;
+        }
+
+        public static int pause(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            g.queue().setPaused(true);
+            send(ctx.getSource(), ChatRenderer.warning(g.theme(),
+                    "[VonixGuardian] Consumer PAUSED — incoming events are buffered, not written."));
+            return 1;
+        }
+
+        public static int resume(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            g.queue().setPaused(false);
+            send(ctx.getSource(), ChatRenderer.success(g.theme(),
+                    "[VonixGuardian] Consumer RESUMED — draining buffered events."));
+            return 1;
+        }
+
+        public static int toggle(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            boolean now = !g.queue().isPaused();
+            g.queue().setPaused(now);
+            if (now) {
+                send(ctx.getSource(), ChatRenderer.warning(g.theme(),
+                        "[VonixGuardian] Consumer PAUSED."));
+            } else {
+                send(ctx.getSource(), ChatRenderer.success(g.theme(),
+                        "[VonixGuardian] Consumer RESUMED."));
+            }
+            return 1;
+        }
+    }
+
     // ====================================================================== Status
 
+    /** {@code /vg status} — queue + submission counters. */
     public static final class Status {
         private Status() {}
 
@@ -333,13 +519,15 @@ public final class GuardianCommands {
                     "[VonixGuardian] submitted=" + g.submitted()
                             + " gated=" + g.gated()
                             + " queue.depth=" + g.queue().depth()
-                            + " queue.dropped=" + g.queue().dropped()));
+                            + " queue.dropped=" + g.queue().dropped()
+                            + " consumer=" + (g.queue().isPaused() ? "paused" : "running")));
             return 1;
         }
     }
 
     // ====================================================================== Reload
 
+    /** {@code /vg reload} — placeholder. */
     public static final class Reload {
         private Reload() {}
 
@@ -352,21 +540,31 @@ public final class GuardianCommands {
 
     // ====================================================================== Help
 
+    /** {@code /vg help} — CoreProtect-style command summary. */
     public static final class Help {
         private Help() {}
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
-            send(src, ChatRenderer.primary(g.theme(), "[VonixGuardian] Commands:"));
+            send(src, ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] CoreProtect-style commands (aliases: /co, /guardian):"));
             String[] lines = {
-                    "/vg inspect — toggle inspect mode",
-                    "/vg lookup <filter> — search audit log",
-                    "/vg rollback <filter> — undo logged actions",
-                    "/vg restore <filter> — redo rolled-back actions",
-                    "/vg purge <filter> — delete log rows",
-                    "/vg undo — drop last rollback from history",
-                    "/vg status — queue / submission counters",
-                    "/vg reload — re-read config (TODO)",
+                    "/vg inspect            (alias: /vg i)  — toggle inspect mode",
+                    "/vg lookup <filter>    (alias: /vg l)  — search audit log; <page>[:<perPage>] before filter",
+                    "/vg rollback <filter>  (alias: /vg rb) — undo logged actions (default radius 10)",
+                    "/vg restore <filter>   (alias: /vg rs) — redo rolled-back actions (default radius 10)",
+                    "/vg purge <filter>                       — delete log rows",
+                    "/vg near                                — quick lookup r:5 t:1h around you",
+                    "/vg undo                                — drop last rollback from history",
+                    "/vg consumer pause|resume|toggle        — pause the writer queue",
+                    "/vg status                              — queue / submission counters",
+                    "/vg reload                              — re-read config (TODO)",
+                    "",
+                    "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
+                    "               a:[+/-]<action>       i:<id>    e:<id>",
+                    "Hash flags:    #preview  #count  #verbose  #silent  #optimize",
+                    "User sentinels: #fire #tnt #creeper #explosion #water #lava #mob",
+                    "Actions: block container inventory item kill session login chat command click sign username",
             };
             for (String l : lines) {
                 send(src, ChatRenderer.muted(g.theme(), "  " + l));
