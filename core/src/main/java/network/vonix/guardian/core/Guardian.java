@@ -16,6 +16,7 @@ import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.perms.PermissionResolver;
 import network.vonix.guardian.core.query.InspectorLookup;
 import network.vonix.guardian.core.queue.BatchedAsyncWriteQueue;
+import network.vonix.guardian.core.rollback.PurgeEngine;
 import network.vonix.guardian.core.rollback.RollbackEngine;
 import network.vonix.guardian.core.rollback.UndoStack;
 import network.vonix.guardian.core.rollback.WorldMutator;
@@ -68,6 +69,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private final EventGate gate;
     private final PermissionResolver perms;
     private final RollbackEngine rollbackEngine;
+    private final PurgeEngine purgeEngine;
     private final UndoStack undoStack;
     private final Theme theme;
 
@@ -81,6 +83,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                      EventGate gate,
                      PermissionResolver perms,
                      RollbackEngine rollbackEngine,
+                     PurgeEngine purgeEngine,
                      UndoStack undoStack,
                      Theme theme) {
         this.config = config;
@@ -90,6 +93,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.gate = gate;
         this.perms = perms;
         this.rollbackEngine = rollbackEngine;
+        this.purgeEngine = purgeEngine;
         this.undoStack = undoStack;
         this.theme = theme;
     }
@@ -154,6 +158,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         EventGate gate = new EventGate(config.actions());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
         RollbackEngine rollback = new RollbackEngine(dao, mutator, mainThreadExec);
+        PurgeEngine purgeEng = new PurgeEngine(dao);
         try {
             rollback.recoverIncompleteBatches();
         } catch (Exception e) {
@@ -163,7 +168,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         Theme theme = ThemeRegistry.get(config.theme());
 
         LOG.info(MARKER, "VonixGuardian online.");
-        return new Guardian(config, dao, queue, logFile, gate, perms, rollback, undo, theme);
+        return new Guardian(config, dao, queue, logFile, gate, perms, rollback, purgeEng, undo, theme);
     }
 
     // -------------------------------------------------------------------- getters
@@ -173,6 +178,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public BatchedAsyncWriteQueue queue()  { return queue; }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }
+    /** CP-1:1 purge entry point — enforces config.purge() minimum-age floor. */
+    public PurgeEngine purgeEngine()       { return purgeEngine; }
     public UndoStack undoStack()           { return undoStack; }
     public Theme theme()                   { return theme; }
     public EventSubmitter submitter()      { return this; }

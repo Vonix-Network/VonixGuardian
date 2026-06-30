@@ -276,11 +276,12 @@ public final class QueryParser {
                     // the player's WorldEdit region directly when neither r: nor a
                     // world selector is present and a WE selection exists.
                 }
-                // CoreProtect-parity dimension shorthands. The raw key is preserved;
-                // the lookup engine resolves it to a concrete world id at query time.
-                case "#nether"    -> b.worldSel(new QueryFilter.WorldSel("nether",    false));
-                case "#overworld" -> b.worldSel(new QueryFilter.WorldSel("overworld", false));
-                case "#end"       -> b.worldSel(new QueryFilter.WorldSel("end",       false));
+                // CoreProtect-parity dimension shorthands. Map to vanilla
+                // canonical world keys so DAO row matches (rows are stored with
+                // the full {@code minecraft:<path>} form).
+                case "#nether"    -> b.worldSel(new QueryFilter.WorldSel("minecraft:the_nether", false));
+                case "#overworld" -> b.worldSel(new QueryFilter.WorldSel("minecraft:overworld",  false));
+                case "#end"       -> b.worldSel(new QueryFilter.WorldSel("minecraft:the_end",    false));
                 default -> {
                     if (lower.startsWith("#world_")) {
                         String key = value.substring("#world_".length());

@@ -90,7 +90,7 @@ class CoreProtectFidelityTest {
     void cp_uNotch_t1h_rNether() {
         QueryFilter f = parseOk("u:Notch t:1h r:#nether");
         assertThat(f.worldSel()).isNotNull();
-        assertThat(f.worldSel().worldKey()).isEqualTo("nether");
+        assertThat(f.worldSel().worldKey()).isEqualTo("minecraft:the_nether");
         assertThat(f.worldSel().global()).isFalse();
     }
 
@@ -178,6 +178,10 @@ class CoreProtectFidelityTest {
     void cp_purge_t30d_rWorldNether() {
         QueryFilter f = parseOk("t:30d r:#world_nether");
         assertThat(f.worldSel()).isNotNull();
+        // r:#world_<key> stores the raw <key> verbatim. CP-style /co purge
+        // expects operators to pass full vanilla keys here (or the matching
+        // namespaced ID their server uses). Use r:#nether (no #world_)
+        // for the canonical shorthand to minecraft:the_nether.
         assertThat(f.worldSel().worldKey()).isEqualTo("nether");
         assertThat(f.worldSel().global()).isFalse();
     }
