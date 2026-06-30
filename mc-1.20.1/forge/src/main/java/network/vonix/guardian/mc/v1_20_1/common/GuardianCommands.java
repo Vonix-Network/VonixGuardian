@@ -31,10 +31,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Brigadier command tree for {@code /co ...} (primary), with aliases
+ * Brigadier command tree for {@code /vg ...} (primary), with aliases
  * {@code /vg} and {@code /guardian}.
  *
- * <p>Implements the CoreProtect 1:1 command surface — see
+ * <p>Implements the CoreProtect 1:1 command surface (rooted at {@code /vg}
+ * for Vonix branding; {@code /vg} provided as a CoreProtect-muscle-memory
+ * alias for operators migrating from CoreProtect) — see
  * <a href="https://docs.coreprotect.net/commands/">CoreProtect command docs</a>
  * — including the short subcommand aliases ({@code i}, {@code l}, {@code rb},
  * {@code rs}), {@code consumer pause|resume|toggle}, and {@code near}.
@@ -61,14 +63,14 @@ public final class GuardianCommands {
     }
 
     /**
-     * Register the {@code /co} command tree (and aliases {@code /vg} /
+     * Register the {@code /vg} command tree (and aliases {@code /vg} /
      * {@code /guardian}).
      *
      * @param dispatcher brigadier dispatcher
      * @param g          the live Guardian facade
      */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, Guardian g) {
-        LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("co")
+        LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("vg")
                 .requires(s -> hasPerm(s, "vonixguardian.command.use", g))
                 // inspect (long + short)
                 .then(Commands.literal("inspect")
@@ -143,9 +145,9 @@ public final class GuardianCommands {
                 .then(Commands.literal("help").executes(ctx -> Help.run(ctx, g)));
 
         dispatcher.register(root);
-        // Aliases: /vg and /guardian redirect to the /co tree.
-        dispatcher.register(Commands.literal("vg").redirect(dispatcher.getRoot().getChild("co")));
-        dispatcher.register(Commands.literal("guardian").redirect(dispatcher.getRoot().getChild("co")));
+        // Aliases: /vg (CoreProtect muscle memory) and /guardian both redirect to the /vg tree.
+        dispatcher.register(Commands.literal("co").redirect(dispatcher.getRoot().getChild("vg")));
+        dispatcher.register(Commands.literal("guardian").redirect(dispatcher.getRoot().getChild("vg")));
     }
 
     // ------------------------------------------------------------------ helpers
@@ -182,7 +184,7 @@ public final class GuardianCommands {
     /**
      * Returns a copy of {@code qf} with a default radius of {@code 10} centered
      * on the caller, if the caller did not supply a radius selector. Mirrors
-     * CoreProtect's {@code /co rollback} / {@code /co restore} defaults. No-op
+     * CoreProtect's {@code /vg rollback} / {@code /vg restore} defaults. No-op
      * when the source has no position (console).
      */
     private static QueryFilter withDefaultRollbackRadius(QueryFilter qf, CommandSourceStack src) {
@@ -207,14 +209,14 @@ public final class GuardianCommands {
 
     // ====================================================================== Inspect
 
-    /** {@code /co inspect} (alias {@code /co i}) — toggle inspection mode. */
+    /** {@code /vg inspect} (alias {@code /vg i}) — toggle inspection mode. */
     public static final class Inspect {
         private Inspect() {}
 
         public static int toggle(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
             if (!(src.getEntity() instanceof ServerPlayer p)) {
-                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /co inspect must be run by a player."));
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg inspect must be run by a player."));
                 return 0;
             }
             boolean now = Inspector.toggle(p.getUUID());
@@ -230,7 +232,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Lookup
 
-    /** {@code /co lookup <filter>} — supports CoreProtect-style pagination. */
+    /** {@code /vg lookup <filter>} — supports CoreProtect-style pagination. */
     public static final class Lookup {
         private Lookup() {}
 
@@ -311,14 +313,14 @@ public final class GuardianCommands {
 
     // ====================================================================== Near
 
-    /** {@code /co near} — quick lookup r:5 t:1h centered on the caller. */
+    /** {@code /vg near} — quick lookup r:5 t:1h centered on the caller. */
     public static final class Near {
         private Near() {}
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
             if (!(src.getEntity() instanceof ServerPlayer)) {
-                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /co near must be run by a player."));
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg near must be run by a player."));
                 return 0;
             }
             return Lookup.runWithFilter(src, g, "r:5 t:1h", 1, DEFAULT_PAGE_SIZE);
@@ -327,7 +329,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Rollback
 
-    /** {@code /co rollback <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
+    /** {@code /vg rollback <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
     public static final class Rollback {
         private Rollback() {}
 
@@ -367,7 +369,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Restore
 
-    /** {@code /co restore <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
+    /** {@code /vg restore <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
     public static final class Restore {
         private Restore() {}
 
@@ -405,7 +407,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Purge
 
-    /** {@code /co purge <filter>} */
+    /** {@code /vg purge <filter>} */
     public static final class Purge {
         private Purge() {}
 
@@ -438,7 +440,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Undo
 
-    /** {@code /co undo} — reverse the last rollback/restore. */
+    /** {@code /vg undo} — reverse the last rollback/restore. */
     public static final class Undo {
         private Undo() {}
 
@@ -460,7 +462,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Consumer
 
-    /** {@code /co consumer [pause|resume|toggle]} — manage the writer queue. */
+    /** {@code /vg consumer [pause|resume|toggle]} — manage the writer queue. */
     public static final class Consumer {
         private Consumer() {}
 
@@ -502,7 +504,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Status
 
-    /** {@code /co status} — queue + submission counters. */
+    /** {@code /vg status} — queue + submission counters. */
     public static final class Status {
         private Status() {}
 
@@ -520,7 +522,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Reload
 
-    /** {@code /co reload} — placeholder. */
+    /** {@code /vg reload} — placeholder. */
     public static final class Reload {
         private Reload() {}
 
@@ -533,25 +535,25 @@ public final class GuardianCommands {
 
     // ====================================================================== Help
 
-    /** {@code /co help} — CoreProtect-style command summary. */
+    /** {@code /vg help} — CoreProtect-style command summary. */
     public static final class Help {
         private Help() {}
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
             send(src, ChatRenderer.primary(g.theme(),
-                    "[VonixGuardian] CoreProtect-style commands (aliases: /vg, /guardian):"));
+                    "[VonixGuardian] CoreProtect-style commands (aliases: /co, /guardian):"));
             String[] lines = {
-                    "/co inspect            (alias: /co i)  — toggle inspect mode",
-                    "/co lookup <filter>    (alias: /co l)  — search audit log; <page>[:<perPage>] before filter",
-                    "/co rollback <filter>  (alias: /co rb) — undo logged actions (default radius 10)",
-                    "/co restore <filter>   (alias: /co rs) — redo rolled-back actions (default radius 10)",
-                    "/co purge <filter>                       — delete log rows",
-                    "/co near                                — quick lookup r:5 t:1h around you",
-                    "/co undo                                — drop last rollback from history",
-                    "/co consumer pause|resume|toggle        — pause the writer queue",
-                    "/co status                              — queue / submission counters",
-                    "/co reload                              — re-read config (TODO)",
+                    "/vg inspect            (alias: /vg i)  — toggle inspect mode",
+                    "/vg lookup <filter>    (alias: /vg l)  — search audit log; <page>[:<perPage>] before filter",
+                    "/vg rollback <filter>  (alias: /vg rb) — undo logged actions (default radius 10)",
+                    "/vg restore <filter>   (alias: /vg rs) — redo rolled-back actions (default radius 10)",
+                    "/vg purge <filter>                       — delete log rows",
+                    "/vg near                                — quick lookup r:5 t:1h around you",
+                    "/vg undo                                — drop last rollback from history",
+                    "/vg consumer pause|resume|toggle        — pause the writer queue",
+                    "/vg status                              — queue / submission counters",
+                    "/vg reload                              — re-read config (TODO)",
                     "",
                     "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
                     "               a:[+/-]<action>       i:<id>    e:<id>",
