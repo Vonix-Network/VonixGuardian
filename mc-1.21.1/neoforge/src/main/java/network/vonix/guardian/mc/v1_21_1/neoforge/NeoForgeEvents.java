@@ -276,9 +276,22 @@ public final class NeoForgeEvents {
                     WorldKey.of(ev.getLevel()),
                     pos.getX(), pos.getY(), pos.getZ(), type, null);
         } catch (Throwable t) {
-            LOG.warn(Guardian.MARKER, "onEntityJoinLevel failed", t);
+            // Rate-limit: one warn per minute per error class, otherwise this
+            // can fire thousands of times per second on heavy modpacks where
+            // the bytecode-link or another mod's mixin breaks for one entity
+            // type.
+            long now = System.currentTimeMillis();
+            String key = t.getClass().getName() + ":" + (t.getMessage() == null ? "" : t.getMessage());
+            Long last = ENTITY_JOIN_WARN_LIMIT.get(key);
+            if (last == null || now - last >= 60_000L) {
+                ENTITY_JOIN_WARN_LIMIT.put(key, now);
+                LOG.warn(Guardian.MARKER, "onEntityJoinLevel failed", t);
+            }
         }
     }
+
+    private static final ConcurrentHashMap<String, Long> ENTITY_JOIN_WARN_LIMIT =
+            new ConcurrentHashMap<>();
 
     // ====================================================================== sessions
 

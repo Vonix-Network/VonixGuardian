@@ -5,6 +5,21 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] — 2026-06-30
+
+**Hotfix: log spam from `EntitySentinel.of()` on heavy modpacks (PZ-class load).**
+
+### Fixed (all Forge/NeoForge loaders)
+
+- **`NoSuchMethodError: 'net.minecraft.world.entity.EntityType net.minecraft.world.entity.Entity.getType()'` flooding the log once per entity tick** on Forge 1.20.1 modpacks with deep mixin/coremod chains (e.g. PZ / 284 mods). The call site (`EntitySentinel.of(Entity)`) compiled against Mojang official mappings invokes `Entity.getType()`. Some modpack mod combinations leave that name unresolved on the bytecode-link classloader path at runtime (the SRG name `m_6095_` is what's actually exposed), producing `NoSuchMethodError` every time an entity joins a level. The exception is caught by `ForgeEvents.onEntityJoinLevel`, but the WARN was unconditional — so log noise was unbounded under load.
+- **Fix.** `EntitySentinel` now resolves `Entity::getType` via a `MethodHandles.publicLookup().findVirtual` chain at class-init: it tries the Mojang name first (`getType`), then SRG (`m_6095_`), then a reflective scan for any zero-arg method on `Entity` returning `EntityType`. The handle is invoked from `of(Entity)` with the direct call retained as a last-ditch fallback. NeoForge 1.21.1 only exposes the Mojang name so the fast path is unchanged there.
+- **Belt-and-braces:** `ForgeEvents.onEntityJoinLevel` (and the NeoForge 1.21.1 equivalent) now rate-limits its catch-block WARN to one entry per minute per unique `<exception class>:<message>` key via a `ConcurrentHashMap`. Any future per-entity-throwable bug surfaces clearly but cannot DOS the log file.
+
+### Notes
+
+- Pure-Java change in `:common` + `:forge` / `:neoforge`. No mappings change, no dependency bump, no Gradle change. SLF4J/sqlite-jdbc/JarInJar all unchanged from 1.0.1.
+- All 4 hotfix jars built clean from a single repo state: `./gradlew -PbuildProfile=forgeonly :mc-1.18.2:forge:build :mc-1.19.2:forge:build :mc-1.20.1:forge:build` (JDK 17) + `./gradlew -PbuildProfile=mc1211 :mc-1.21.1:neoforge:build` (JDK 21).
+
 ## [1.0.1] — 2026-06-29
 
 **Hotfix: silent boot kill on Forge/NeoForge servers running Sinytra Connector.**
