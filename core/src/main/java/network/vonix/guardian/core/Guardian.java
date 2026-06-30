@@ -14,6 +14,7 @@ import network.vonix.guardian.core.event.Sentinel;
 import network.vonix.guardian.core.logfile.JsonLinesLogFile;
 import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.perms.PermissionResolver;
+import network.vonix.guardian.core.query.InspectorLookup;
 import network.vonix.guardian.core.queue.BatchedAsyncWriteQueue;
 import network.vonix.guardian.core.rollback.RollbackEngine;
 import network.vonix.guardian.core.rollback.UndoStack;
@@ -29,6 +30,7 @@ import org.slf4j.MarkerFactory;
 
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -472,6 +474,37 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                             int x, int y, int z, String targetId, String sourceTag) {
         submit(seed(ActionType.CLICK, actorUuid, actorName, worldId)
                 .position(x, y, z).targetId(targetId).sourceTag(sourceTag).build());
+    }
+
+    // -------------------------------------------------------------------- inspector
+
+    /**
+     * Run a synchronous block-history lookup at the given world position and
+     * return ready-to-print chat lines. Intended for the inspector-wand
+     * left-click handler in each loader module.
+     *
+     * <p>Returned strings are plain text because {@code core} has no Minecraft
+     * types; the caller wraps each line in its loader's {@code Component} and
+     * dispatches to the player. The first element is a header; remaining
+     * elements are one per matching action (most recent first), or a single
+     * "no history" line when nothing is found.
+     *
+     * <p>This call performs a JDBC query and MUST NOT be invoked from the
+     * server thread — schedule it onto a worker (e.g. the loader's IO pool).
+     *
+     * @param worldId loader-resolved world key (e.g. {@code minecraft:overworld})
+     * @param x       block X
+     * @param y       block Y
+     * @param z       block Z
+     * @param limit   max history rows to return (clamped to {@code >=1})
+     * @param now     reference epoch millis for "ago" rendering (typically
+     *                {@code System.currentTimeMillis()})
+     * @return ordered list of chat lines; never {@code null}, never empty
+     * @throws Exception on DAO failure
+     */
+    public List<String> lookupAtPos(String worldId, int x, int y, int z,
+                                    int limit, long now) throws Exception {
+        return InspectorLookup.lookup(dao, worldId, x, y, z, limit, now);
     }
 
     // -------------------------------------------------------------------- lifecycle

@@ -10,13 +10,16 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.CommandEvent;
@@ -27,6 +30,7 @@ import net.minecraftforge.event.entity.item.ItemTossEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingDestroyBlockEvent;
+import net.minecraftforge.event.entity.player.PlayerContainerEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.level.BlockEvent;
@@ -48,8 +52,13 @@ import network.vonix.guardian.mc.v1_19_2.common.WorldKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Static {@code @SubscribeEvent} handlers for Forge 1.19.2.
@@ -69,6 +78,18 @@ public final class ForgeEvents {
 
     private static final Map<String, Long> SPAWN_LIMIT = new ConcurrentHashMap<>();
     private static final long SPAWN_LIMIT_MS = 1_000L;
+
+    /** Daemon worker for off-tick JDBC (inspector lookups). */
+    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "VonixGuardian-ForgeEvents-Worker");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /** Last right-clicked container position per player. */
+    private static final Map<UUID, BlockPos> LAST_CONTAINER_RC = new ConcurrentHashMap<>();
+    /** Snapshot of container contents at open time, keyed by player UUID. */
+    private static final Map<UUID, Map<Integer, ItemStack>> CONTAINER_SNAPSHOT = new ConcurrentHashMap<>();
 
     private ForgeEvents() {
         // utility
@@ -105,8 +126,27 @@ public final class ForgeEvents {
                             ev.getPos(), ev.getState()));
                     if (gg != null) {
                         BlockPos pos = ev.getPos();
-                        sp.sendSystemMessage(ChatRenderer.primary(gg.theme(),
-                                "[VonixGuardian] inspect @ " + pos.getX() + "," + pos.getY() + "," + pos.getZ()));
+                        final MinecraftServer server = sp.getServer();
+                        final String wid = WorldKey.of((Level) ev.getLevel());
+                        final int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+                        WORKER.submit(() -> {
+                            try {
+                                List<String> lines = gg.lookupAtPos(wid, x, y, z, 10, System.currentTimeMillis());
+                                if (server != null) {
+                                    server.execute(() -> {
+                                        for (String line : lines) {
+                                            sp.sendSystemMessage(ChatRenderer.primary(gg.theme(), line));
+                                        }
+                                    });
+                                }
+                            } catch (Throwable t) {
+                                LOG.warn(Guardian.MARKER, "inspector lookup failed at {} {},{},{}", wid, x, y, z, t);
+                                if (server != null) {
+                                    server.execute(() -> sp.sendSystemMessage(ChatRenderer.error(gg.theme(),
+                                            "[VonixGuardian] Inspect lookup error: " + t.getMessage())));
+                                }
+                            }
+                        });
                     }
                 }
                 return;
@@ -426,12 +466,23 @@ public final class ForgeEvents {
     @SubscribeEvent
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock ev) {
         try {
+            Player p = ev.getEntity();
+            if (p == null) return;
+            // Container snapshot tracking (independent of logInteractions config).
+            try {
+                if (p instanceof ServerPlayer sp) {
+                    BlockEntity be = ev.getLevel().getBlockEntity(ev.getPos());
+                    if (be instanceof Container) {
+                        LAST_CONTAINER_RC.put(sp.getUUID(), ev.getPos().immutable());
+                    }
+                }
+            } catch (Throwable t) {
+                LOG.warn(Guardian.MARKER, "onRightClickBlock (container snapshot) failed", t);
+            }
             EventSubmitter s = sub();
             GuardianConfig c = cfg();
             if (s == null || c == null) return;
             if (!c.actions().logInteractions()) return;
-            Player p = ev.getEntity();
-            if (p == null) return;
             BlockPos pos = ev.getPos();
             BlockState state = ev.getLevel().getBlockState(pos);
             s.submitClick(p.getUUID(), p.getName().getString(),
@@ -440,6 +491,53 @@ public final class ForgeEvents {
                     blockId(state), null);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onRightClickBlock failed", t);
+        }
+    }
+
+    /** Container opened -> snapshot contents for diff at close. */
+    @SubscribeEvent
+    public static void onContainerOpen(PlayerContainerEvent.Open ev) {
+        try {
+            if (!(ev.getEntity() instanceof ServerPlayer sp)) return;
+            BlockPos pos = LAST_CONTAINER_RC.get(sp.getUUID());
+            if (pos == null) return;
+            BlockEntity be = sp.level.getBlockEntity(pos);
+            if (!(be instanceof Container c)) return;
+            Map<Integer, ItemStack> snap = new HashMap<>();
+            for (int i = 0; i < c.getContainerSize(); i++) snap.put(i, c.getItem(i).copy());
+            CONTAINER_SNAPSHOT.put(sp.getUUID(), snap);
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onContainerOpen failed", t);
+        }
+    }
+
+    /** Container closed -> diff vs snapshot, submit deposit/withdraw rows. */
+    @SubscribeEvent
+    public static void onContainerClose(PlayerContainerEvent.Close ev) {
+        try {
+            if (!(ev.getEntity() instanceof ServerPlayer sp)) return;
+            Map<Integer, ItemStack> snap = CONTAINER_SNAPSHOT.remove(sp.getUUID());
+            BlockPos pos = LAST_CONTAINER_RC.remove(sp.getUUID());
+            if (snap == null || pos == null) return;
+            BlockEntity be = sp.level.getBlockEntity(pos);
+            if (!(be instanceof Container c)) return;
+            String worldId = WorldKey.of(sp.level);
+            EventSubmitter s = sub();
+            if (s == null) return;
+            for (int slot = 0; slot < c.getContainerSize(); slot++) {
+                ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
+                ItemStack after = c.getItem(slot);
+                int beforeCount = before.isEmpty() ? 0 : before.getCount();
+                int afterCount = after.isEmpty() ? 0 : after.getCount();
+                String itemId = !before.isEmpty() ? itemId(before) : (!after.isEmpty() ? itemId(after) : null);
+                if (itemId == null) continue;
+                int delta = afterCount - beforeCount;
+                if (delta == 0) continue;
+                s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onContainerClose failed", t);
         }
     }
 
@@ -454,8 +552,27 @@ public final class ForgeEvents {
             if (g == null) return;
             BlockPos pos = ev.getPos();
             if (p instanceof ServerPlayer sp) {
-                sp.sendSystemMessage(ChatRenderer.primary(g.theme(),
-                        "[VonixGuardian] inspect @ " + pos.getX() + "," + pos.getY() + "," + pos.getZ()));
+                final MinecraftServer server = sp.getServer();
+                final String worldId = WorldKey.of((Level) ev.getLevel());
+                final int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+                WORKER.submit(() -> {
+                    try {
+                        List<String> lines = g.lookupAtPos(worldId, x, y, z, 10, System.currentTimeMillis());
+                        if (server != null) {
+                            server.execute(() -> {
+                                for (String line : lines) {
+                                    sp.sendSystemMessage(ChatRenderer.primary(g.theme(), line));
+                                }
+                            });
+                        }
+                    } catch (Throwable t) {
+                        LOG.warn(Guardian.MARKER, "inspector lookup failed at {} {},{},{}", worldId, x, y, z, t);
+                        if (server != null) {
+                            server.execute(() -> sp.sendSystemMessage(ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Inspect lookup error: " + t.getMessage())));
+                        }
+                    }
+                });
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onLeftClickBlock failed", t);

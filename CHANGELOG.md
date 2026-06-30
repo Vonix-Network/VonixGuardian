@@ -5,6 +5,31 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] — 2026-06-30
+
+**Rollback handler completion: `/vg rollback` and `/vg restore` now cover the v0.1.0 griefing expansion.**
+
+### Fixed
+
+- **`/rollback doesnt work`** (user report). `RollbackEngine.applyInverse` / `applyForward` previously had a silent `default` branch that logged `rollback not implemented for <type>` and did nothing for every v0.1.0-expansion `ActionType` (entries 15–39 in `ActionType.java`). In practice this meant the entire modded griefing surface — entity-driven block changes, fire spread, fluid placement, hopper transfers, hanging entities, structure growth, portals — was audited but **never** revertable. The default branch is gone; every `ActionType` is now explicitly handled (or explicitly refused with a reason).
+
+### Added
+
+- **19 new rollback handlers** in `RollbackEngine.applyInverse` and `applyForward`, mirrored across the rollback/restore directions:
+  - `ENTITY_CHANGE_BLOCK` — restores `oldBlockId` from `targetMeta` on rollback, re-applies `newBlockId` from `targetId` on restore (per `EventSubmitter.submitEntityChangeBlock` contract).
+  - `BURN`, `IGNITE`, `FADE`, `LEAVES_DECAY`, `BUCKET_FILL` — block was destroyed/changed-away; inverse restores the original block, forward re-destroys.
+  - `FORM`, `SPREAD`, `BUCKET_EMPTY`, `STRUCTURE_GROW` (lossy), `PORTAL_CREATE` — block was created; inverse clears to AIR, forward re-places.
+  - `HOPPER_PUSH` — inverse removes from destination container, forward re-deposits.
+  - `HOPPER_PULL` — inverse gives/drops into source, forward re-withdraws.
+  - `HANGING_BREAK` — inverse re-spawns the hanging entity via `WorldMutator.respawnEntity`.
+  - `HANGING_PLACE` — forward re-spawns the hanging.
+- **Per-action explicit refusal WARNs** replacing the silent default branch. Each refused `ActionType` now logs a one-line reason (e.g. `refusing to roll back DISPENSE — container slot tracking required`) instead of the generic `not implemented` message. Refused: `DISPENSE`, `PISTON_EXTEND`, `PISTON_RETRACT`, `INVENTORY_DEPOSIT`, `INVENTORY_WITHDRAW`, `ITEM_CRAFT`, `ENTITY_SPAWN`, `ENTITY_INTERACT`, `CHUNK_POPULATE`, `CLICK`, plus the forward direction of `HANGING_PLACE`/`HANGING_BREAK` and the rollback direction of `HANGING_PLACE` (TODO: add `WorldMutator.removeHangingAt(worldId, x, y, z, entityType)` so hanging place/restore-break can be honoured). `CHAT`, `COMMAND`, `SIGN`, `SESSION_JOIN`, `SESSION_LEAVE`, `USERNAME_CHANGE` continue to be refused as before.
+
+### Notes
+
+- Inspector wand position lookup and `CONTAINER_*` delta wiring will land in a sibling subagent in the same release.
+- Pure-Java change in `:core`. No `WorldMutator` API additions yet (the `removeHangingAt` TODO is parked). All 4 jars rebuilt from a single repo state.
+
 ## [1.0.2] — 2026-06-30
 
 **Hotfix: log spam from `EntitySentinel.of()` on heavy modpacks (PZ-class load).**

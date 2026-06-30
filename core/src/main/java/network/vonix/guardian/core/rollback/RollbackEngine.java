@@ -285,10 +285,49 @@ public final class RollbackEngine {
                 mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
             case EXPLOSION ->
                 restoreExplosion(a);
+            // --- v0.1.0 expansion: block events ---
+            // ENTITY_CHANGE_BLOCK: targetMeta carries oldBlockId (per EventSubmitter.submitEntityChangeBlock).
+            case ENTITY_CHANGE_BLOCK ->
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetMeta() != null ? a.targetMeta() : AIR, null);
+            // Block was destroyed/changed-away — inverse is to restore the original block.
+            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            // Block was created — inverse is to clear it.
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE ->
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+            // --- v0.1.0 expansion: containers ---
+            case HOPPER_PUSH ->
+                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetId(), Math.max(1, a.amount()));
+            case HOPPER_PULL ->
+                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            // --- v0.1.0 expansion: entities ---
+            case HANGING_BREAK ->
+                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            // --- per-action explicit refusals (replacing the silent default branch) ---
+            case DISPENSE ->
+                LOG.warn("RollbackEngine: refusing to roll back DISPENSE (id={}) — container slot tracking required", a.id());
+            case PISTON_EXTEND, PISTON_RETRACT ->
+                LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — source position not tracked", a.type(), a.id());
+            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW ->
+                LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — player inventory mutation out of scope", a.type(), a.id());
+            case ITEM_CRAFT ->
+                LOG.warn("RollbackEngine: refusing to roll back ITEM_CRAFT (id={}) — inventory state required", a.id());
+            case ENTITY_SPAWN ->
+                LOG.warn("RollbackEngine: refusing to roll back ENTITY_SPAWN (id={}) — despawn unsafe", a.id());
+            case ENTITY_INTERACT ->
+                LOG.warn("RollbackEngine: refusing to roll back ENTITY_INTERACT (id={}) — no state change to undo", a.id());
+            // TODO: add WorldMutator.removeHangingAt(worldId, x, y, z, entityType) so this can be honoured.
+            case HANGING_PLACE ->
+                LOG.warn("RollbackEngine: refusing to roll back HANGING_PLACE (id={}) — WorldMutator has no removeEntity API", a.id());
+            case CHUNK_POPULATE ->
+                LOG.warn("RollbackEngine: refusing to roll back CHUNK_POPULATE (id={}) — chunk-scale revert unsafe", a.id());
+            case CLICK ->
+                LOG.warn("RollbackEngine: refusing to roll back CLICK (id={}) — audit-only, no state change", a.id());
             case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE ->
                 LOG.warn("RollbackEngine: refusing to roll back non-rollbackable {} (id={})", a.type(), a.id());
-            default ->
-                LOG.warn("RollbackEngine: rollback not implemented for {} (id={})", a.type(), a.id());
         }
     }
 
@@ -315,10 +354,48 @@ public final class RollbackEngine {
                 LOG.debug("RollbackEngine: restore of ENTITY_KILL id={} is best-effort no-op", a.id());
             case EXPLOSION ->
                 clearExplosionBlocks(a);
+            // --- v0.1.0 expansion: block events ---
+            // ENTITY_CHANGE_BLOCK: re-apply the newBlockId carried in targetId.
+            case ENTITY_CHANGE_BLOCK ->
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+            // Block was originally destroyed/changed-away — restoring means re-destroying.
+            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+            // Block was originally created — restoring means re-placing it.
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE ->
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            // --- v0.1.0 expansion: containers ---
+            case HOPPER_PUSH ->
+                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case HOPPER_PULL ->
+                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetId(), Math.max(1, a.amount()));
+            // --- v0.1.0 expansion: entities ---
+            case HANGING_PLACE ->
+                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            // --- per-action explicit refusals (replacing the silent default branch) ---
+            case DISPENSE ->
+                LOG.warn("RollbackEngine: refusing to restore DISPENSE (id={}) — container slot tracking required", a.id());
+            case PISTON_EXTEND, PISTON_RETRACT ->
+                LOG.warn("RollbackEngine: refusing to restore {} (id={}) — source position not tracked", a.type(), a.id());
+            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW ->
+                LOG.warn("RollbackEngine: refusing to restore {} (id={}) — player inventory mutation out of scope", a.type(), a.id());
+            case ITEM_CRAFT ->
+                LOG.warn("RollbackEngine: refusing to restore ITEM_CRAFT (id={}) — inventory state required", a.id());
+            case ENTITY_SPAWN ->
+                LOG.warn("RollbackEngine: refusing to restore ENTITY_SPAWN (id={}) — despawn unsafe", a.id());
+            case ENTITY_INTERACT ->
+                LOG.warn("RollbackEngine: refusing to restore ENTITY_INTERACT (id={}) — no state change to redo", a.id());
+            // TODO: add WorldMutator.removeHangingAt(worldId, x, y, z, entityType) so this can be honoured.
+            case HANGING_BREAK ->
+                LOG.warn("RollbackEngine: refusing to restore HANGING_BREAK (id={}) — WorldMutator has no removeEntity API", a.id());
+            case CHUNK_POPULATE ->
+                LOG.warn("RollbackEngine: refusing to restore CHUNK_POPULATE (id={}) — chunk-scale revert unsafe", a.id());
+            case CLICK ->
+                LOG.warn("RollbackEngine: refusing to restore CLICK (id={}) — audit-only, no state change", a.id());
             case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE ->
                 LOG.warn("RollbackEngine: refusing to restore non-rollbackable {} (id={})", a.type(), a.id());
-            default ->
-                LOG.warn("RollbackEngine: restore not implemented for {} (id={})", a.type(), a.id());
         }
     }
 
