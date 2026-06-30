@@ -5,6 +5,55 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-06-30
+
+**CoreProtect 1:1 command-surface parity wave.**
+
+`/vg` remains the primary command root (Vonix branding). `/co` and `/guardian` are now first-class aliases that resolve to the same Brigadier tree — operators with CoreProtect muscle memory can type `/co lookup …` and get identical behaviour.
+
+### Added
+
+- **CoreProtect 1:1 command surface.** Every CP subcommand, short alias, filter token, and hash flag from https://docs.coreprotect.net/commands/ is now supported:
+  - Subcommands: `inspect`, `lookup`, `rollback`, `restore`, `purge`, `near`, `undo`, `consumer pause|resume|toggle`, `status`, `reload`, `help`.
+  - Short aliases: `i` (inspect), `l` (lookup), `rb` (rollback), `rs` (restore).
+  - Root aliases: `/vg` (primary) + `/co` + `/guardian`.
+  - Filter tokens: `u:` `t:` `r:` `a:` `i:` `e:`.
+  - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, **`#optimize`** (new).
+  - Action aliases: `a:login` → `+session`, `a:logout` → `-session`, `a:inventory` → INVENTORY_DEPOSIT + INVENTORY_WITHDRAW.
+  - User actor sentinels: `u:#fire,#tnt,#creeper,#explosion` (CP-style non-player attribution tokens).
+- **Tab completion** (`GuardianSuggestions`) — context-aware completions for every CP token:
+  - Empty prefix → suggests every filter prefix + every hash flag.
+  - `u:` → online player names + actor sentinels.
+  - `t:` → common durations (`1h`, `30m`, `1d`, `7d`, `1w`, `2w`, `30d`).
+  - `r:` → numeric radii + `#global`, `#worldedit`, `#we`, `#nether`, `#overworld`, `#end`, and every loaded `#world_<key>` from the live server.
+  - `a:` → every action token with `+`/`-` variants where applicable (block, container, inventory, item, kill, session, chat, command, click, sign, username, login, logout).
+  - `i:`/`e:` → starter common-block list (full registry follow-up planned for v1.2.0).
+  - `#` → all hash flags.
+- **`/vg lookup` pagination** matching CP-style `<page>` and `<page>:<perPage>` syntax. `/vg lookup 2` jumps to page 2; `/vg lookup 1:25` sets page-size to 25.
+- **Default `r:10` on rollback/restore** when caller omits a radius and has a position (matches CP default). Lookup keeps the global default per CP.
+- **`/vg near`** — quick lookup at `r:5 t:1h` centered on the caller.
+- **`/vg consumer pause|resume|toggle`** — pause/resume the async writer queue (CP-parity for high-volume admin operations).
+- **`r:#nether` / `r:#overworld` / `r:#end` shortcuts** — parser maps to canonical `minecraft:the_nether` / `minecraft:overworld` / `minecraft:the_end` so DAO rows match (rows are persisted with the full namespaced key).
+- 25 new `CoreProtectFidelityTest` test cases covering every example from the CP command docs.
+
+### Fixed
+
+- **CRITICAL: `/vg purge` safety floor bypass.** `Purge.run` previously called `g.dao().purge(filter)` directly, skipping the CP-spec minimum-age floor (console 24h, in-game 30d) configured in `GuardianConfig.Purge`. `/vg purge u:foo` with no `t:` filter or with `t:1m` would delete rows that CoreProtect would refuse. Now routes through `g.purgeEngine().purge(filter, minAgeSeconds)` with the floor enforced by source (console vs in-game). Under-age filters now produce a friendly `"Purge refused: …; use a larger t: window"` reply instead of silent overdeletion.
+- **HIGH: `r:#nether` / `r:#overworld` / `r:#end` previously stored bare tokens** (`"nether"`, `"overworld"`, `"end"`) which silently matched zero rows because the DAO compares against the full namespaced key. Now maps to canonical vanilla keys at parse time.
+
+### Changed
+
+- **Default page size** is now configurable per-cell via constructor constant `DEFAULT_PAGE_SIZE` (was hardcoded `10`).
+- **`/vg purge` success reply** now reports both `removed N rows` and the `minAge=Ns` enforced — audit clarity for ops.
+- **Help text** rewritten in CP-style listing for every subcommand, alias, filter token, hash flag, action, and user sentinel.
+
+### Engineering
+
+- 8 jars in matrix (Fabric 1.18.2/1.19.2/1.20.1/1.21.1 + Forge 1.18.2/1.19.2/1.20.1 + NeoForge 1.21.1).
+- 380 core tests passing (216 + 25 new CP-fidelity).
+- 13 commits on `v1.1.0-cp-fidelity` branch.
+- Wave 3 adversarial code review caught + closed 1 CRITICAL and 4 HIGH findings before tag.
+
 ## [1.0.4] — 2026-06-30
 
 **Read-after-write fix + CoreProtect parity hotfix wave.**
