@@ -426,13 +426,23 @@ public final class GuardianCommands {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
             }
+            // CP-1:1 safety floor: console = 24h, in-game = 30d.
+            final boolean isConsole = !(src.getEntity() instanceof ServerPlayer);
+            final long minAgeSeconds = isConsole
+                    ? g.config().purge().minAgeSecondsConsole()
+                    : g.config().purge().minAgeSecondsInGame();
             MinecraftServer server = src.getServer();
             final QueryFilter filter = qf;
             WORKER.submit(() -> {
                 try {
-                    long n = g.dao().purge(filter);
+                    var result = g.purgeEngine().purge(filter, minAgeSeconds);
                     server.execute(() -> send(src, ChatRenderer.warning(g.theme(),
-                            "[VonixGuardian] Purge removed " + n + " rows.")));
+                            "[VonixGuardian] Purge removed " + result.deletedCount()
+                                    + " rows (minAge=" + minAgeSeconds + "s).")));
+                } catch (IllegalArgumentException tooRecent) {
+                    server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Purge refused: " + tooRecent.getMessage()
+                                    + " (CP-1:1 safety floor; use a larger t: window)")));
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Purge failed", t);
                     server.execute(() -> send(src, ChatRenderer.error(g.theme(),
