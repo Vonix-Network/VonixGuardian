@@ -52,7 +52,11 @@ public final class GuardianSuggestions {
     };
 
     private static final String[] RADIUS_LITERALS = {
-            "5", "10", "20", "50", "#global", "#worldedit", "#we"
+            "5", "10", "20", "50",
+            "#global", "#worldedit", "#we",
+            // CP-1:1 vanilla dimension shortcuts. Map to canonical world keys
+            // in the parser (QueryParser parseRadiusTok).
+            "#nether", "#overworld", "#end"
     };
 
     /** Every action token CoreProtect accepts on {@code a:}. */
@@ -61,10 +65,14 @@ public final class GuardianSuggestions {
             "container", "+container", "-container",
             "inventory", "+inventory", "-inventory",
             "item", "+item", "-item",
-            "kill",
+            "kill", "+kill", "-kill",
             "session", "+session", "-session",
-            "login",
-            "chat", "command", "click", "sign", "username"
+            "login", "logout",
+            "chat", "+chat", "-chat",
+            "command", "+command", "-command",
+            "click", "+click", "-click",
+            "sign", "+sign", "-sign",
+            "username", "+username", "-username"
     };
 
     /** Common block ids — starter list, full registry can be wired later. */
