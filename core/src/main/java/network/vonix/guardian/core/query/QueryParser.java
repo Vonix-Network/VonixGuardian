@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -26,6 +27,31 @@ import java.util.stream.Collectors;
  * </pre>
  */
 public final class QueryParser {
+
+    /**
+     * CoreProtect-compatible {@code a:} token aliases. CP exposes
+     * {@code a:login} / {@code a:logout} as friendly synonyms for the join /
+     * leave session events; VonixGuardian's canonical tokens are
+     * {@code +session} / {@code -session}. The alias rewrite runs BEFORE
+     * {@link ActionType#byToken(String)} so the rest of the action-parsing
+     * pipeline (including sign detection) sees the canonical form.
+     */
+    private static final Map<String, String> CP_TOKEN_ALIASES = Map.of(
+        "login",  "+session",
+        "logout", "-session"
+    );
+
+    /**
+     * CoreProtect-compatible {@code a:} multi-target aliases. Some CP tokens
+     * (notably {@code a:inventory}) cover a sign-pair of canonical action
+     * types. Each entry expands to {@link ActionType}s with {@link
+     * QueryFilter.ActionSelect.Sign#ANY}.
+     */
+    private static final Map<String, ActionType[]> CP_MULTI_ALIASES = Map.of(
+        "inventory", new ActionType[] {
+            ActionType.INVENTORY_DEPOSIT, ActionType.INVENTORY_WITHDRAW
+        }
+    );
 
     /**
      * Caller-supplied context for parsing positional tokens.
@@ -179,13 +205,17 @@ public final class QueryParser {
         return -1;
     }
 
-    /** Single-pass duration tokenizer: ((digit+ ('.' digit+)?) unit)+ */
+    /** Single-pass duration tokenizer: ((digit+ ('.' digit+)?) unit)+ — commas between
+     *  components are tolerated for CoreProtect parity (e.g. {@code 2w,5d,7h,2m,10s}). */
     private long parseDurationMillis(String tok, String s) {
         long total = 0L;
         int i = 0;
         int n = s.length();
         boolean anyComponent = false;
         while (i < n) {
+            // Skip CP-style component separators.
+            while (i < n && s.charAt(i) == ',') i++;
+            if (i >= n) break;
             int numStart = i;
             while (i < n && (s.charAt(i) >= '0' && s.charAt(i) <= '9')) i++;
             if (i < n && s.charAt(i) == '.') {
@@ -246,6 +276,11 @@ public final class QueryParser {
                     // the player's WorldEdit region directly when neither r: nor a
                     // world selector is present and a WE selection exists.
                 }
+                // CoreProtect-parity dimension shorthands. The raw key is preserved;
+                // the lookup engine resolves it to a concrete world id at query time.
+                case "#nether"    -> b.worldSel(new QueryFilter.WorldSel("nether",    false));
+                case "#overworld" -> b.worldSel(new QueryFilter.WorldSel("overworld", false));
+                case "#end"       -> b.worldSel(new QueryFilter.WorldSel("end",       false));
                 default -> {
                     if (lower.startsWith("#world_")) {
                         String key = value.substring("#world_".length());
@@ -288,6 +323,21 @@ public final class QueryParser {
             throw bad(tok, "a: requires an action name — " + actionSuggestion());
         }
         String lower = value.toLowerCase(Locale.ROOT);
+        // 0a) CoreProtect-parity multi-target alias (e.g. a:inventory expands to
+        //     INVENTORY_DEPOSIT + INVENTORY_WITHDRAW with Sign.ANY).
+        ActionType[] multi = CP_MULTI_ALIASES.get(lower);
+        if (multi != null) {
+            for (ActionType t : multi) {
+                b.addAction(new QueryFilter.ActionSelect(t, QueryFilter.ActionSelect.Sign.ANY));
+            }
+            return;
+        }
+        // 0b) CoreProtect-parity scalar alias rewrite (login -> +session, logout -> -session).
+        //     Applied BEFORE the byToken lookup so sign-detection sees the canonical form.
+        String aliased = CP_TOKEN_ALIASES.get(lower);
+        if (aliased != null) {
+            lower = aliased;
+        }
         // 1) exact token match (handles `a:+block`, `a:-container`, `a:kill`, ...)
         try {
             ActionType direct = ActionType.byToken(lower);
@@ -385,8 +435,9 @@ public final class QueryParser {
             case "count"   -> b.countOnly(true);
             case "verbose" -> b.verbose(true);
             case "silent"  -> b.silent(true);
+            case "optimize" -> b.optimize(true);
             default -> throw bad(tok,
-                "unknown flag '" + tok + "' — valid flags: #preview, #count, #verbose, #silent");
+                "unknown flag '" + tok + "' — valid flags: #preview, #count, #verbose, #silent, #optimize");
         }
     }
 

@@ -206,7 +206,8 @@ public final class RollbackEngine {
             base.countOnly(),
             base.preview(),
             base.verbose(),
-            base.silent()
+            base.silent(),
+            base.optimize()
         );
     }
 

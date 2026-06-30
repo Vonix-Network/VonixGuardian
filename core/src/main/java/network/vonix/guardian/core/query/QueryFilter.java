@@ -43,6 +43,8 @@ import java.util.UUID;
  * @param preview      {@code #preview} flag
  * @param verbose      {@code #verbose} flag
  * @param silent       {@code #silent} flag
+ * @param optimize     {@code #optimize} flag (CoreProtect-parity; instructs the
+ *                     purge path to compact the DB after a delete)
  */
 public record QueryFilter(
     List<UserSel> users,
@@ -58,7 +60,8 @@ public record QueryFilter(
     boolean countOnly,
     boolean preview,
     boolean verbose,
-    boolean silent
+    boolean silent,
+    boolean optimize
 ) {
 
     /** Compact-canonical constructor: defensively copies lists and replaces nulls with empty. */
@@ -79,7 +82,7 @@ public record QueryFilter(
             null, null, null,
             List.of(), List.of(), List.of(),
             null,
-            false, false, false, false
+            false, false, false, false, false
         );
     }
 
@@ -106,7 +109,7 @@ public record QueryFilter(
             new WorldSel(worldId, false),
             centerX, centerY, centerZ,
             actions, include, exclude,
-            rolledBack, countOnly, preview, verbose, silent
+            rolledBack, countOnly, preview, verbose, silent, optimize
         );
     }
 
@@ -168,6 +171,7 @@ public record QueryFilter(
         private boolean preview;
         private boolean verbose;
         private boolean silent;
+        private boolean optimize;
 
         private Builder() {}
 
@@ -187,6 +191,7 @@ public record QueryFilter(
         public Builder preview(boolean v)   { this.preview   = v; return this; }
         public Builder verbose(boolean v)   { this.verbose   = v; return this; }
         public Builder silent(boolean v)    { this.silent    = v; return this; }
+        public Builder optimize(boolean v)  { this.optimize  = v; return this; }
 
         public List<UserSel>    users()   { return Collections.unmodifiableList(users); }
         public List<ActionSelect> actions() { return Collections.unmodifiableList(actions); }
@@ -204,6 +209,7 @@ public record QueryFilter(
         public boolean          preview()   { return preview; }
         public boolean          verbose()   { return verbose; }
         public boolean          silent()    { return silent; }
+        public boolean          optimize()  { return optimize; }
 
         /** @return the immutable {@link QueryFilter}. */
         public QueryFilter build() {
@@ -212,7 +218,7 @@ public record QueryFilter(
                 centerX, centerY, centerZ,
                 actions, include, exclude,
                 rolledBack,
-                countOnly, preview, verbose, silent
+                countOnly, preview, verbose, silent, optimize
             );
         }
     }
