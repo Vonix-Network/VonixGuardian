@@ -80,6 +80,19 @@ dependencies {
             strictly libs.versions.sqlite.jdbc.get()
         }
     }
+    // mysql-connector-j is pure Java (no JNI). JIJ so operators don't have to
+    // manually drop the driver in /mods when config.database.type=mysql.
+    jarJar(libs.mysql.connector) {
+        version {
+            strictly libs.versions.mysql.connector.get()
+        }
+    }
+    // postgresql is pure Java. Same rationale — JIJ for db.type=postgresql.
+    jarJar(libs.postgresql) {
+        version {
+            strictly libs.versions.postgresql.get()
+        }
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {

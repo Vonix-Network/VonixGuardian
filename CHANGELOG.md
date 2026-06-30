@@ -5,6 +5,46 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-06-30
+
+**Hotfix release: bundle MySQL + PostgreSQL JDBC drivers.**
+
+v1.1.0 only bundled the SQLite driver. Servers configured with
+`database.type = mysql` or `database.type = postgresql` failed to boot with
+`Failed to get driver instance for jdbcUrl=jdbc:mysql://…` because HikariCP
+couldn't resolve a driver class. Operators had to manually drop
+`mysql-connector-j` / `postgresql` into `/mods` — undocumented and easy to miss.
+
+This release ships both drivers inside the mod jar using the same
+JarInJar / shaded packaging the SQLite driver uses (best-practice
+"batteries included"). No operator action required: existing config keeps
+working, and the driver is loaded automatically when `database.type` selects
+its backend.
+
+### Fixed
+
+- **Forge / NeoForge cells**: `mysql-connector-j` 8.4.0 and `postgresql` 42.7.4
+  added to the `jarJar` block alongside `sqlite-jdbc`. Loader extracts at
+  runtime and dedupes by Maven coords across mods.
+- **Fabric cells**: `mysql-connector-j` and `postgresql` added to the `shaded`
+  Shadow configuration and excluded from `minimize` (driver classes are loaded
+  reflectively via `java.sql.DriverManager` so the Shadow class-graph minimizer
+  cannot see references and would otherwise strip them).
+- Drivers are pure-Java (no JNI), so unlike sqlite-jdbc they're safe to ship
+  flat inside the Fabric fat jar — no relocation needed.
+
+### Diff
+
+```
+mc-1.18.2/{forge,fabric}/build.gradle      +6 lines (JIJ entries + minimize exclude)
+mc-1.19.2/{forge,fabric}/build.gradle      +6 lines (JIJ entries + minimize exclude)
+mc-1.20.1/{forge,fabric}/build.gradle      +6 lines (JIJ entries + minimize exclude)
+mc-1.21.1/{neoforge,fabric}/build.gradle   +6 lines (JIJ entries + minimize exclude)
+gradle.properties                          mod_version 1.1.0 → 1.1.1
+```
+
+No source-code changes. All 380 core tests still pass (unchanged).
+
 ## [1.1.0] — 2026-06-30
 
 **CoreProtect 1:1 command-surface parity wave.**

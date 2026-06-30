@@ -52,6 +52,8 @@ dependencies {
     // We mirror each as compileOnly below so source compiles.
     shaded project(':core')
     shaded libs.sqlite.jdbc                       // unrelocated (JNI parity)
+    shaded libs.mysql.connector                   // pure-Java JDBC, no JNI
+    shaded libs.postgresql                        // pure-Java JDBC, no JNI
     shaded(libs.hikaricp) { exclude group: 'org.slf4j' }
     shaded libs.gson
 
@@ -59,6 +61,8 @@ dependencies {
     // (excluded from shaded, but loader provides at runtime).
     compileOnly project(':core')
     compileOnly libs.sqlite.jdbc
+    compileOnly libs.mysql.connector
+    compileOnly libs.postgresql
     compileOnly libs.hikaricp
     compileOnly libs.gson
     compileOnly libs.slf4j.api
@@ -93,6 +97,8 @@ shadowJar {
 
     minimize {
         exclude(dependency('org.xerial:sqlite-jdbc:.*'))
+        exclude(dependency('com.mysql:mysql-connector-j:.*'))
+        exclude(dependency('org.postgresql:postgresql:.*'))
         exclude(dependency('com.zaxxer:HikariCP:.*'))
     }
 

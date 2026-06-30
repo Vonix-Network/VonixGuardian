@@ -53,6 +53,15 @@ dependencies {
     jarJar(group: 'org.xerial', name: 'sqlite-jdbc', version: "[${libs.versions.sqlite.jdbc.get()},)") {
         jarJar.pin(it, libs.versions.sqlite.jdbc.get())
     }
+    // mysql-connector-j is pure Java (no JNI). JIJ so operators don't have to
+    // manually drop the driver in /mods when config.database.type=mysql.
+    jarJar(group: 'com.mysql', name: 'mysql-connector-j', version: "[${libs.versions.mysql.connector.get()},)") {
+        jarJar.pin(it, libs.versions.mysql.connector.get())
+    }
+    // postgresql is pure Java. Same rationale — JIJ for db.type=postgresql.
+    jarJar(group: 'org.postgresql', name: 'postgresql', version: "[${libs.versions.postgresql.get()},)") {
+        jarJar.pin(it, libs.versions.postgresql.get())
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
