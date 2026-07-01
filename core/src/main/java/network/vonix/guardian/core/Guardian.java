@@ -9,9 +9,12 @@ import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.api.GuardianAPI;
 import network.vonix.guardian.core.api.VonixGuardianAPI;
+import network.vonix.guardian.core.blacklist.BlacklistFile;
+import network.vonix.guardian.core.blacklist.BlacklistMatcher;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.PerWorldConfigStore;
+import network.vonix.guardian.core.event.BlacklistFileHook;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.PerWorldEventHook;
@@ -94,6 +97,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     /** Latched on first {@link #api()} call. */
     private final AtomicReference<GuardianAPI> apiRef = new AtomicReference<>();
+
+    /** Currently-live blacklist.txt hook, or {@code null} if the file is absent. */
+    private volatile BlacklistFileHook blacklistHook;
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
@@ -229,6 +235,21 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             LOG.info(MARKER, "Per-world overrides loaded: {} world(s) — {}",
                     store.overriddenWorlds().size(), store.overriddenWorlds());
         }
+
+        // ---- W3-B6: load blacklist.txt (if present) and register as an EventHook ----
+        try {
+            Path blPath = dataDir.resolve("blacklist.txt");
+            BlacklistFile.Parsed parsed = BlacklistFile.load(blPath);
+            if (!parsed.equals(BlacklistFile.Parsed.empty())) {
+                BlacklistMatcher matcher = new BlacklistMatcher(parsed);
+                BlacklistFileHook hook = new BlacklistFileHook(matcher);
+                gate.addHook(hook);
+                g.blacklistHook = hook;
+                LOG.info(MARKER, "blacklist.txt loaded ({} rules)", matcher.size());
+            }
+        } catch (Exception e) {
+            LOG.warn(MARKER, "blacklist.txt load failed (non-fatal)", e);
+        }
         return g;
     }
 
@@ -254,6 +275,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * never been created via {@code /vg reload}.
      */
     public PerWorldConfigStore perWorldStore() { return perWorldStore; }
+    /**
+     * Live {@code blacklist.txt} hook, or {@code null} if the file is missing.
+     * Diagnostics and tests only; the hook is already registered on the
+     * {@link EventGate} chain.
+     * @since 1.1.7 (W3-B6)
+     */
+    public BlacklistFileHook blacklistHook()       { return blacklistHook; }
     public EventSubmitter submitter()      { return this; }
 
     /**
@@ -476,6 +504,33 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         } catch (Exception e) {
             errs.add("per-world reload failed: " + e.getMessage());
             LOG.warn(MARKER, "per-world reload failed", e);
+        }
+
+        // W3-B6: reload blacklist.txt. Re-parse from disk; if present, build a
+        // fresh matcher and register a new hook on the new gate. Report rule
+        // count under "blacklist.txt" in the hot-swapped list.
+        try {
+            Path blPath = (dataDir != null) ? dataDir.resolve("blacklist.txt") : null;
+            BlacklistFile.Parsed parsed = (blPath != null)
+                    ? BlacklistFile.load(blPath) : BlacklistFile.Parsed.empty();
+            int oldCount = (this.blacklistHook == null) ? 0 : this.blacklistHook.matcher().size();
+            if (parsed.size() > 0) {
+                BlacklistMatcher matcher = new BlacklistMatcher(parsed);
+                BlacklistFileHook hook = new BlacklistFileHook(matcher);
+                this.gate.addHook(hook);
+                this.blacklistHook = hook;
+                if (matcher.size() != oldCount) {
+                    hot.add("blacklist.txt (" + matcher.size() + " rules)");
+                }
+            } else {
+                this.blacklistHook = null;
+                if (oldCount > 0) {
+                    hot.add("blacklist.txt (cleared)");
+                }
+            }
+        } catch (Exception e) {
+            errs.add("blacklist.txt reload failed: " + e.getMessage());
+            LOG.warn(MARKER, "blacklist.txt reload failed", e);
         }
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
