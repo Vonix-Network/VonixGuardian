@@ -7,6 +7,7 @@ package network.vonix.guardian.core;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
@@ -33,12 +34,14 @@ import org.slf4j.MarkerFactory;
 
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * VonixGuardian top-level facade.
@@ -64,17 +67,22 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     private static final Logger LOG = LoggerFactory.getLogger(Guardian.class);
 
-    private final GuardianConfig config;
+    private volatile GuardianConfig config;
     private final GuardianDao dao;
     private final BatchedAsyncWriteQueue queue;
-    private final JsonLinesLogFile logFile;             // null if disabled
-    private final EventGate gate;
+    private volatile EventGate gate;
     private final PermissionResolver perms;
     private final RollbackEngine rollbackEngine;
     private final PurgeEngine purgeEngine;
     private final UndoStack undoStack;
-    private final Theme theme;
+    private volatile Theme theme;
     private final EntityBlockChangeCoalescer entityBlockCoalescer;
+    /** Latched at boot when logFile.enabled; hot-swap of enabled flag flips this AtomicReference. */
+    private final AtomicReference<JsonLinesLogFile> logFileRef;
+    /** Server data-dir root, kept so reload can rebuild a JsonLinesLogFile at the same relative path. */
+    private final Path dataDir;
+    /** Path to the on-disk config.json; kept so /vg reload can re-read it without any cell-side plumbing. */
+    private volatile Path configPath;
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
@@ -82,18 +90,18 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private Guardian(GuardianConfig config,
                      GuardianDao dao,
                      BatchedAsyncWriteQueue queue,
-                     JsonLinesLogFile logFile,
+                     AtomicReference<JsonLinesLogFile> logFileRef,
                      EventGate gate,
                      PermissionResolver perms,
                      RollbackEngine rollbackEngine,
                      PurgeEngine purgeEngine,
                      UndoStack undoStack,
                      Theme theme,
-                     EntityBlockChangeCoalescer entityBlockCoalescer) {
+                     EntityBlockChangeCoalescer entityBlockCoalescer,
+                     Path dataDir) {
         this.config = config;
         this.dao = dao;
         this.queue = queue;
-        this.logFile = logFile;
         this.gate = gate;
         this.perms = perms;
         this.rollbackEngine = rollbackEngine;
@@ -101,6 +109,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.undoStack = undoStack;
         this.theme = theme;
         this.entityBlockCoalescer = entityBlockCoalescer;
+        this.logFileRef = logFileRef;
+        this.dataDir = dataDir;
     }
 
     /**
@@ -145,17 +155,19 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         }
 
         final JsonLinesLogFile logRef = logFile;
+        final AtomicReference<JsonLinesLogFile> logHolder = new AtomicReference<>(logRef);
         BatchedAsyncWriteQueue queue = new BatchedAsyncWriteQueue(
                 config.queue().maxSize(),
                 config.queue().flushIntervalMs(),
                 config.queue().batchSize(),
                 batch -> {
                     dao.insertBatch(batch);
-                    if (logRef != null) {
+                    JsonLinesLogFile lf = logHolder.get();
+                    if (lf != null) {
                         for (Action a : batch) {
-                            logRef.append(a);
+                            lf.append(a);
                         }
-                        logRef.flush();
+                        lf.flush();
                     }
                 },
                 tf);
@@ -188,7 +200,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         }
 
         LOG.info(MARKER, "VonixGuardian online.");
-        return new Guardian(config, dao, queue, logFile, gate, perms, rollback, purgeEng, undo, theme, coal);
+        return new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir);
     }
 
     // -------------------------------------------------------------------- getters
@@ -205,6 +217,185 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public EventSubmitter submitter()      { return this; }
     public long submitted()                { return submitted.get(); }
     public long gated()                    { return gated.get(); }
+
+    /**
+     * Path to the on-disk {@code config.json} the loader booted from.
+     * May be {@code null} if the loader never called {@link #setConfigPath(Path)}
+     * (e.g. tests that hand-construct via {@link #boot(GuardianConfig, Path, WorldMutator, OpLevelFallback, Executor, ThreadFactory)}
+     * without going through a Guardian bootstrap).
+     */
+    public Path configPath()               { return configPath; }
+
+    /**
+     * Set the on-disk config path the engine can reload from later. Called by
+     * each loader bootstrap immediately after {@link #boot} so that
+     * {@code /vg reload} can find the file without cell-side plumbing.
+     */
+    public void setConfigPath(Path p)      { this.configPath = p; }
+
+    // -------------------------------------------------------------------- reload
+
+    /**
+     * Result of a {@link #reloadConfig(Path)} call.
+     *
+     * <p>Immutable snapshot describing what the reload did / could not do:
+     * <ul>
+     *   <li>{@code hotSwapped}: names of config subsections whose new value took
+     *       effect in-process (no restart required).</li>
+     *   <li>{@code requiresRestart}: subsections that changed on disk but were
+     *       <em>not</em> applied — restarting the server is required for them
+     *       to take effect. Old in-memory values remain live.</li>
+     *   <li>{@code errors}: fatal problems encountered (file missing, JSON
+     *       malformed, validation failed, IO error). When non-empty, the live
+     *       config is unchanged.</li>
+     * </ul>
+     *
+     * <p>Mirrors CoreProtect's {@code /co reload} contract as documented in
+     * {@code docs/COREPROTECT-COMPARISON.md} &sect; 1.2.
+     */
+    public record ReloadResult(List<String> hotSwapped,
+                               List<String> requiresRestart,
+                               List<String> errors) {
+        public ReloadResult {
+            hotSwapped = List.copyOf(hotSwapped);
+            requiresRestart = List.copyOf(requiresRestart);
+            errors = List.copyOf(errors);
+        }
+    }
+
+    /**
+     * Re-read the on-disk config file, hot-swap in-flight all subsections that
+     * are safe to swap, and report anything that changed but would require a
+     * server restart to take effect.
+     *
+     * <p><b>Hot-swap safe</b> (applied in-process):
+     * {@code actions.*} (toggles + blacklists + coalescer knobs + entity
+     * allowlist), {@code logFile.enabled}, {@code lookup.defaultPageSize} and
+     * {@code lookup.maxResultRows}, {@code privacy.hashIps},
+     * {@code purge.*} floors, {@code theme}.
+     *
+     * <p><b>Restart required</b> (change detected but old value stays live):
+     * {@code database.*}, {@code queue.maxSize / flushIntervalMs / batchSize},
+     * {@code logFile.directory / gzipRotated / retentionDays},
+     * {@code permissions.*}, {@code lookup.maxConcurrent}, {@code privacy.salt}.
+     *
+     * @param path config.json location; if {@code null}, uses {@link #configPath()}
+     * @return a summary of what changed and how — never {@code null}
+     */
+    public ReloadResult reloadConfig(Path path) {
+        List<String> hot = new ArrayList<>();
+        List<String> restart = new ArrayList<>();
+        List<String> errs = new ArrayList<>();
+
+        Path p = path != null ? path : configPath;
+        if (p == null && dataDir != null) {
+            // Convention shared by every loader bootstrap (Fabric / Forge / NeoForge)
+            // — falling back to it means /vg reload works out of the box even if
+            // the loader forgot to call setConfigPath(). Matches ForgeBootstrap etc.
+            p = dataDir.resolve("config").resolve("vonixguardian").resolve("config.json");
+        }
+        if (p == null) {
+            errs.add("no config path known (setConfigPath was never called and no dataDir bound)");
+            return new ReloadResult(hot, restart, errs);
+        }
+
+        GuardianConfig fresh;
+        try {
+            fresh = ConfigLoader.load(p);
+        } catch (Exception e) {
+            errs.add("load failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            LOG.warn(MARKER, "Config reload failed for {}", p, e);
+            return new ReloadResult(hot, restart, errs);
+        }
+
+        GuardianConfig old = this.config;
+
+        // ---- restart-required diffs ----
+        if (!Objects.equals(old.database(), fresh.database())) restart.add("database");
+        if (!Objects.equals(old.queue(), fresh.queue())) restart.add("queue");
+        if (old.logFile() != null && fresh.logFile() != null) {
+            if (!Objects.equals(old.logFile().directory(), fresh.logFile().directory())
+                || old.logFile().gzipRotated() != fresh.logFile().gzipRotated()
+                || old.logFile().retentionDays() != fresh.logFile().retentionDays()) {
+                restart.add("logFile.directory/gzipRotated/retentionDays");
+            }
+        }
+        if (!Objects.equals(old.permissions(), fresh.permissions())) restart.add("permissions");
+        if (old.lookup().maxConcurrent() != fresh.lookup().maxConcurrent()) restart.add("lookup.maxConcurrent");
+        if (!Objects.equals(old.privacy().salt(), fresh.privacy().salt())) restart.add("privacy.salt");
+
+        // ---- hot-swap: assemble a merged config that keeps the restart-required
+        //      subsections from the OLD instance (they weren't applied) and takes
+        //      everything else from FRESH. Then atomically swap the volatile ref
+        //      and rebuild dependent state.
+        GuardianConfig merged = new GuardianConfig(
+            old.database(),   // restart-required — keep old
+            old.queue(),      // restart-required — keep old
+            new GuardianConfig.LogFile(
+                fresh.logFile().enabled(),          // HOT
+                old.logFile().directory(),          // restart
+                old.logFile().gzipRotated(),        // restart
+                old.logFile().retentionDays()       // restart
+            ),
+            fresh.actions(),                        // HOT (whole subsection)
+            old.permissions(),                      // restart-required
+            new GuardianConfig.Lookup(
+                fresh.lookup().defaultPageSize(),   // HOT
+                fresh.lookup().maxRadius(),         // HOT
+                fresh.lookup().maxResultRows(),     // HOT
+                old.lookup().maxConcurrent()        // restart
+            ),
+            new GuardianConfig.Privacy(
+                fresh.privacy().hashIps(),          // HOT
+                old.privacy().salt()                // restart
+            ),
+            fresh.purge(),                          // HOT
+            fresh.theme()                           // HOT
+        );
+
+        // Track what actually changed to report as "hot-swapped".
+        if (!Objects.equals(old.actions(), fresh.actions())) hot.add("actions");
+        if (old.logFile().enabled() != fresh.logFile().enabled()) hot.add("logFile.enabled");
+        if (old.lookup().defaultPageSize() != fresh.lookup().defaultPageSize()
+            || old.lookup().maxRadius() != fresh.lookup().maxRadius()
+            || old.lookup().maxResultRows() != fresh.lookup().maxResultRows()) {
+            hot.add("lookup.defaultPageSize/maxRadius/maxResultRows");
+        }
+        if (old.privacy().hashIps() != fresh.privacy().hashIps()) hot.add("privacy.hashIps");
+        if (!Objects.equals(old.purge(), fresh.purge())) hot.add("purge");
+        if (!Objects.equals(old.theme(), fresh.theme())) hot.add("theme");
+
+        // Swap in.
+        this.config = merged;
+        this.gate = new EventGate(merged.actions());
+        this.theme = ThemeRegistry.get(merged.theme());
+
+        // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
+        // (build a new JsonLinesLogFile at the same directory).
+        try {
+            JsonLinesLogFile currentLf = logFileRef.get();
+            boolean wantEnabled = merged.logFile().enabled();
+            if (wantEnabled && currentLf == null && dataDir != null) {
+                Path logDir = dataDir.resolve(merged.logFile().directory());
+                JsonLinesLogFile fresh2 = new JsonLinesLogFile(
+                        logDir,
+                        merged.logFile().gzipRotated(),
+                        merged.logFile().retentionDays(),
+                        Clock.systemUTC());
+                logFileRef.set(fresh2);
+            } else if (!wantEnabled && currentLf != null) {
+                logFileRef.set(null);
+                try { currentLf.close(); } catch (Exception ignored) { /* best-effort */ }
+            }
+        } catch (Exception e) {
+            errs.add("logFile hot-swap failed: " + e.getMessage());
+            LOG.warn(MARKER, "logFile hot-swap failed", e);
+        }
+
+        LOG.info(MARKER, "Config reloaded from {} (hot={}, restart={}, errors={})",
+                p, hot, restart, errs);
+        return new ReloadResult(hot, restart, errs);
+    }
 
     // -------------------------------------------------------------------- EventSubmitter
 
@@ -575,8 +766,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             LOG.warn(MARKER, "Queue drain raised", e);
         }
         try {
-            if (logFile != null) {
-                logFile.close();
+            JsonLinesLogFile lf = logFileRef.get();
+            if (lf != null) {
+                lf.close();
             }
         } catch (Exception e) {
             LOG.warn(MARKER, "Log-file close raised", e);

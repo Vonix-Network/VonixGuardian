@@ -537,8 +537,22 @@ public final class GuardianCommands {
         private Reload() {}
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
-            send(ctx.getSource(), ChatRenderer.warning(g.theme(),
-                    "[VonixGuardian] Reload is not implemented yet — restart the server to re-read config."));
+            CommandSourceStack src = ctx.getSource();
+            Guardian.ReloadResult r = g.reloadConfig(g.configPath());
+            String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
+            String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
+            String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
+            send(src, ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
+            send(src, ChatRenderer.warning(g.theme(),
+                    "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
+            if (r.errors().isEmpty()) {
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] Errors: 0 (none)"));
+            } else {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Errors: " + r.errors().size() + " " + err));
+            }
             return 1;
         }
     }
@@ -563,7 +577,7 @@ public final class GuardianCommands {
                     "/vg undo                                — drop last rollback from history",
                     "/vg consumer pause|resume|toggle        — pause the writer queue",
                     "/vg status                              — queue / submission counters",
-                    "/vg reload                              — re-read config (TODO)",
+                    "/vg reload                              — re-read config.json + hot-swap safe knobs",
                     "",
                     "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
                     "               a:[+/-]<action>       i:<id>    e:<id>",
