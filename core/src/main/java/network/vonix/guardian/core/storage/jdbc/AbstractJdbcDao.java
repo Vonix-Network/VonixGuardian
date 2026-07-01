@@ -6,6 +6,7 @@ import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
 import network.vonix.guardian.core.storage.QueryCompiler;
 import network.vonix.guardian.core.storage.Schema;
+import network.vonix.guardian.core.storage.dbmigrate.RawJdbcAccess;
 import network.vonix.guardian.core.storage.migration.MigrationRunner;
 
 import java.sql.Connection;
@@ -35,7 +36,7 @@ import java.util.concurrent.Semaphore;
  * <p>Result-size cap: {@link #query} clamps the {@code limit} argument to
  * {@code min(limit, maxResultRows)}. A value of {@code 0} disables the cap.
  */
-public abstract class AbstractJdbcDao implements GuardianDao {
+public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
     private static final String INSERT_ACTION_SQL =
         "INSERT INTO vg_actions("
@@ -633,6 +634,28 @@ public abstract class AbstractJdbcDao implements GuardianDao {
         }
         worldIdByKey.put(key, found);
         return found;
+    }
+
+    // ------------------------------------------------------------------ RAW JDBC (backend-migration)
+
+    /**
+     * Grant a caller (backend migration job) raw access to a borrowed
+     * {@link Connection}. The connection is released on return regardless of
+     * whether {@code action} completed normally.
+     */
+    @Override
+    public <T> T withRawConnection(RawJdbcAccess.SqlAction<T> action) throws SQLException {
+        Connection c = borrow();
+        try {
+            return action.run(c);
+        } finally {
+            release(c);
+        }
+    }
+
+    /** Dialect surfaced to the backend-migration package. */
+    public Schema.Dialect currentDialect() {
+        return dialect();
     }
 
     // ------------------------------------------------------------------ UTIL

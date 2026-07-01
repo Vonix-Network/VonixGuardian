@@ -20,6 +20,7 @@ import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.query.QueryParseException;
 import network.vonix.guardian.core.query.QueryParser;
 import network.vonix.guardian.core.rollback.RollbackResult;
+import network.vonix.guardian.core.storage.dbmigrate.MigrateDbCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -145,6 +146,13 @@ public final class GuardianCommands {
                 .then(Commands.literal("reload")
                         .requires(s -> hasPerm(s, "vonixguardian.command.reload", g))
                         .executes(ctx -> Reload.run(ctx, g)))
+                // migrate-db <target-type> [CONFIRM] (console-only)
+                .then(Commands.literal("migrate-db")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.migrate-db", g))
+                        .then(Commands.argument("target", StringArgumentType.word())
+                                .executes(ctx -> MigrateDb.run(ctx, g, false))
+                                .then(Commands.argument("confirm", StringArgumentType.word())
+                                        .executes(ctx -> MigrateDb.run(ctx, g, true)))))
                 // help
                 .then(Commands.literal("help").executes(ctx -> Help.run(ctx, g)));
 
@@ -594,6 +602,41 @@ public final class GuardianCommands {
         }
     }
 
+    // ====================================================================== MigrateDb
+
+    /** {@code /vg migrate-db <target-type> [CONFIRM]} — console-only backend copy. */
+    public static final class MigrateDb {
+        private MigrateDb() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g, boolean withConfirmArg) {
+            CommandSourceStack src = ctx.getSource();
+            // Console-only, matching CoreProtect Patreon's /co migrate-db.
+            if (src.getEntity() instanceof ServerPlayer) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] migrate-db is console-only."));
+                return 0;
+            }
+            String target = StringArgumentType.getString(ctx, "target");
+            final boolean confirmed;
+            if (withConfirmArg) {
+                String confirm = StringArgumentType.getString(ctx, "confirm");
+                confirmed = MigrateDbCommand.CONFIRM_TOKEN.equals(confirm);
+                if (!confirmed) {
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] migrate-db: second argument must be '"
+                                    + MigrateDbCommand.CONFIRM_TOKEN + "' to proceed."));
+                    return 0;
+                }
+            } else {
+                confirmed = false;
+            }
+            MinecraftServer server = src.getServer();
+            WORKER.submit(() -> MigrateDbCommand.run(g, target, confirmed, line ->
+                    server.execute(() -> send(src, ChatRenderer.muted(g.theme(), line)))));
+            return 1;
+        }
+    }
+
     // ====================================================================== Help
 
     /** {@code /vg help} — CoreProtect-style command summary. */
@@ -615,6 +658,7 @@ public final class GuardianCommands {
                     "/vg consumer pause|resume|toggle        — pause the writer queue",
                     "/vg status                              — queue / submission counters",
                     "/vg reload                              — re-read config.json + hot-swap safe knobs",
+                    "/vg migrate-db <sqlite|mysql|postgresql> CONFIRM  — console-only backend copy",
                     "",
                     "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
                     "               a:[+/-]<action>       i:<id>    e:<id>",
