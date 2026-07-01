@@ -5,6 +5,40 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — W2-02 event wiring (A8/A9/A10)
+
+- **HANGING_PLACE / HANGING_BREAK submit paths wired on all 4 Forge/NeoForge
+  cells** (mc-1.18.2/forge, mc-1.19.2/forge, mc-1.20.1/forge, mc-1.21.1/neoforge).
+  Forge/NeoForge do not expose Bukkit-style `HangingPlaceEvent`/`HangingBreakEvent`,
+  so:
+  - `HANGING_PLACE` is observed via `EntityJoinLevelEvent` / `EntityJoinWorldEvent`
+    filtered for `net.minecraft.world.entity.decoration.HangingEntity` subclasses
+    (ItemFrame, GlowItemFrame, Painting, LeashFenceKnotEntity). Attribution uses
+    the existing damage-history resolver so player-placed frames get the placer.
+    Chunk-load reanimations (`loadedFromDisk()`) are filtered out for parity with
+    `ENTITY_SPAWN`.
+  - `HANGING_BREAK` is observed via `AttackEntityEvent` for the player-caused
+    path. Non-player breaks (arrows, explosions, mob damage) are left as
+    `TODO(A9-style)` requiring a mixin wave.
+
+### Documented — A9 bucket & block-state mixin plan
+
+- `docs/A9-BUCKET-NEOFORGE-1211-DESIGN.md` — mixin plan for NeoForge 1.21.1
+  `BUCKET_EMPTY` / `BUCKET_FILL` after the upstream removal of `FillBucketEvent`.
+  Recommends `@Mixin(BucketItem)` on `use(Level,Player,InteractionHand)` and
+  `@Mixin(MilkBucketItem)` on `finishUsingItem` with concrete injection points.
+  **Not shipped in this wave.**
+- Inline `TODO(A9-style)` in each cell's events file documenting that
+  `submitBurn` / `submitIgnite` / `submitFade` / `submitForm` / `submitSpread` /
+  `submitDispense` / `submitLeavesDecay` are Bukkit-only APIs; Forge/NeoForge
+  expose no fire-able event surface for those state changes. Wiring them
+  requires a companion mixin wave (targets: `FireBlock#tick`, `IceBlock#tick`,
+  `SpreadingSnowyDirtBlock#tick`, `LeavesBlock#randomTick`,
+  `DispenserBlock#dispenseFrom`, etc.). Handlers intentionally left unwired
+  rather than half-wired so the audit log doesn't misrepresent coverage.
+
 ## [1.1.5] — 2026-07-01
 
 **CoreProtect-style vanilla-griefer allowlist at the listener — the real fix
