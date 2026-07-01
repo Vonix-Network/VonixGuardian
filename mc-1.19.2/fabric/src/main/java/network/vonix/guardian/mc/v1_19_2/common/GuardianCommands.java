@@ -450,7 +450,7 @@ public final class GuardianCommands {
 
     // ====================================================================== Undo
 
-    /** {@code /vg undo} — reverse the last rollback/restore. */
+    /** {@code /vg undo} — reverse the last rollback/restore by executing its inverse. */
     public static final class Undo {
         private Undo() {}
 
@@ -464,8 +464,40 @@ public final class GuardianCommands {
                 send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] Nothing to undo."));
                 return 0;
             }
-            send(src, ChatRenderer.success(g.theme(),
-                    "[VonixGuardian] Undo: dropped " + popped.get().affectedCount() + " entries from history."));
+            RollbackResult prev = popped.get();
+            QueryFilter originalFilter = prev.originalFilter();
+            if (originalFilter == null) {
+                // Legacy pre-v1.1.6 undo entry — no filter captured, cannot revert world state.
+                LOG.info(Guardian.MARKER,
+                        "Undo: popped legacy entry (no originalFilter); {} affected id(s) dropped from history",
+                        prev.affectedCount());
+                send(src, ChatRenderer.warning(g.theme(),
+                        "[VonixGuardian] Undo: dropped " + prev.affectedCount()
+                                + " entries from history (legacy entry — world state not reverted)."));
+                return 1;
+            }
+            MinecraftServer server = src.getServer();
+            final RollbackResult.Mode inverse = prev.inverseMode();
+            // W3-B2: run the inverse of the previous operation on exactly the same
+            // action set (originalFilter is normalized w/r/t rolledBack for the
+            // inverse mode by RollbackEngine.plan). We deliberately do NOT push
+            // the resulting RollbackResult back onto UndoStack — doing so would
+            // let repeated `/vg undo` invocations ping-pong between rollback and
+            // restore forever. Undo is a one-shot revert of the last op.
+            WORKER.submit(() -> {
+                try {
+                    var plan = g.rollbackEngine().plan(originalFilter, inverse, actor);
+                    RollbackResult result = g.rollbackEngine().execute(plan, false);
+                    server.execute(() -> send(src, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Undo (" + inverse + ") affected="
+                                    + result.affectedCount()
+                                    + " planned=" + result.plannedSteps())));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Undo failed", t);
+                    server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Undo error: " + t.getMessage())));
+                }
+            });
             return 1;
         }
     }

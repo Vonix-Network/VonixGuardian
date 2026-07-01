@@ -5,6 +5,27 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **W3-B2 — `/vg undo` now actually reverts world state.** Previously the
+  command just popped `UndoStack` and printed `"dropped N entries from
+  history"`; the world stayed in whatever state the previous
+  rollback/restore left it. `Undo.run` in all 8 cells' `GuardianCommands`
+  now dispatches asynchronously and calls
+  `RollbackEngine.execute(plan(popped.originalFilter(), popped.inverseMode(), actor), false)`
+  — running the inverse of the previous operation on exactly the same
+  action set (rollback→restore, restore→rollback), CoreProtect-parity.
+  The undo result is deliberately **not** re-pushed onto `UndoStack` so
+  repeated `/vg undo` invocations cannot ping-pong indefinitely. Legacy
+  pre-v1.1.6 stack entries (no `originalFilter`) fall back to the old
+  history-only message with an explicit warning that world state was not
+  reverted. New `UndoRevertTest` locks in the round-trip: rollback flags
+  `markRolledBack(ids, true)`, `/vg undo` (inverse plan) flags
+  `markRolledBack(ids, false)`, and the per-actor `UndoStack` cap
+  remains at 20.
+
 ## [1.1.6] — 2026-07-01
 
 **Wave-2 nightshift: 6 parallel subagent audits + fixes.** Fixes for the CRITICAL RollbackPlan silent-default (14 handlers restored), the CRITICAL Berk truncation storm (target column widened to 4096 chars), and 5 HIGH-severity wiring/parity issues surfaced by the Wave-1 CP-comparison + adversarial audit. See docs/COREPROTECT-COMPARISON.md and docs/WAVE-AUDIT-1.1.5.md for the underlying analysis.
