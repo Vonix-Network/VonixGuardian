@@ -114,13 +114,33 @@ public final class ConfigLoader {
      * to {@code false} which is the safe post-1.1.5 behavior.
      */
     private static GuardianConfig migrateForwardCompat(GuardianConfig cfg) {
-        if (cfg.actions() == null) return cfg;
-        var a = cfg.actions();
+        // Purge forward-compat: older configs pre-W3-B4 have no autoPurgeTime
+        // (Gson deserialises absent String to null) — backfill "03:30" to keep
+        // validation from firing on the first startup after upgrade.
+        // autoPurgeSeconds defaults to 0 (disabled), which is the safe default.
+        GuardianConfig work = cfg;
+        if (work.purge() != null && work.purge().autoPurgeTime() == null) {
+            var p = work.purge();
+            var newPurge = new GuardianConfig.Purge(
+                p.minAgeSecondsConsole(),
+                p.minAgeSecondsInGame(),
+                p.autoPurgeSeconds(),
+                "03:30"
+            );
+            LOG.info("Backfilling purge.autoPurgeTime=\"03:30\" (pre-W3-B4 config)");
+            work = new GuardianConfig(
+                work.database(), work.queue(), work.logFile(), work.actions(),
+                work.permissions(), work.lookup(), work.privacy(), newPurge,
+                work.theme()
+            );
+        }
+        if (work.actions() == null) return work;
+        var a = work.actions();
         boolean needsRewrite =
                 (a.entityBlockChangeCoalesceWindowMs() == 0L) ||
                 (a.entityBlockChangeMaxTracked() == 0) ||
                 (a.entityChangeAllowlist() == null);
-        if (!needsRewrite) return cfg;
+        if (!needsRewrite) return work;
 
         long window = a.entityBlockChangeCoalesceWindowMs() == 0L
                 ? 500L
@@ -145,9 +165,9 @@ public final class ConfigLoader {
                 allowlist, a.entityChangeLogAllEntities()
         );
         return new GuardianConfig(
-                cfg.database(), cfg.queue(), cfg.logFile(), newActions,
-                cfg.permissions(), cfg.lookup(), cfg.privacy(), cfg.purge(),
-                cfg.theme()
+                work.database(), work.queue(), work.logFile(), newActions,
+                work.permissions(), work.lookup(), work.privacy(), work.purge(),
+                work.theme()
         );
     }
 

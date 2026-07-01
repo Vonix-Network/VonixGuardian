@@ -33,6 +33,20 @@ public interface GuardianDao extends AutoCloseable {
     /** Delete records matching filter (purge). Returns rows deleted. */
     long purge(QueryFilter filter) throws Exception;
 
+    /**
+     * Chunked purge helper for the auto-purge scheduler: delete up to
+     * {@code chunkLimit} rows whose {@code ts < cutoffMillis}. Returns the
+     * number of rows actually removed.
+     *
+     * <p>Implemented as a portable {@code DELETE ... WHERE id IN (SELECT id ...
+     * LIMIT ?)} subquery so SQLite, MySQL, and PostgreSQL all agree.
+     *
+     * @param cutoffMillis exclusive upper-bound timestamp; rows strictly older are eligible
+     * @param chunkLimit   maximum rows to remove in this call (&gt; 0)
+     * @return rows deleted (0 when nothing older than {@code cutoffMillis} remains)
+     */
+    long purgeOlderThan(long cutoffMillis, int chunkLimit) throws Exception;
+
     /** Resolve / insert user, return user_id. */
     int resolveUser(UUID uuid, String name) throws Exception;
 

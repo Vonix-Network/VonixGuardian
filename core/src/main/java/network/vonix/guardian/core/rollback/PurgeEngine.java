@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Guarded {@code /vg purge} entry point.
@@ -20,12 +21,21 @@ import java.util.Objects;
  * <p>The engine itself is source-agnostic; callers (the brigadier command
  * handler) pick the correct {@code minAgeSeconds} from
  * {@code GuardianConfig.Purge} based on who issued the command and pass it in.
+ *
+ * <p><b>Mutex (W3-B4):</b> {@link #mutex()} returns a process-wide
+ * {@link ReentrantLock} that {@code AutoPurgeScheduler} uses to
+ * (a) serialise concurrent purges and (b) safely skip the daily run when a
+ * manual {@code /vg purge} is already in flight. The lock is <em>optional</em>
+ * on the manual path — {@link #purge} does not acquire it itself because
+ * historical callers may hold longer transactions; the auto-purge daemon
+ * uses {@code tryLock()} so it never blocks the server.
  */
 public final class PurgeEngine {
 
     private static final Logger LOG = LoggerFactory.getLogger(PurgeEngine.class);
 
     private final GuardianDao dao;
+    private final ReentrantLock mutex = new ReentrantLock();
 
     public PurgeEngine(GuardianDao dao) {
         this.dao = Objects.requireNonNull(dao, "dao");
@@ -54,9 +64,32 @@ public final class PurgeEngine {
             throw new IllegalArgumentException(
                 "purge requires a time filter at least " + minAgeSeconds + "s old");
         }
-        LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={}", since, minAgeSeconds);
-        long deleted = dao.purge(filter);
-        return new PurgeResult(deleted, minAgeSeconds, since);
+        mutex.lock();
+        try {
+            LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={}",
+                    since, minAgeSeconds);
+            long deleted = dao.purge(filter);
+            return new PurgeResult(deleted, minAgeSeconds, since);
+        } finally {
+            mutex.unlock();
+        }
+    }
+
+    /** DAO handle (package-visibility for {@code AutoPurgeScheduler}). */
+    public GuardianDao dao() {
+        return dao;
+    }
+
+    /**
+     * Process-wide purge mutex. Callers on the auto-purge path use
+     * {@link ReentrantLock#tryLock()} to skip a scheduled run whenever a
+     * manual purge is in flight; the manual path in {@link #purge} acquires
+     * it as a plain {@code lock()}.
+     *
+     * @return the shared purge lock; never {@code null}
+     */
+    public ReentrantLock mutex() {
+        return mutex;
     }
 
     /**
