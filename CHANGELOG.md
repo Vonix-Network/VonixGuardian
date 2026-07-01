@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a 3-line color-formatted summary. Regression coverage in
     `core/src/test/java/network/vonix/guardian/core/GuardianReloadTest.java`.
 
+- **W3-B2 — `/vg undo` now actually reverts world state.** Previously the
+  command just popped `UndoStack` and printed `"dropped N entries from
+  history"`; the world stayed in whatever state the previous
+  rollback/restore left it. `Undo.run` in all 8 cells' `GuardianCommands`
+  now dispatches asynchronously and calls
+  `RollbackEngine.execute(plan(popped.originalFilter(), popped.inverseMode(), actor), false)`
+  — running the inverse of the previous operation on exactly the same
+  action set (rollback→restore, restore→rollback), CoreProtect-parity.
+  The undo result is deliberately **not** re-pushed onto `UndoStack` so
+  repeated `/vg undo` invocations cannot ping-pong indefinitely. Legacy
+  pre-v1.1.6 stack entries (no `originalFilter`) fall back to the old
+  history-only message with an explicit warning that world state was not
+  reverted. New `UndoRevertTest` locks in the round-trip: rollback flags
+  `markRolledBack(ids, true)`, `/vg undo` (inverse plan) flags
+  `markRolledBack(ids, false)`, and the per-actor `UndoStack` cap
+  remains at 20.
+
 ### Added
 
 - **`core/build.gradle`** — `publishing {}` block with a `maven(MavenPublication)` from `components.java` (POM: name, description, url, MIT license, developer, SCM) and a `GitHubPackages` remote (`https://maven.pkg.github.com/Vonix-Network/VonixGuardian`, credentials via `GITHUB_ACTOR` / `GITHUB_TOKEN` env vars). Artifact coord: `network.vonix.guardian:vonixguardian-core:1.1.7`.
