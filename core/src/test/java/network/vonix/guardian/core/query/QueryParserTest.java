@@ -155,6 +155,65 @@ class QueryParserTest {
             .hasMessageContaining("range");
     }
 
+    // --- t: W3-B9 CoreProtect-parity extensions -----------------------------
+
+    @Test
+    void parsesDecimalDuration_twoDotFiveZeroH() {
+        // t:2.50h -> 2h 30m ago.
+        QueryFilter f = parser.parse("t:2.50h", CTX);
+        long expected = (long) (2.50 * 3_600_000L);
+        long delta = System.currentTimeMillis() - f.sinceMillis();
+        assertThat(delta).isBetween(expected - 1_000L, expected + 1_000L);
+        assertThat(f.untilMillis()).isNull();
+    }
+
+    @Test
+    void parsesDecimalDuration_pointSevenFiveW() {
+        QueryFilter f = parser.parse("t:0.75w", CTX);
+        long expected = (long) (0.75 * 604_800_000L);
+        long delta = System.currentTimeMillis() - f.sinceMillis();
+        assertThat(delta).isBetween(expected - 1_000L, expected + 1_000L);
+    }
+
+    @Test
+    void parsesRange_daysToWeek() {
+        // t:5d-1w -> between 1w ago (older, since) and 5d ago (newer, until).
+        QueryFilter f = parser.parse("t:5d-1w", CTX);
+        long now = System.currentTimeMillis();
+        assertThat(now - f.sinceMillis())
+            .isBetween(604_800_000L - 1_000L, 604_800_000L + 1_000L);
+        assertThat(now - f.untilMillis())
+            .isBetween(5L * 86_400_000L - 1_000L, 5L * 86_400_000L + 1_000L);
+    }
+
+    @Test
+    void parsesRange_reverseOrderToleratedByCoreProtectParity() {
+        // t:1h-30m -> tolerate: older bound (1h) becomes since, newer (30m) becomes until.
+        QueryFilter f = parser.parse("t:1h-30m", CTX);
+        long now = System.currentTimeMillis();
+        assertThat(now - f.sinceMillis())
+            .isBetween(3_600_000L - 1_000L, 3_600_000L + 1_000L);
+        assertThat(now - f.untilMillis())
+            .isBetween(30L * 60_000L - 1_000L, 30L * 60_000L + 1_000L);
+    }
+
+    @Test
+    void rejectsDurationDoubleDot() {
+        // t:2..5h — after the first '.' the tokenizer expects a unit char but
+        // finds another '.', which is not a known unit.
+        assertThatThrownBy(() -> parser.parse("t:2..5h", CTX))
+            .isInstanceOf(QueryParseException.class)
+            .hasMessageContaining("unknown duration unit");
+    }
+
+    @Test
+    void clampsSubSecondDurationToOneSecond() {
+        // t:0.001s rounds to 0 ms; we clamp to 1s so it never means "now".
+        QueryFilter f = parser.parse("t:0.001s", CTX);
+        long delta = System.currentTimeMillis() - f.sinceMillis();
+        assertThat(delta).isBetween(1_000L - 100L, 1_000L + 100L);
+    }
+
     // --- r: -----------------------------------------------------------------
 
     @Test
