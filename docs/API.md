@@ -32,6 +32,85 @@ Loader modules (`vonixguardian-fabric`, `vonixguardian-forge`,
 
 ---
 
+## 1a. Using in Gradle
+
+VonixGuardian Core is published as a plain Java library — `network.vonix.guardian:vonixguardian-core`.
+You do **not** need to depend on any loader jar to compile against the public API
+(the interfaces above live in `core`).
+
+### Maven coordinate
+
+```
+network.vonix.guardian:vonixguardian-core:1.1.7
+```
+
+### Consuming from Maven Local (after `./gradlew :core:publishToMavenLocal`)
+
+```groovy
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    // compileOnly is recommended: at runtime the loader jar (fabric/forge/neoforge)
+    // already ships a shaded copy of core. `transitive = false` avoids pulling
+    // storage backends (sqlite/hikaricp/gson) onto your compile classpath —
+    // those are runtime-provided by the loader.
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.1.7') { transitive = false }
+}
+```
+
+### Consuming from GitHub Packages
+
+```groovy
+repositories {
+    maven {
+        name = 'VonixGuardianGitHubPackages'
+        url = uri('https://maven.pkg.github.com/Vonix-Network/VonixGuardian')
+        credentials {
+            username = System.getenv('GITHUB_ACTOR')   // your GitHub username
+            password = System.getenv('GITHUB_TOKEN')   // PAT with read:packages
+        }
+    }
+}
+
+dependencies {
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.1.7') { transitive = false }
+}
+```
+
+> **Runtime note.** Do not shade `vonixguardian-core` into your own mod jar.
+> The loader jar users already have installed provides (and relocates) core.
+> Shading a second copy will collide with the loader's classes.
+
+### Bootstrap example (Maven coord, no local jar)
+
+Older revisions of this doc suggested `flatDir` pointing at a locally-built
+`core-*.jar`. That is no longer needed — resolve `vonixguardian-core` via
+`mavenLocal()` or GitHub Packages as shown above, then call the facade the
+usual way:
+
+```groovy
+dependencies {
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.1.7') { transitive = false }
+}
+```
+
+```java
+import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.event.EventSubmitter;
+
+// Loader-side accessor (Fabric shown; use the matching class on Forge/NeoForge):
+Guardian g = network.vonix.guardian.fabric.VonixGuardianFabric.guardian();
+if (g != null) {
+    EventSubmitter s = g; // Guardian implements EventSubmitter
+    // s.submitEntityKill(...);
+}
+```
+
+---
+
 ## 2. Soft-dependency pattern
 
 **Do not hard-import VonixGuardian classes from your mod.** VonixGuardian is
