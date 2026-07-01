@@ -39,6 +39,9 @@ public final class ActionBuilder {
     private Integer amount;
     private boolean rolledBack = false;
     private String sourceTag;
+    private String signSide;
+    private String signDyeColor;
+    private Boolean signWaxed;
 
     /** Creates a new empty builder. */
     public ActionBuilder() {
@@ -217,6 +220,42 @@ public final class ActionBuilder {
     }
 
     /**
+     * Sets the sign side ({@code "front"} / {@code "back"}) for SIGN events.
+     * On MC versions without a back side (1.19.2 / 1.18.2) callers should pass
+     * {@code "front"} (or {@code null} for non-sign rows).
+     *
+     * @param signSide the sign side; may be {@code null}
+     * @return this builder
+     */
+    public ActionBuilder signSide(String signSide) {
+        this.signSide = signSide;
+        return this;
+    }
+
+    /**
+     * Sets the sign dye color name for SIGN events (e.g. {@code "red"}).
+     *
+     * @param signDyeColor the dye color name; may be {@code null}
+     * @return this builder
+     */
+    public ActionBuilder signDyeColor(String signDyeColor) {
+        this.signDyeColor = signDyeColor;
+        return this;
+    }
+
+    /**
+     * Sets the waxed flag for SIGN events. Pass {@code null} on MC versions
+     * that pre-date the waxed feature (1.19.2 / 1.18.2).
+     *
+     * @param signWaxed the waxed flag; may be {@code null}
+     * @return this builder
+     */
+    public ActionBuilder signWaxed(Boolean signWaxed) {
+        this.signWaxed = signWaxed;
+        return this;
+    }
+
+    /**
      * Builds the immutable {@link Action} from the current builder state, applying
      * defaults as described in the class Javadoc.
      *
@@ -249,7 +288,10 @@ public final class ActionBuilder {
             targetMeta,
             amt,
             rolledBack,
-            sourceTag
+            sourceTag,
+            signSide,
+            signDyeColor,
+            signWaxed
         );
     }
 }

@@ -29,12 +29,21 @@ import java.util.List;
  *       the widened column via the DDL below; existing v2 databases are
  *       upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V3WidenActionTarget}.</li>
+ *   <li><b>v4</b> — additive sign metadata on {@code vg_actions}: three new
+ *       nullable columns ({@code sign_side VARCHAR(8)},
+ *       {@code sign_dye_color VARCHAR(16)}, {@code sign_waxed BOOLEAN}) that
+ *       let SIGN rows carry CoreProtect-v24-compatible front/back-side, dye
+ *       color and waxed-flag context alongside the joined lines already stored
+ *       in {@code target}. Non-sign rows leave the columns {@code NULL}.
+ *       Fresh installs get the widened schema via the DDL below; existing v3
+ *       databases are upgraded in place by
+ *       {@link network.vonix.guardian.core.storage.migration.V4SignMetadata}.</li>
  * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 4;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -190,6 +199,11 @@ public final class Schema {
     }
 
     private static String actions(Dialect d) {
+        // sign_waxed: SQLite / MySQL don't have a native BOOLEAN — SQLite maps it to INTEGER
+        // (NULL/0/1), MySQL to TINYINT(1) (NULL/0/1). PostgreSQL has real BOOLEAN. All three
+        // accept the literal keyword "BOOLEAN" in DDL, so we use that for readability and
+        // let the driver do the right thing under the hood.
+        String bool = (d == Dialect.POSTGRES) ? "BOOLEAN" : "BOOLEAN";
         return "CREATE TABLE IF NOT EXISTS vg_actions ("
             + "id " + pk(d) + ", "
             + "ts BIGINT NOT NULL, "
@@ -203,7 +217,10 @@ public final class Schema {
             + "meta " + textType(d) + " NULL, "
             + "amount INTEGER NOT NULL DEFAULT 1, "
             + "rolled_back " + tinyint(d) + " NOT NULL DEFAULT 0, "
-            + "source_tag VARCHAR(64) NULL"
+            + "source_tag VARCHAR(64) NULL, "
+            + "sign_side VARCHAR(8) NULL, "
+            + "sign_dye_color VARCHAR(16) NULL, "
+            + "sign_waxed " + bool + " NULL"
             + ")";
     }
 

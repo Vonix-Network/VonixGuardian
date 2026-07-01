@@ -40,8 +40,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
     private static final String INSERT_ACTION_SQL =
         "INSERT INTO vg_actions("
-        + "ts, type, user_id, world_id, x, y, z, target, meta, amount, rolled_back, source_tag"
-        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+        + "ts, type, user_id, world_id, x, y, z, target, meta, amount, rolled_back, source_tag, "
+        + "sign_side, sign_dye_color, sign_waxed"
+        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     /** uuid-string -> id, only populated for real (non-null UUID) users. */
     private final ConcurrentHashMap<String, Integer> userIdByUuid = new ConcurrentHashMap<>();
@@ -132,6 +133,21 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                         ps.setNull(12, java.sql.Types.VARCHAR);
                     } else {
                         ps.setString(12, a.sourceTag());
+                    }
+                    if (a.signSide() == null) {
+                        ps.setNull(13, java.sql.Types.VARCHAR);
+                    } else {
+                        ps.setString(13, a.signSide());
+                    }
+                    if (a.signDyeColor() == null) {
+                        ps.setNull(14, java.sql.Types.VARCHAR);
+                    } else {
+                        ps.setString(14, a.signDyeColor());
+                    }
+                    if (a.signWaxed() == null) {
+                        ps.setNull(15, java.sql.Types.BOOLEAN);
+                    } else {
+                        ps.setBoolean(15, a.signWaxed());
                     }
                     ps.addBatch();
                 }
@@ -232,7 +248,12 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         int amount = rs.getInt(12);
         boolean rolledBack = rs.getInt(13) != 0;
         String sourceTag = rs.getString(14);
-        return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount, rolledBack, sourceTag);
+        String signSide = rs.getString(15);
+        String signDyeColor = rs.getString(16);
+        boolean waxedRaw = rs.getBoolean(17);
+        Boolean signWaxed = rs.wasNull() ? null : waxedRaw;
+        return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
+                          rolledBack, sourceTag, signSide, signDyeColor, signWaxed);
     }
 
     private static UUID safeUuid(String s) {

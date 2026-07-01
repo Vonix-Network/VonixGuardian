@@ -25,13 +25,15 @@ public final class QueryCompiler {
     public static final Set<String> COLUMN_WHITELIST = Set.of(
         "id", "ts", "type", "user_id", "world_id", "x", "y", "z",
         "target", "meta", "amount", "rolled_back", "source_tag",
+        "sign_side", "sign_dye_color", "sign_waxed",
         "uuid", "name", "world_key"
     );
 
     /** The canonical SELECT projection — kept in one place so both query() and count() agree. */
     public static final String SELECT_PROJECTION =
         "a.id, a.ts, a.type, u.uuid, u.name, w.world_key, "
-      + "a.x, a.y, a.z, a.target, a.meta, a.amount, a.rolled_back, a.source_tag";
+      + "a.x, a.y, a.z, a.target, a.meta, a.amount, a.rolled_back, a.source_tag, "
+      + "a.sign_side, a.sign_dye_color, a.sign_waxed";
 
     private static final String FROM_JOIN =
         " FROM vg_actions a "
