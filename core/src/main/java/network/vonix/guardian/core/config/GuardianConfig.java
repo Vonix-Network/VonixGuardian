@@ -57,13 +57,37 @@ public record GuardianConfig(
     /**
      * Database connection settings.
      *
-     * @param type     one of {@code sqlite}, {@code mysql}, {@code postgresql}
-     * @param file     SQLite file path (relative to the server data dir); ignored for non-SQLite
-     * @param jdbcUrl  JDBC URL for {@code mysql} / {@code postgresql}; may be {@code null} for SQLite
-     * @param user     DB user; may be {@code null} for SQLite
-     * @param password DB password; may be {@code null} for SQLite
+     * @param type              one of {@code sqlite}, {@code mysql}, {@code postgresql}
+     * @param file              SQLite file path (relative to the server data dir); ignored for non-SQLite
+     * @param jdbcUrl           JDBC URL for {@code mysql} / {@code postgresql}; may be {@code null} for SQLite
+     * @param user              DB user; may be {@code null} for SQLite
+     * @param password          DB password; may be {@code null} for SQLite
+     * @param migrationTarget   optional target-backend descriptor for {@code /vg migrate-db}. This
+     *                          field is <b>not</b> hot-swappable at reload time — the running server
+     *                          keeps its active backend until the operator issues the migrate command.
+     *                          May be {@code null}; if present the field is used only by
+     *                          {@code /vg migrate-db}.
      */
-    public record Database(String type, String file, String jdbcUrl, String user, String password) {}
+    public record Database(String type, String file, String jdbcUrl, String user, String password,
+                           MigrationTarget migrationTarget) {
+
+        /** Backward-compat constructor for callers/tests written before {@code migrationTarget} existed. */
+        public Database(String type, String file, String jdbcUrl, String user, String password) {
+            this(type, file, jdbcUrl, user, password, null);
+        }
+    }
+
+    /**
+     * Optional target-backend descriptor used exclusively by {@code /vg migrate-db}. Shape mirrors
+     * {@link Database} minus the recursive {@code migrationTarget} field.
+     *
+     * @param type     one of {@code sqlite}, {@code mysql}, {@code postgresql}
+     * @param file     SQLite file path; required (non-blank) when {@code type == "sqlite"}
+     * @param jdbcUrl  JDBC URL; required (non-blank) when {@code type} is {@code mysql} or {@code postgresql}
+     * @param user     DB user (required for {@code mysql} / {@code postgresql}; nullable for SQLite)
+     * @param password DB password (required for {@code mysql} / {@code postgresql}; nullable for SQLite)
+     */
+    public record MigrationTarget(String type, String file, String jdbcUrl, String user, String password) {}
 
     /**
      * Async write queue settings.
@@ -255,6 +279,30 @@ public record GuardianConfig(
             } else {
                 if (isBlank(database.jdbcUrl)) {
                     errors.add("database.jdbcUrl: must be non-blank for " + database.type + " backend");
+                }
+            }
+            if (database.migrationTarget != null) {
+                MigrationTarget mt = database.migrationTarget;
+                if (mt.type == null || !KNOWN_DB_TYPES.contains(mt.type)) {
+                    errors.add("database.migrationTarget.type: must be one of " + KNOWN_DB_TYPES
+                        + " (got " + mt.type + ")");
+                } else if ("sqlite".equals(mt.type)) {
+                    if (isBlank(mt.file)) {
+                        errors.add("database.migrationTarget.file: must be non-blank for sqlite backend");
+                    }
+                } else {
+                    if (isBlank(mt.jdbcUrl)) {
+                        errors.add("database.migrationTarget.jdbcUrl: must be non-blank for "
+                            + mt.type + " backend");
+                    }
+                    if (isBlank(mt.user)) {
+                        errors.add("database.migrationTarget.user: must be non-blank for "
+                            + mt.type + " backend");
+                    }
+                    if (mt.password == null) {
+                        errors.add("database.migrationTarget.password: must be non-null for "
+                            + mt.type + " backend");
+                    }
                 }
             }
         }

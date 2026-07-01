@@ -5,6 +5,60 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — W3-B3 /vg migrate-db
+
+### Added
+
+- **Backend-migration pipeline** (`network.vonix.guardian.core.storage.dbmigrate`):
+  new `BackendMigrationJob`, `TableCopier`, `MigrateDbCommand`, `ProgressUpdate`,
+  `RawJdbcAccess` types implementing CoreProtect Patreon's `/co migrate-db`
+  contract for VonixGuardian. Chunked (default 1000 rows/chunk) copy of every
+  table (`vg_worlds`, `vg_users`, `vg_actions`, `vg_rollback_batches`,
+  `vg_rollback_batch_actions`) from the running source DAO to a freshly-opened
+  destination DAO. Ids are preserved verbatim so cross-table FK-like references
+  (e.g. `vg_actions.user_id -> vg_users.id`) survive the copy. On MySQL and
+  PostgreSQL the copier bumps the identity sequence past `max(id)` after each
+  table so subsequent writes on the destination don't collide with copied ids.
+  Emits `ProgressUpdate(table, rowsCopied, rowsTotal, elapsedMs)` every 1000
+  rows OR every 5 seconds, whichever comes first.
+  - Idempotency: the destination must be at
+    `Schema.CURRENT_VERSION` and must be **empty** (row-count 0 across every
+    data-carrying table). Non-empty destinations are refused unless a `force`
+    flag is passed at the API level. This matches CoreProtect's model of a
+    one-shot copy into a freshly-init'd database.
+
+- **`/vg migrate-db <sqlite|mysql|postgresql> CONFIRM`** subcommand in all 8
+  loader cells (`mc-1.18.2/{fabric,forge}`, `mc-1.19.2/{fabric,forge}`,
+  `mc-1.20.1/{fabric,forge}`, `mc-1.21.1/fabric`, `mc-1.21.1/neoforge`).
+  Console-only — invoking it as a player yields an error message and no work.
+  Requires the operator to append the literal `CONFIRM` as a second argument
+  to actually run (mirrors CoreProtect's safety pattern). Reads the target
+  connection block from a new optional `config.database.migrationTarget`
+  sub-record; if that block is absent, missing-fields, or its `type` disagrees
+  with the CLI argument, the command refuses. Progress is streamed back to the
+  console one table at a time.
+
+- **`GuardianConfig.Database.migrationTarget`** — new nullable `MigrationTarget`
+  sub-record on the `Database` block. Validator enforces the same
+  {type, file, jdbcUrl, user, password} shape as the top-level backend
+  descriptor. Explicitly **not** hot-swappable — the running server keeps its
+  active backend until `/vg migrate-db` is issued. A backward-compat
+  five-argument constructor on `Database` preserves the pre-1.2.0 record
+  shape used by existing tests and callers.
+
+- **`RawJdbcAccess`** interface implemented by `AbstractJdbcDao`, granting
+  `BackendMigrationJob` scoped raw-`Connection` access without leaking the
+  connection through the public `GuardianDao` contract.
+
+- **`BackendMigrationJobTest`** — end-to-end test that seeds an in-memory
+  SQLite source with 10 000 actions across every ActionType category (BLOCK_*,
+  CONTAINER_*, CHAT, COMMAND), plus a `vg_rollback_batches` audit row, runs
+  the migration into a fresh SQLite destination, and asserts row-for-row
+  parity on `vg_actions` (`id`, `ts`, `type`, `target`, `actor_uuid`,
+  `actor_name`, `world`, `x/y/z`, `amount`, `rolled_back`, `source_tag`) plus
+  identity preservation on `resolve_user` and `resolve_world`. Also verifies
+  the non-empty-destination refusal path and the `force`-flag bypass.
+
 ## [1.1.6] — 2026-07-01
 
 **Wave-2 nightshift: 6 parallel subagent audits + fixes.** Fixes for the CRITICAL RollbackPlan silent-default (14 handlers restored), the CRITICAL Berk truncation storm (target column widened to 4096 chars), and 5 HIGH-severity wiring/parity issues surfaced by the Wave-1 CP-comparison + adversarial audit. See docs/COREPROTECT-COMPARISON.md and docs/WAVE-AUDIT-1.1.5.md for the underlying analysis.
