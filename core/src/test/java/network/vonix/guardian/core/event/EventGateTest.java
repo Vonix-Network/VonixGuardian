@@ -26,7 +26,8 @@ class EventGateTest {
         return new GuardianConfig.Actions(
                 all, all, all, all, all, all, all, all, all,
                 all, all,
-                worlds, blocks, sources);
+                worlds, blocks, sources,
+                60_000L, 512, List.of(), false);
     }
 
     private static GuardianConfig.Actions allOn() {
@@ -57,7 +58,8 @@ class EventGateTest {
     void tolerates_null_blacklist_lists() {
         GuardianConfig.Actions c = new GuardianConfig.Actions(
                 true, true, true, true, true, true, true, true, true, true, true,
-                null, null, null);
+                null, null, null,
+                60_000L, 512, List.of(), false);
         EventGate g = new EventGate(c);
         assertThat(g.shouldLog(action(ActionType.BLOCK_BREAK, "minecraft:overworld", "minecraft:stone", null)))
                 .isTrue();
@@ -112,7 +114,8 @@ class EventGateTest {
     void per_family_isolation_blocks_off_only_drops_blocks() {
         GuardianConfig.Actions c = new GuardianConfig.Actions(
                 false, true, true, true, true, true, true, true, true, true, true,
-                List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(),
+                60_000L, 512, List.of(), false);
         EventGate g = new EventGate(c);
         assertThat(g.shouldLog(action(ActionType.BLOCK_BREAK, "w", "minecraft:stone", null))).isFalse();
         assertThat(g.shouldLog(action(ActionType.BLOCK_PLACE, "w", "minecraft:stone", null))).isFalse();

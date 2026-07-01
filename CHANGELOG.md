@@ -5,6 +5,63 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **[CRITICAL] A11: `vg_actions.target` truncation storm on MySQL.** Widened
+  the column from `VARCHAR(192)` to `VARCHAR(4096)` (schema v2 → v3).
+  Motivated by the Berk maintenance-window incident on 2026-07-01 08:05:54
+  UTC: chat messages, `/tellraw` command bodies, sign text and explosion
+  `affectedJoined` payloads regularly exceed 192 chars and triggered
+  `SQLDataException` (MySQL error 1406) on the JDBC batch flush. Every
+  affected action was silently dropped by the writer after 3 retries.
+  Existing installs are upgraded in place at boot by the new migration
+  runner; fresh installs get the widened column directly.
+
+### Added
+
+- **Versioned schema-migration harness**
+  (`network.vonix.guardian.core.storage.migration`): new `Migration`
+  interface, `MigrationRunner` (ordered, idempotent, dialect-aware), and
+  `V3WidenActionTarget` (the v2 → v3 in-place ALTER). Runner is invoked from
+  `AbstractJdbcDao.init()` after `Schema.createTables()` so both fresh and
+  existing installs land at `Schema.CURRENT_VERSION` on startup.
+  - MySQL/MariaDB path: `ALTER TABLE vg_actions MODIFY target VARCHAR(4096) NOT NULL`.
+  - PostgreSQL path: `ALTER TABLE vg_actions ALTER COLUMN target TYPE VARCHAR(4096)`.
+  - SQLite path: documented no-op (TEXT affinity; declared length is
+    decorative). Still stamps the version so operators land at v3 cleanly.
+- **Regression test** `SchemaTargetWidthTest`: round-trips a 512-char CHAT
+  submit through `SqliteDao.insertBatch` + `query` and asserts the persisted
+  `target` column contains all 512 chars.
+- **Migration runner tests** `MigrationRunnerTest`: verifies advance from a
+  simulated v2 install to `CURRENT_VERSION`, idempotency on re-run, and
+  contiguous-chain contract on the default migration list.
+- **Post-incident audit** `docs/A11-BATCH-DEGRADATION-AUDIT.md`: traces
+  `BatchedAsyncWriteQueue.flushWithRetry` and rules out WeedMeister's
+  "poison-row amplification storm" concern (no bisection logic exists).
+  Documents the *actual* failure mode observed on Berk (silent per-row data
+  loss on persistent truncation) and lists follow-up work for W2-07:
+  SQLSTATE-aware retry classification, dead-letter path, and a
+  `permanently_dropped_total` metric.
+
+### Changed
+
+- `Schema.CURRENT_VERSION` bumped from `2` to `3`.
+- `Schema.createTables(...)` now only stamps `CURRENT_VERSION` when
+  `vg_schema_version` is empty; on a populated older install it defers
+  version-stamping to `MigrationRunner`, which stamps each step as it
+  applies. Prevents the runner from mistakenly seeing a fresh-stamp on top
+  of pre-existing older data.
+
+### Test infra
+
+- Updated `EventGateTest` and `ConfigLoaderTest` call sites for
+  `GuardianConfig.Actions` to pass the four v1.1.5-added fields
+  (`entityBlockChangeCoalesceWindowMs`, `entityBlockChangeMaxTracked`,
+  `entityChangeAllowlist`, `entityChangeLogAllEntities`). Pre-existing
+  compilation bug in the tree that predated this ticket.
+
 ## [1.1.5] — 2026-07-01
 
 **CoreProtect-style vanilla-griefer allowlist at the listener — the real fix
