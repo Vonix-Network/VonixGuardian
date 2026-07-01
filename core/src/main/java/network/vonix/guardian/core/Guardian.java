@@ -7,8 +7,11 @@ package network.vonix.guardian.core;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.blacklist.BlacklistFile;
+import network.vonix.guardian.core.blacklist.BlacklistMatcher;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.event.BlacklistFileHook;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.Sentinel;
@@ -85,6 +88,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     /** Path to the on-disk config.json; kept so /vg reload can re-read it without any cell-side plumbing. */
     private volatile Path configPath;
     private final AutoPurgeScheduler autoPurgeScheduler;
+    /** Currently-live blacklist.txt hook, or {@code null} if the file is absent. */
+    private volatile BlacklistFileHook blacklistHook;
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
@@ -206,7 +211,22 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         LOG.info(MARKER, "VonixGuardian online.");
         AutoPurgeScheduler autoPurge = AutoPurgeScheduler.create(config, purgeEng, dao);
         autoPurge.start();
-        return new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir, autoPurge);
+        Guardian g = new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir, autoPurge);
+        // ---- W3-B6: load blacklist.txt (if present) and register as an EventHook ----
+        try {
+            Path blPath = dataDir.resolve("blacklist.txt");
+            BlacklistFile.Parsed parsed = BlacklistFile.load(blPath);
+            if (!parsed.equals(BlacklistFile.Parsed.empty())) {
+                BlacklistMatcher matcher = new BlacklistMatcher(parsed);
+                BlacklistFileHook hook = new BlacklistFileHook(matcher);
+                gate.addHook(hook);
+                g.blacklistHook = hook;
+                LOG.info(MARKER, "blacklist.txt loaded ({} rules)", matcher.size());
+            }
+        } catch (Exception e) {
+            LOG.warn(MARKER, "blacklist.txt load failed (non-fatal)", e);
+        }
+        return g;
     }
 
     // -------------------------------------------------------------------- getters
@@ -225,6 +245,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * check {@link AutoPurgeScheduler#isEnabled()} before assuming it runs.
      */
     public AutoPurgeScheduler autoPurgeScheduler() { return autoPurgeScheduler; }
+    /**
+     * Live {@code blacklist.txt} hook, or {@code null} if the file is missing.
+     * Diagnostics and tests only; the hook is already registered on the
+     * {@link EventGate} chain.
+     * @since 1.1.7 (W3-B6)
+     */
+    public BlacklistFileHook blacklistHook()       { return blacklistHook; }
     public EventSubmitter submitter()      { return this; }
     public long submitted()                { return submitted.get(); }
     public long gated()                    { return gated.get(); }
@@ -380,6 +407,33 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.config = merged;
         this.gate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
+
+        // W3-B6: reload blacklist.txt. Re-parse from disk; if present, build a
+        // fresh matcher and register a new hook on the new gate. Report rule
+        // count under "blacklist.txt" in the hot-swapped list.
+        try {
+            Path blPath = (dataDir != null) ? dataDir.resolve("blacklist.txt") : null;
+            BlacklistFile.Parsed parsed = (blPath != null)
+                    ? BlacklistFile.load(blPath) : BlacklistFile.Parsed.empty();
+            int oldCount = (this.blacklistHook == null) ? 0 : this.blacklistHook.matcher().size();
+            if (parsed.size() > 0) {
+                BlacklistMatcher matcher = new BlacklistMatcher(parsed);
+                BlacklistFileHook hook = new BlacklistFileHook(matcher);
+                this.gate.addHook(hook);
+                this.blacklistHook = hook;
+                if (matcher.size() != oldCount) {
+                    hot.add("blacklist.txt (" + matcher.size() + " rules)");
+                }
+            } else {
+                this.blacklistHook = null;
+                if (oldCount > 0) {
+                    hot.add("blacklist.txt (cleared)");
+                }
+            }
+        } catch (Exception e) {
+            errs.add("blacklist.txt reload failed: " + e.getMessage());
+            LOG.warn(MARKER, "blacklist.txt reload failed", e);
+        }
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
         // (build a new JsonLinesLogFile at the same directory).

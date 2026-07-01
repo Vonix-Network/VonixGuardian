@@ -5,6 +5,36 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **W3-B6 — CoreProtect-compatible `blacklist.txt` file.** VonixGuardian now
+  reads a per-server `config/vonixguardian/blacklist.txt` at boot and
+  short-circuits logging for any action matching one of its rules. Fills the
+  gap flagged in `docs/COREPROTECT-COMPARISON.md` and `NIGHTSHIFT.md` B6 —
+  previously the engine only honoured the three coarse JSON arrays
+  (`worldBlacklist`, `blockBlacklist`, `sourceBlacklist`) and could not
+  express per-user, per-command, or composite rules.
+  - Grammar mirrors CoreProtect: `user:<name>`, `user_uuid:<uuid>`,
+    `command:<name>`, `block:<namespaced_id>`, `entity:<namespaced_id>`,
+    and the composite form `<id>@<user>` ("drop when player X touches
+    block/entity Y").
+  - `#` starts a comment; blank lines OK; unknown rule kinds log WARN and
+    are skipped without aborting boot.
+  - Rule matching is O(1) per action (hash-set lookups) and case-insensitive
+    for user names, command names, and target ids.
+  - New classes: `blacklist.BlacklistFile` (parser),
+    `blacklist.BlacklistMatcher` (precompiled lookup),
+    `event.BlacklistFileHook` (`EventHook` adapter returning DENY/PASS).
+  - `Guardian.boot()` registers the hook automatically when the file is
+    present; silently skips otherwise.
+  - `/vg reload` now also re-parses `blacklist.txt` and rebuilds the hook,
+    reporting the new rule count under the hot-swapped list
+    (`blacklist.txt (N rules)`).
+  - Coverage: `BlacklistFileTest`, `BlacklistMatcherTest`,
+    `BlacklistFileHookTest`.
+
 ### Fixed
 
 - **`/vg reload` now actually reloads** (Wave-3 B1). Previously the command
