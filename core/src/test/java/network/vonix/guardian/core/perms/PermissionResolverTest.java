@@ -122,7 +122,7 @@ class PermissionResolverTest {
     void nullArguments_rejected() {
         PermissionResolver r = new PermissionResolver(cfg(false, 2), uuid -> 0);
         assertThatThrownBy(() -> r.has(null, "x")).isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> r.has(ALICE, null)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> r.has(ALICE, (String) null)).isInstanceOf(NullPointerException.class);
     }
 
     @Test

@@ -134,6 +134,18 @@ public final class ConfigLoader {
                 work.theme()
             );
         }
+        if (work.permissions() != null && work.permissions().perNodeOpLevels() == null) {
+            var p = work.permissions();
+            LOG.info("Backfilling permissions.perNodeOpLevels={} (pre-W3-B8 config)");
+            var newPerms = new GuardianConfig.Permissions(
+                p.useLuckPerms(), p.defaultOpLevel(), java.util.Map.of()
+            );
+            work = new GuardianConfig(
+                work.database(), work.queue(), work.logFile(), work.actions(),
+                newPerms, work.lookup(), work.privacy(), work.purge(),
+                work.theme()
+            );
+        }
         if (work.actions() == null) return work;
         var a = work.actions();
         boolean needsRewrite =
