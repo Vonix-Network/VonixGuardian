@@ -9,11 +9,14 @@ import org.slf4j.MarkerFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Default {@link AsyncWriteQueue} implementation: bounded {@link ArrayBlockingQueue} drained
@@ -45,6 +48,15 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong permanentlyDropped = new AtomicLong();
     private final AtomicLong lastDropLogNs = new AtomicLong(Long.MIN_VALUE);
+
+    // v1.1.3-diag: per-type producer + drop counters. Records EVERY submit(),
+    // regardless of whether the queue accepted or dropped it, so we can see the
+    // true producer-side histogram even when the drainer can't keep up.
+    // Type key = action.type().name() (e.g. "BLOCK_PLACE", "ENTITY_SPAWN").
+    private final ConcurrentHashMap<String, LongAdder> submittedByType = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, LongAdder> droppedByType = new ConcurrentHashMap<>();
+    private final AtomicLong lastHistogramLogNs = new AtomicLong(Long.MIN_VALUE);
+    private static final long HISTOGRAM_LOG_INTERVAL_NS = TimeUnit.SECONDS.toNanos(30);
 
     private volatile boolean shutdown = false;
     private volatile boolean closed = false;
@@ -88,10 +100,16 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             // After shutdown signal we still try a best-effort offer so a racing producer
             // doesn't silently lose data, but we never block.
         }
+        // v1.1.3-diag: count every submit at the producer moment (before the queue
+        // decides to accept or drop). This is the TRUE producer rate.
+        String typeKey = a.type() == null ? "UNKNOWN" : a.type().name();
+        submittedByType.computeIfAbsent(typeKey, k -> new LongAdder()).increment();
         if (!queue.offer(a)) {
             long total = dropped.incrementAndGet();
+            droppedByType.computeIfAbsent(typeKey, k -> new LongAdder()).increment();
             maybeLogDrop(total);
         }
+        maybeLogHistogram();
     }
 
     @Override
@@ -262,5 +280,58 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                         totalDropped);
             }
         }
+    }
+
+    /**
+     * v1.1.3-diag: emit a per-type histogram of submitted + dropped counts every
+     * {@value #HISTOGRAM_LOG_INTERVAL_NS} ns (30s). Called from every submit() —
+     * gated by a nanoTime + CAS so contention is one atomic read per submit,
+     * one atomic write per 30s.
+     *
+     * <p>Format: {@code [DIAG histogram t=30s] submitted: TYPE=N, ...  |  dropped: TYPE=N, ...}
+     */
+    private void maybeLogHistogram() {
+        long now = System.nanoTime();
+        long last = lastHistogramLogNs.get();
+        if (last != Long.MIN_VALUE && now - last < HISTOGRAM_LOG_INTERVAL_NS) {
+            return;
+        }
+        if (!lastHistogramLogNs.compareAndSet(last, now)) {
+            return; // another thread beat us to it
+        }
+        // Snapshot both maps into a rendered string. This runs at most once per
+        // 30s so allocation cost is negligible.
+        StringBuilder sub = new StringBuilder();
+        List<Map.Entry<String, Long>> subSorted = new ArrayList<>();
+        for (Map.Entry<String, LongAdder> e : submittedByType.entrySet()) {
+            subSorted.add(Map.entry(e.getKey(), e.getValue().sum()));
+        }
+        subSorted.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+        for (int i = 0; i < subSorted.size(); i++) {
+            if (i > 0) sub.append(", ");
+            sub.append(subSorted.get(i).getKey()).append('=').append(subSorted.get(i).getValue());
+        }
+
+        StringBuilder drop = new StringBuilder();
+        List<Map.Entry<String, Long>> dropSorted = new ArrayList<>();
+        for (Map.Entry<String, LongAdder> e : droppedByType.entrySet()) {
+            dropSorted.add(Map.entry(e.getKey(), e.getValue().sum()));
+        }
+        dropSorted.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+        for (int i = 0; i < dropSorted.size(); i++) {
+            if (i > 0) drop.append(", ");
+            drop.append(dropSorted.get(i).getKey()).append('=').append(dropSorted.get(i).getValue());
+        }
+        if (drop.length() == 0) drop.append("(none)");
+
+        LOG.warn(MARKER,
+                "[DIAG histogram t=30s] queueDepth={} submittedTotal={} droppedTotal={} | submitted-by-type: {} | dropped-by-type: {}",
+                queue.size(), sumAll(submittedByType), dropped.get(), sub, drop);
+    }
+
+    private static long sumAll(ConcurrentHashMap<String, LongAdder> map) {
+        long total = 0;
+        for (LongAdder a : map.values()) total += a.sum();
+        return total;
     }
 }

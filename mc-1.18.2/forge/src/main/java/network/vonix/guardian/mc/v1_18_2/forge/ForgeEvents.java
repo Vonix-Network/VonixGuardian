@@ -163,10 +163,13 @@ public final class ForgeEvents {
     public static void onBlockPlace(BlockEvent.EntityPlaceEvent ev) {
         try {
             EventSubmitter s = sub();
-            if (s == null) return;
+            GuardianConfig c = cfg();
+            if (s == null || c == null) return;
+            if (!c.actions().logBlocks()) return;
             Entity actor = ev.getEntity();
             BlockPos pos = ev.getPos();
             String blockId = blockId(ev.getPlacedBlock());
+            if (c.actions().blockBlacklist().contains(blockId)) return;
             String worldId = WorldKey.of((Level) ev.getWorld());
             if (actor instanceof Player p) {
                 s.submitBlockPlace(p.getUUID(), p.getName().getString(),
