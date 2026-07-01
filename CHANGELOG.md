@@ -9,16 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **[CRITICAL] A11: `vg_actions.target` truncation storm on MySQL.** Widened
-  the column from `VARCHAR(192)` to `VARCHAR(4096)` (schema v2 → v3).
-  Motivated by the Berk maintenance-window incident on 2026-07-01 08:05:54
-  UTC: chat messages, `/tellraw` command bodies, sign text and explosion
-  `affectedJoined` payloads regularly exceed 192 chars and triggered
-  `SQLDataException` (MySQL error 1406) on the JDBC batch flush. Every
-  affected action was silently dropped by the writer after 3 retries.
-  Existing installs are upgraded in place at boot by the new migration
-  runner; fresh installs get the widened column directly.
-
 ### Added
 
 - **`RollbackPlanTest`** — regression suite proving the plan/execute split:

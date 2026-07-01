@@ -58,21 +58,13 @@ public final class GuardianSuggestions {
             "#nether", "#overworld", "#end"
     };
 
-    /** Every action token CoreProtect accepts on {@code a:}. */
-    private static final String[] ACTIONS = {
-            "block", "+block", "-block",
-            "container", "+container", "-container",
-            "inventory", "+inventory", "-inventory",
-            "item", "+item", "-item",
-            "kill", "+kill", "-kill",
-            "session", "+session", "-session",
-            "login", "logout",
-            "chat", "+chat", "-chat",
-            "command", "+command", "-command",
-            "click", "+click", "-click",
-            "sign", "+sign", "-sign",
-            "username", "+username", "-username"
-    };
+    /**
+     * Every action token {@code a:} accepts, sourced from the canonical
+     * parser-verified list in {@link network.vonix.guardian.core.query.ActionTokens}.
+     * Do not hand-edit — {@code ActionTokenParityTest} in core locks the invariant.
+     */
+    private static final String[] ACTIONS =
+            network.vonix.guardian.core.query.ActionTokens.ALL.toArray(new String[0]);
 
     /** Common block ids — starter list, full registry can be wired later. */
     private static final String[] COMMON_BLOCKS = {
