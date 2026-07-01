@@ -75,3 +75,46 @@ tasks.named('jar') {
         )
     }
 }
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+            groupId = project.group
+            artifactId = 'vonixguardian-core'
+            version = project.version
+            pom {
+                name = 'VonixGuardian Core'
+                description = 'CoreProtect-grade audit + rollback engine for modded Minecraft (Fabric/Forge/NeoForge).'
+                url = 'https://github.com/Vonix-Network/VonixGuardian'
+                licenses {
+                    license {
+                        name = 'MIT'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'vonix-network'
+                        name = 'Vonix Network'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/Vonix-Network/VonixGuardian.git'
+                    developerConnection = 'scm:git:https://github.com/Vonix-Network/VonixGuardian.git'
+                    url = 'https://github.com/Vonix-Network/VonixGuardian'
+                }
+            }
+        }
+    }
+    repositories {
+        maven {
+            name = 'GitHubPackages'
+            url = uri('https://maven.pkg.github.com/Vonix-Network/VonixGuardian')
+            credentials {
+                username = System.getenv('GITHUB_ACTOR')
+                password = System.getenv('GITHUB_TOKEN')
+            }
+        }
+    }
+}

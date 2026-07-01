@@ -5,6 +5,24 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7] — 2026-07-01
+
+**Wave-3 B14: Maven publishing wired up.** `core/build.gradle` had `maven-publish` applied but an empty `publishing {}` block — `./gradlew :core:publishToMavenLocal` produced nothing. Publication is now fully configured, and `docs/API.md` documents how third parties consume the artifact.
+
+### Added
+
+- **`core/build.gradle`** — `publishing {}` block with a `maven(MavenPublication)` from `components.java` (POM: name, description, url, MIT license, developer, SCM) and a `GitHubPackages` remote (`https://maven.pkg.github.com/Vonix-Network/VonixGuardian`, credentials via `GITHUB_ACTOR` / `GITHUB_TOKEN` env vars). Artifact coord: `network.vonix.guardian:vonixguardian-core:1.1.7`.
+- **`docs/API.md`** — new **§1a "Using in Gradle"** section covering the Maven coordinate, `mavenLocal()` and `GitHubPackages` repository snippets, the `compileOnly(...) { transitive = false }` pattern (so consumers don't pull sqlite/hikaricp/gson onto their compile classpath), and a bootstrap example that resolves via the Maven coord instead of a locally-built jar.
+
+### Changed
+
+- **`gradle.properties`** — `mod_version` bumped `1.1.6` → `1.1.7`.
+
+### Verified
+
+- `./gradlew -PbuildProfile=coreonly :core:publishToMavenLocal` → **BUILD SUCCESSFUL**. Installs `vonixguardian-core-1.1.7.jar`, `-sources.jar`, `.module`, `.pom` to `~/.m2/repository/network/vonix/guardian/vonixguardian-core/1.1.7/`.
+- `./gradlew -PbuildProfile=coreonly :core:build` → **BUILD SUCCESSFUL** (unchanged).
+
 ## [1.1.6] — 2026-07-01
 
 **Wave-2 nightshift: 6 parallel subagent audits + fixes.** Fixes for the CRITICAL RollbackPlan silent-default (14 handlers restored), the CRITICAL Berk truncation storm (target column widened to 4096 chars), and 5 HIGH-severity wiring/parity issues surfaced by the Wave-1 CP-comparison + adversarial audit. See docs/COREPROTECT-COMPARISON.md and docs/WAVE-AUDIT-1.1.5.md for the underlying analysis.
