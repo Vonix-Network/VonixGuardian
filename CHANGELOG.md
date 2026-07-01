@@ -44,6 +44,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **W3-B15 — Schema v3→v4 migration + CoreProtect-v24 sign metadata wire.**
+  CoreProtect's 1.20+ sign lookup returns front/back side, dye color and the
+  waxed flag; VG was collapsing every SIGN row into a single joined-lines
+  string in `target` and dropping the rest on the floor
+  (`docs/COREPROTECT-COMPARISON.md`, `NIGHTSHIFT.md` B15).
+  - New migration
+    `network.vonix.guardian.core.storage.migration.V4SignMetadata` adds three
+    nullable columns to `vg_actions`:
+    `sign_side VARCHAR(8)`, `sign_dye_color VARCHAR(16)`, `sign_waxed BOOLEAN`.
+    All three dialects use `ALTER TABLE ... ADD COLUMN` (metadata-only, no
+    table rewrite); the runner tolerates a duplicate-column error on rerun
+    to survive the MySQL DDL-autocommit crash window.
+  - `Schema.CURRENT_VERSION` bumped from 3 → 4; fresh-install DDL adds the
+    new columns from the start.
+  - New `EventSubmitter.submitSign(UUID, String, String, int, int, int,
+    String, String, String, Boolean)` overload carries the side/dye/waxed
+    metadata; the legacy 7-arg overload is preserved and delegates via a
+    `default` method that drops the metadata (source-compat).
+  - `Action` gains three trailing nullable fields (`signSide`,
+    `signDyeColor`, `signWaxed`); a legacy 14-arg constructor is retained
+    so every pre-v1.1.7 `new Action(...)` call site keeps compiling.
+    `ActionBuilder` grows matching setters; `AbstractJdbcDao.insertBatch` +
+    `readAction` and `QueryCompiler.SELECT_PROJECTION` all persist and
+    materialise the new fields.
+  - **Cell-side wire (all 8 cells):** each cell's `common/` package now
+    ships a `SignMetadataExtractor` helper that reads dye color, waxed flag
+    and (on 1.20+) front/back side straight off a `SignBlockEntity`:
+    * MC 1.20.1 forge, 1.20.1 fabric, 1.21.1 neoforge, 1.21.1 fabric —
+      `SignBlockEntity.getFrontText()` / `getBackText()` / `SignText.getColor()`
+      / `isWaxed()`.
+    * MC 1.19.2 forge/fabric, 1.18.2 forge/fabric — single-sided:
+      always `side="front"`, `waxed=null`, `dyeColor` from
+      `SignBlockEntity.getColor()`.
+    Extraction is fully defensive — any `Throwable` short-circuits to
+    `null` for the affected field so the event dispatch never crashes.
+  - Regression coverage: `V4SignMetadataMigrationTest` (v3→v4 in place,
+    reentrancy), `SignMetadataRoundTripTest` (front + back sides with dye
+    + waxed), `LegacySignSubmitTest` (legacy 7-arg overload persists NULL
+    metadata and the interface's default 10-arg method routes back through
+    the legacy impl).
+
 - **`core/build.gradle`** — `publishing {}` block with a `maven(MavenPublication)` from `components.java` (POM: name, description, url, MIT license, developer, SCM) and a `GitHubPackages` remote (`https://maven.pkg.github.com/Vonix-Network/VonixGuardian`, credentials via `GITHUB_ACTOR` / `GITHUB_TOKEN` env vars). Artifact coord: `network.vonix.guardian:vonixguardian-core:1.1.7`.
 - **`docs/API.md`** — new **§1a "Using in Gradle"** section covering the Maven coordinate, `mavenLocal()` and `GitHubPackages` repository snippets, the `compileOnly(...) { transitive = false }` pattern (so consumers don't pull sqlite/hikaricp/gson onto their compile classpath), and a bootstrap example that resolves via the Maven coord instead of a locally-built jar.
 

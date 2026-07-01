@@ -62,7 +62,8 @@ public final class MigrationRunner {
     /** The default migration chain: register new migrations here as the schema grows. */
     public static MigrationRunner defaults() {
         return new MigrationRunner(List.of(
-            new V3WidenActionTarget()
+            new V3WidenActionTarget(),
+            new V4SignMetadata()
         ));
     }
 

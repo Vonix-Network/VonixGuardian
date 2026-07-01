@@ -513,6 +513,19 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     @Override
+    public void submitSign(UUID actorUuid, String actorName, String worldId,
+                           int x, int y, int z, String joinedLines,
+                           String side, String dyeColor, Boolean waxed) {
+        submit(seed(ActionType.SIGN, actorUuid, actorName, worldId)
+                .position(x, y, z)
+                .targetId(joinedLines)
+                .signSide(side)
+                .signDyeColor(dyeColor)
+                .signWaxed(waxed)
+                .build());
+    }
+
+    @Override
     public void submitSessionJoin(UUID actorUuid, String actorName, String worldId, String ipOrHash) {
         submit(seed(ActionType.SESSION_JOIN, actorUuid, actorName, worldId)
                 .targetId(ipOrHash != null ? ipOrHash : "").build());
