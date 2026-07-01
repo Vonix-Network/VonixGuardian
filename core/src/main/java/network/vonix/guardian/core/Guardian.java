@@ -7,6 +7,8 @@ package network.vonix.guardian.core;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.api.GuardianAPI;
+import network.vonix.guardian.core.api.VonixGuardianAPI;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.event.EventGate;
@@ -85,6 +87,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     /** Path to the on-disk config.json; kept so /vg reload can re-read it without any cell-side plumbing. */
     private volatile Path configPath;
     private final AutoPurgeScheduler autoPurgeScheduler;
+
+    /** Latched on first {@link #api()} call. */
+    private final AtomicReference<GuardianAPI> apiRef = new AtomicReference<>();
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
@@ -226,6 +231,29 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     public AutoPurgeScheduler autoPurgeScheduler() { return autoPurgeScheduler; }
     public EventSubmitter submitter()      { return this; }
+
+    /**
+     * Public, version-stable Java API surface (W3-B12+B13). The default impl
+     * ({@link GuardianAPI}) is constructed lazily on first access and cached
+     * for the lifetime of this Guardian. Consumer mods should obtain this via
+     * reflection (see {@code docs/API.md} § "Public Java API (v1)") to keep
+     * VG a soft dependency.
+     *
+     * @return live API handle; never {@code null}
+     */
+    public VonixGuardianAPI api() {
+        GuardianAPI cur = apiRef.get();
+        if (cur == null) {
+            GuardianAPI fresh = new GuardianAPI(this);
+            if (apiRef.compareAndSet(null, fresh)) {
+                cur = fresh;
+            } else {
+                cur = apiRef.get();
+            }
+        }
+        return cur;
+    }
+
     public long submitted()                { return submitted.get(); }
     public long gated()                    { return gated.get(); }
 

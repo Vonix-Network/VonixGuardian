@@ -422,6 +422,153 @@ Specifics:
 
 ---
 
+## Public Java API (v1)
+
+Since **VonixGuardian 1.1.7 (Wave-3 B12+B13)** the plugin ships a
+version-stable, third-party-friendly interface:
+`network.vonix.guardian.core.api.VonixGuardianAPI`. This is the recommended
+integration surface for consumer mods — it returns typed result records
+instead of raw `Action` rows, hides SQL details, and follows semver on
+`apiVersion()`.
+
+### Maven coordinates
+
+The core jar is published to Vonix Network's Maven (see B14 for
+publishing details):
+
+```groovy
+repositories {
+    maven { url = 'https://maven.vonix.network/releases' }
+}
+
+dependencies {
+    // Compile against the API but do NOT bundle VG — soft-dep at runtime.
+    compileOnly 'network.vonix.guardian:vonixguardian-core:1.1.7'
+}
+```
+
+### Obtaining the API handle (reflection soft-dep pattern)
+
+VG is a **soft** dependency for third-party mods — you should not fail to
+load if VG is absent. Use reflection, mirroring the LuckPerms bridge
+pattern VG itself uses internally (see
+`core/src/main/java/network/vonix/guardian/core/perms/LuckPermsBridge.java`):
+
+```java
+import java.lang.reflect.Method;
+
+public final class VgSoftDep {
+
+    private static volatile Object apiHandle;   // held as Object; reflect all calls
+    private static volatile Method  hasPlaced;
+    private static volatile Method  blockLookup;
+
+    public static void tryWire() {
+        try {
+            Class<?> guardianCls = Class.forName("network.vonix.guardian.core.Guardian");
+            // Your loader stashes the singleton somewhere — e.g. VgBootstrap.INSTANCE:
+            Object g = Class.forName("com.example.mymod.VgBootstrap")
+                            .getField("INSTANCE").get(null);
+            Method apiMethod = guardianCls.getMethod("api");
+            Object api = apiMethod.invoke(g);
+
+            Class<?> apiCls = Class.forName(
+                "network.vonix.guardian.core.api.VonixGuardianAPI");
+            Method testMethod = apiCls.getMethod("testAPI");
+            if (!(Boolean) testMethod.invoke(api)) return;
+
+            hasPlaced   = apiCls.getMethod("hasPlaced",
+                java.util.UUID.class, String.class,
+                int.class, int.class, int.class, long.class);
+            blockLookup = apiCls.getMethod("blockLookup",
+                String.class, int.class, int.class, int.class, long.class);
+            apiHandle   = api;
+        } catch (ReflectiveOperationException | ClassCastException e) {
+            // VG absent or shape drifted — soft-fail.
+            apiHandle = null;
+        }
+    }
+
+    public static boolean hasPlaced(java.util.UUID u, String world,
+                                    int x, int y, int z, long secs) {
+        Object h = apiHandle;
+        if (h == null || hasPlaced == null) return false;
+        try {
+            return (Boolean) hasPlaced.invoke(h, u, world, x, y, z, secs);
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+}
+```
+
+### Example usage
+
+```java
+UUID player = ...;
+if (VgSoftDep.hasPlaced(player, "minecraft:overworld", x, y, z, 60)) {
+    // Player placed a block here in the last 60 seconds — allow their break
+    // even if the world is protected.
+}
+
+// Coordinate history (block family)
+Method bl = /* cached blockLookup Method */;
+@SuppressWarnings("unchecked")
+List<Object> results = (List<Object>) bl.invoke(apiHandle,
+        "minecraft:overworld", x, y, z, 3600);
+// Each element is a network.vonix.guardian.core.api.BlockLookupResult record;
+// pull fields via record accessors or via reflection depending on how strict
+// your soft-dep is.
+```
+
+### Method summary
+
+| Method                                                                          | Purpose                                          |
+|---------------------------------------------------------------------------------|--------------------------------------------------|
+| `int apiVersion()`                                                              | API major (current: `1`). Bumps = breaking.      |
+| `String pluginVersion()`                                                        | Human-readable mod version (`"1.1.7"`).          |
+| `boolean testAPI()`                                                             | Wiring smoke-test; always `true` on healthy VG.  |
+| `boolean hasPlaced(UUID, String, int, int, int, long)`                          | Did user place a block here in the last N sec?   |
+| `boolean hasRemoved(UUID, String, int, int, int, long)`                         | Did user break a block here in the last N sec?   |
+| `List<BlockLookupResult> blockLookup(String, int, int, int, long)`              | Every block-family event at that coord.          |
+| `List<ContainerLookupResult> containerLookup(String, int, int, int, long)`      | Every container-family transaction at that coord.|
+| `List<MessageLookupResult> chatLookup(UUID, long, int)`                         | User's chat entries within the window.           |
+| `List<MessageLookupResult> commandLookup(UUID, long, int)`                      | User's command entries within the window.        |
+
+### Result records
+
+- **`BlockLookupResult`** — `time`, `actorUuid`, `actorName`, `worldId`,
+  `x/y/z`, `blockId`, `targetMeta`, `action` (`"block"`, `"burn"`, …),
+  `rolledBack`, `sourceTag`.
+- **`ContainerLookupResult`** — `time`, `actorUuid`, `actorName`, `worldId`,
+  `x/y/z`, `itemId`, `targetMeta`, **signed** `amountDelta` (positive =
+  deposit, negative = withdraw), `rolledBack`, `sourceTag`.
+- **`MessageLookupResult`** — `time`, `actorUuid`, `actorName`, `worldId`,
+  `message`, `kind` (`"chat"` or `"command"`).
+
+### Versioning contract
+
+- **`apiVersion()`** follows semver — a bump signals a breaking change to
+  existing method signatures or record shapes. New methods MAY be added
+  within a major without a bump.
+- Callers should compare `apiVersion()` at startup and refuse to load on
+  mismatch, e.g.:
+  ```java
+  if (api.apiVersion() != EXPECTED_VG_API_MAJOR) {
+      LOGGER.warn("VonixGuardian API v{} present, expected v{} — skipping integration",
+                  api.apiVersion(), EXPECTED_VG_API_MAJOR);
+      return;
+  }
+  ```
+
+### Threading
+
+All API methods run a blocking DAO query internally. Same rules as
+`Guardian.dao()`: hop to an async executor before calling, then post the
+result back to the server thread if you need to render it in-game.
+
+---
+
 ## See also
 
 - [`docs/MODDED-ATTRIBUTION.md`](MODDED-ATTRIBUTION.md) — sentinel naming,

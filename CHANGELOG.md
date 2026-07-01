@@ -5,6 +5,45 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **W3-B12+B13 — Public typed Java API surface.** New
+  `network.vonix.guardian.core.api` package exposes a stable, third-party-friendly
+  handle documented in `docs/API.md` § "Public Java API (v1)" and flagged
+  in `docs/COREPROTECT-COMPARISON.md` (CoreProtect parity gap).
+  - `VonixGuardianAPI` interface — `apiVersion()` (returns `1`),
+    `pluginVersion()` (`"1.1.7"`), `testAPI()` (wiring smoke test),
+    `hasPlaced(UUID,String,int,int,int,long)`,
+    `hasRemoved(UUID,String,int,int,int,long)`,
+    `blockLookup(...)`, `containerLookup(...)`,
+    `chatLookup(UUID,long,int)`, `commandLookup(UUID,long,int)`.
+  - Per-family typed result records: `BlockLookupResult`,
+    `ContainerLookupResult`, `MessageLookupResult` — each carries typed
+    time / actor / world / xyz / target fields plus per-family specifics
+    (e.g. `ContainerLookupResult#amountDelta` is signed by direction:
+    positive = deposit, negative = withdraw).
+  - `GuardianAPI` — default impl backed by `Guardian.dao().query(...)`.
+  - `Guardian.api()` — latched `AtomicReference<GuardianAPI>` so the impl
+    is constructed lazily and cached for the lifetime of the instance.
+  - `GuardianDao.hasActionsInWindow(UUID user, String worldId, int x,
+    int y, int z, ActionType[] types, long withinMillis)` — new indexed
+    existence probe. Implementation in `AbstractJdbcDao` uses a
+    `SELECT 1 ... LIMIT 1` on the `vg_actions_pos` index; a `null` or
+    empty `types` array matches ANY action type, and a non-positive
+    `withinMillis` disables the temporal bound.
+  - Coverage: `VonixGuardianAPITest` (mocked `GuardianDao`, verifies each
+    API method calls the right DAO shape) and
+    `HasActionsInWindowIntegrationTest` (real in-memory SQLite; asserts
+    inside/outside window, wrong coord/user/type, `null` types matches
+    any, negative window disables temporal bound).
+  - Docs: new "Public Java API (v1)" section in `docs/API.md` with Maven
+    coord `network.vonix.guardian:vonixguardian-core:1.1.7` (published by
+    B14), the reflection soft-dep wire-up pattern mirroring
+    `LuckPermsBridge`, method summary table, result-record shapes, and
+    the versioning contract on `apiVersion()`.
+
 ### Fixed
 
 - **`/vg reload` now actually reloads** (Wave-3 B1). Previously the command

@@ -1,6 +1,7 @@
 package network.vonix.guardian.core.storage;
 
 import network.vonix.guardian.core.action.Action;
+import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
 
 import java.util.List;
@@ -117,6 +118,28 @@ public interface GuardianDao extends AutoCloseable {
      * @return action ids in incomplete batches, in insertion order (may be empty)
      */
     List<Long> findIncompleteBatchActionIds() throws Exception;
+
+    /**
+     * Fast-path existence probe used by the public {@code VonixGuardianAPI}
+     * (W3-B12+B13). Answers "did {@code user} perform any of {@code types}
+     * at exactly {@code (worldId, x, y, z)} within the last
+     * {@code withinMillis} milliseconds?" using an indexed lookup and a
+     * {@code LIMIT 1}.
+     *
+     * <p>Zero or negative {@code withinMillis} disables the temporal bound.
+     * A {@code null} or empty {@code types} array matches ANY action type.
+     *
+     * @param user         actor UUID (non-null)
+     * @param worldId      world / dimension key (non-null)
+     * @param x            block X
+     * @param y            block Y
+     * @param z            block Z
+     * @param types        action-type filter; {@code null} / empty = any
+     * @param withinMillis temporal window in ms; {@code &lt;= 0} = unbounded
+     * @return {@code true} iff at least one matching row exists
+     */
+    boolean hasActionsInWindow(UUID user, String worldId, int x, int y, int z,
+                               ActionType[] types, long withinMillis) throws Exception;
 
     /** Health check. */
     boolean isHealthy();
