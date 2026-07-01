@@ -273,6 +273,133 @@ public abstract class AbstractJdbcDao implements GuardianDao {
         }
     }
 
+    // ------------------------------------------------------------------ OPTIMIZE
+
+    /** Guardian tables affected by {@link #optimize(long)}. */
+    protected static final String[] OPTIMIZE_TABLES = {
+        "vg_actions", "vg_rollback_batches", "vg_rollback_batch_actions"
+    };
+
+    /**
+     * Default best-effort optimization. Dispatches on {@link #dialect()}:
+     * MySQL/MariaDB → {@code OPTIMIZE TABLE t1, t2, t3};
+     * PostgreSQL   → {@code VACUUM ANALYZE t;} per-table (autocommit);
+     * SQLite       → {@code VACUUM} (whole-db).
+     *
+     * <p>Runtime cap is applied per-statement via {@link Statement#setQueryTimeout(int)}
+     * (seconds). If the cap trips or a statement errors, the method logs and
+     * returns {@code completed=false} rather than surfacing the exception —
+     * optimize is opportunistic, purge results MUST NOT be lost to a VACUUM
+     * hiccup.
+     */
+    @Override
+    public OptimizeResult optimize(long maxRuntimeMillis) throws SQLException {
+        long capMs = Math.max(1L, maxRuntimeMillis);
+        int perStmtTimeoutSec = (int) Math.max(1L, Math.min(Integer.MAX_VALUE, capMs / 1000L));
+        long t0 = System.nanoTime();
+        long deadlineNs = t0 + capMs * 1_000_000L;
+
+        long bytesBefore = safeSizeBytes();
+        boolean completed = true;
+        Schema.Dialect d = dialect();
+
+        Connection c = borrow();
+        boolean prevAutoCommit = true;
+        try {
+            prevAutoCommit = c.getAutoCommit();
+            // Postgres VACUUM cannot run in a transaction; MySQL OPTIMIZE tolerates
+            // autocommit; SQLite VACUUM requires autocommit too.
+            if (!prevAutoCommit) {
+                try { c.setAutoCommit(true); } catch (SQLException ignored) {}
+            }
+
+            List<String> stmts = optimizeStatementsFor(d);
+            for (String sql : stmts) {
+                if (System.nanoTime() > deadlineNs) {
+                    org.slf4j.LoggerFactory.getLogger(AbstractJdbcDao.class)
+                        .warn("optimize: runtime cap ({} ms) exceeded before '{}'", capMs, sql);
+                    completed = false;
+                    break;
+                }
+                try (Statement st = c.createStatement()) {
+                    try { st.setQueryTimeout(perStmtTimeoutSec); } catch (SQLException ignored) {}
+                    st.execute(sql);
+                } catch (SQLException ex) {
+                    // Missing-table etc. — best effort. Log and press on.
+                    org.slf4j.LoggerFactory.getLogger(AbstractJdbcDao.class)
+                        .warn("optimize: '{}' failed ({}); continuing", sql, ex.getMessage());
+                    completed = false;
+                }
+            }
+        } finally {
+            try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            release(c);
+        }
+
+        long bytesAfter = safeSizeBytes();
+        long freed = (bytesBefore >= 0 && bytesAfter >= 0) ? (bytesBefore - bytesAfter) : -1L;
+        long durationMs = (System.nanoTime() - t0) / 1_000_000L;
+        return new OptimizeResult(durationMs, freed, completed);
+    }
+
+    /** SQL statements to run for this dialect, in order. Overridable for tests. */
+    protected List<String> optimizeStatementsFor(Schema.Dialect d) {
+        switch (d) {
+            case MYSQL: {
+                StringBuilder sb = new StringBuilder("OPTIMIZE TABLE ");
+                for (int i = 0; i < OPTIMIZE_TABLES.length; i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append(OPTIMIZE_TABLES[i]);
+                }
+                return List.of(sb.toString());
+            }
+            case POSTGRES: {
+                List<String> out = new ArrayList<>(OPTIMIZE_TABLES.length);
+                for (String t : OPTIMIZE_TABLES) {
+                    out.add("VACUUM ANALYZE " + t);
+                }
+                return out;
+            }
+            case SQLITE:
+            default:
+                return List.of("VACUUM");
+        }
+    }
+
+    /**
+     * Best-effort byte-size probe used to compute {@code bytesFreed}. Returns
+     * {@code -1} when the dialect doesn't offer a cheap answer.
+     */
+    protected long safeSizeBytes() {
+        Schema.Dialect d;
+        try { d = dialect(); } catch (RuntimeException ex) { return -1L; }
+        Connection c;
+        try { c = borrow(); } catch (SQLException ex) { return -1L; }
+        try (Statement st = c.createStatement()) {
+            String sql = switch (d) {
+                case MYSQL ->
+                    "SELECT COALESCE(SUM(data_length + index_length), 0) "
+                  + "FROM information_schema.tables "
+                  + "WHERE table_schema = DATABASE() "
+                  + "AND table_name IN ('vg_actions','vg_rollback_batches','vg_rollback_batch_actions')";
+                case POSTGRES ->
+                    "SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0) "
+                  + "FROM pg_class c "
+                  + "WHERE c.relname IN ('vg_actions','vg_rollback_batches','vg_rollback_batch_actions')";
+                case SQLITE ->
+                    "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()";
+            };
+            try (ResultSet rs = st.executeQuery(sql)) {
+                if (rs.next()) return Math.max(0L, rs.getLong(1));
+            }
+            return -1L;
+        } catch (SQLException ex) {
+            return -1L;
+        } finally {
+            release(c);
+        }
+    }
+
     // ------------------------------------------------------------ ROLLBACK BATCH
 
     @Override

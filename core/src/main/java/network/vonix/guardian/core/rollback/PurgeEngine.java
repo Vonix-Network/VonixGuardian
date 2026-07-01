@@ -15,6 +15,10 @@ import java.util.Objects;
  * <ul>
  *   <li>From the console: minimum age defaults to {@code 86_400} seconds (1 day).</li>
  *   <li>From in-game: minimum age defaults to {@code 2_592_000} seconds (30 days).</li>
+ *   <li>{@code #optimize} on the filter triggers dialect-specific storage
+ *       optimization after a successful purge — MySQL/MariaDB {@code OPTIMIZE
+ *       TABLE}, PostgreSQL {@code VACUUM ANALYZE}, SQLite {@code VACUUM}.
+ *       Failure to optimize does NOT fail the purge.</li>
  * </ul>
  *
  * <p>The engine itself is source-agnostic; callers (the brigadier command
@@ -24,6 +28,9 @@ import java.util.Objects;
 public final class PurgeEngine {
 
     private static final Logger LOG = LoggerFactory.getLogger(PurgeEngine.class);
+
+    /** Hard cap on {@code #optimize} wall-clock time — 5 minutes. */
+    public static final long OPTIMIZE_MAX_RUNTIME_MS = 5L * 60L * 1000L;
 
     private final GuardianDao dao;
 
@@ -35,10 +42,16 @@ public final class PurgeEngine {
      * Delete actions matching {@code filter} provided the filter's
      * {@code sinceMillis} is at least {@code minAgeSeconds} in the past.
      *
+     * <p>If {@link QueryFilter#optimize()} is {@code true}, a best-effort
+     * {@code OPTIMIZE TABLE} / {@code VACUUM ANALYZE} / {@code VACUUM} runs
+     * after the delete. The optimize step is bounded by
+     * {@link #OPTIMIZE_MAX_RUNTIME_MS} and any failure is logged and swallowed
+     * — the purge's row-count result is authoritative regardless.
+     *
      * @param filter         the query filter; must carry a non-null
      *                       {@code sinceMillis} that is sufficiently old
      * @param minAgeSeconds  minimum age (seconds) the time bound must satisfy
-     * @return result describing the purge outcome
+     * @return result describing the purge outcome (and any optimize outcome)
      * @throws IllegalArgumentException if {@code filter.sinceMillis()} is
      *         {@code null} or more recent than the minimum age permits
      * @throws Exception on DAO failure
@@ -54,9 +67,30 @@ public final class PurgeEngine {
             throw new IllegalArgumentException(
                 "purge requires a time filter at least " + minAgeSeconds + "s old");
         }
-        LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={}", since, minAgeSeconds);
+        LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={} optimize={}",
+            since, minAgeSeconds, filter.optimize());
         long deleted = dao.purge(filter);
-        return new PurgeResult(deleted, minAgeSeconds, since);
+
+        GuardianDao.OptimizeResult opt = null;
+        if (filter.optimize()) {
+            try {
+                LOG.info("PurgeEngine: #optimize requested — running storage optimize (cap={}ms)",
+                    OPTIMIZE_MAX_RUNTIME_MS);
+                opt = dao.optimize(OPTIMIZE_MAX_RUNTIME_MS);
+                if (opt.completed()) {
+                    LOG.info("PurgeEngine: optimize took {}ms, reclaimed {} bytes",
+                        opt.durationMillis(), opt.bytesFreed());
+                } else {
+                    LOG.warn("PurgeEngine: optimize did not complete within cap — {}ms elapsed, "
+                        + "bytesFreed={}", opt.durationMillis(), opt.bytesFreed());
+                }
+            } catch (Exception ex) {
+                // Never let optimize failure erase a successful purge.
+                LOG.warn("PurgeEngine: optimize failed post-purge (deleted={}): {}",
+                    deleted, ex.toString());
+            }
+        }
+        return new PurgeResult(deleted, minAgeSeconds, since, opt);
     }
 
     /**
@@ -65,6 +99,18 @@ public final class PurgeEngine {
      * @param deletedCount       rows removed from {@code vg_actions}
      * @param minAgeSeconds      minimum age (seconds) enforced by the caller
      * @param requestedSinceMs   the {@code sinceMillis} that was accepted
+     * @param optimize           optimization outcome, or {@code null} if
+     *                           {@code #optimize} was not requested or the
+     *                           optimize call itself threw (see log)
      */
-    public record PurgeResult(long deletedCount, long minAgeSeconds, long requestedSinceMs) {}
+    public record PurgeResult(long deletedCount,
+                              long minAgeSeconds,
+                              long requestedSinceMs,
+                              GuardianDao.OptimizeResult optimize) {
+
+        /** True if the purge asked for and successfully executed the optimize step. */
+        public boolean optimized() {
+            return optimize != null;
+        }
+    }
 }

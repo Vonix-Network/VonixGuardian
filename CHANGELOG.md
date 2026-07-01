@@ -5,6 +5,37 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`GuardianDao#optimize(long)` + `PurgeEngine` `#optimize` handler (W3-B10).**
+  The `#optimize` hashtag on `/vg purge` (already parsed by `QueryParser`) now
+  dispatches to real storage-optimization SQL after a successful purge:
+  - **MySQL / MariaDB** — `OPTIMIZE TABLE vg_actions, vg_rollback_batches, vg_rollback_batch_actions`.
+  - **PostgreSQL** — `VACUUM ANALYZE` per table, forced into autocommit
+    (VACUUM cannot run inside a transaction).
+  - **SQLite** — whole-db `VACUUM` (SQLite auto-optimizes; VACUUM reclaims
+    pages freed by the delete).
+  Runtime is capped at **5 minutes** via per-statement `setQueryTimeout`; if
+  the cap trips or a statement errors, the purge's `deletedCount` is still
+  returned and the failure is logged as `WARN` — optimize is opportunistic and
+  MUST NOT undo a successful purge. `PurgeEngine.PurgeResult` now exposes the
+  optional `OptimizeResult` (duration ms, best-effort bytes reclaimed from
+  `information_schema.tables` / `pg_total_relation_size` / `pragma_page_count`).
+  CoreProtect parity per NIGHTSHIFT.md B10.
+
+### Tests
+
+- `AbstractJdbcDaoOptimizeSqlTest` — asserts the exact SQL emitted for each
+  dialect (`OPTIMIZE TABLE ...` on MySQL, three `VACUUM ANALYZE` statements on
+  Postgres with an enforced autocommit flip, and `VACUUM` on SQLite) plus a
+  swallow-on-error case proving optimize failure does not surface to the purge
+  caller.
+- `SqliteDaoIntegrationTest#optimize_runs_vacuum_and_returns_completed_result` —
+  real end-to-end VACUUM against an in-memory SQLite DB after a purge; the
+  result is `completed=true` and the DB remains healthy and queryable.
+
 ## [1.1.6] — 2026-07-01
 
 **Wave-2 nightshift: 6 parallel subagent audits + fixes.** Fixes for the CRITICAL RollbackPlan silent-default (14 handlers restored), the CRITICAL Berk truncation storm (target column widened to 4096 chars), and 5 HIGH-severity wiring/parity issues surfaced by the Wave-1 CP-comparison + adversarial audit. See docs/COREPROTECT-COMPARISON.md and docs/WAVE-AUDIT-1.1.5.md for the underlying analysis.
