@@ -20,12 +20,21 @@ import java.util.List;
  *       (crash-recovery audit for rollback/restore operations). Migration is purely additive
  *       (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS), so it is safe to run on a
  *       fresh database or an existing v1 database without any data movement.</li>
+ *   <li><b>v3</b> — in-place widening of {@code vg_actions.target} from
+ *       {@code VARCHAR(192)} to {@code VARCHAR(4096)}. Motivated by the Berk
+ *       maintenance-window truncation incident on 2026-07-01 08:05:54 UTC: chat
+ *       messages, {@code /tellraw} bodies, sign text and explosion
+ *       {@code affectedJoined} strings routinely exceed 192 chars and were
+ *       causing data-truncation SQLDataException on MySQL. Fresh installs get
+ *       the widened column via the DDL below; existing v2 databases are
+ *       upgraded in place by
+ *       {@link network.vonix.guardian.core.storage.migration.V3WidenActionTarget}.</li>
  * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -56,8 +65,21 @@ public final class Schema {
         }
         // 2. Indexes — dialect-specific idempotency strategy.
         createIndexesIdempotent(c, dialect, indexDdlFor(dialect));
-        // 3. Version stamp.
-        stampVersion(c, CURRENT_VERSION);
+        // 3. Version stamp — but ONLY if the version table is currently empty. A
+        //    populated version table means this is a pre-existing install whose
+        //    version is older than CURRENT_VERSION; blindly stamping CURRENT_VERSION
+        //    here would trick the MigrationRunner into thinking no work is needed.
+        //    Let the runner insert the correct stamps as it applies each step.
+        if (isVersionTableEmpty(c)) {
+            stampVersion(c, CURRENT_VERSION);
+        }
+    }
+
+    private static boolean isVersionTableEmpty(Connection c) throws SQLException {
+        try (Statement st = c.createStatement();
+             java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM vg_schema_version")) {
+            return rs.next() && rs.getInt(1) == 0;
+        }
     }
 
     /**
@@ -177,7 +199,7 @@ public final class Schema {
             + "x INTEGER NOT NULL, "
             + "y INTEGER NOT NULL, "
             + "z INTEGER NOT NULL, "
-            + "target VARCHAR(192) NOT NULL, "
+            + "target VARCHAR(4096) NOT NULL, "
             + "meta " + textType(d) + " NULL, "
             + "amount INTEGER NOT NULL DEFAULT 1, "
             + "rolled_back " + tinyint(d) + " NOT NULL DEFAULT 0, "

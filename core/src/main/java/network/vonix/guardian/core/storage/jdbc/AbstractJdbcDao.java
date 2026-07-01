@@ -6,6 +6,7 @@ import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
 import network.vonix.guardian.core.storage.QueryCompiler;
 import network.vonix.guardian.core.storage.Schema;
+import network.vonix.guardian.core.storage.migration.MigrationRunner;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -85,7 +86,12 @@ public abstract class AbstractJdbcDao implements GuardianDao {
     public void init() throws SQLException {
         Connection c = borrow();
         try {
+            // Fresh installs: create tables at CURRENT_VERSION and stamp v{CURRENT_VERSION}.
             Schema.createTables(c, dialect());
+            // Existing installs stamped at an older version: walk any pending
+            // in-place migrations. Idempotent — no-op if the recorded version
+            // is already CURRENT_VERSION.
+            MigrationRunner.defaults().migrateToCurrent(c, dialect());
         } finally {
             release(c);
         }

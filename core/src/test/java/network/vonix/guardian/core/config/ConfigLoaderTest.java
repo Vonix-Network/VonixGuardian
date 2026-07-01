@@ -298,7 +298,8 @@ class ConfigLoaderTest {
                 new GuardianConfig(d.database(), d.queue(), d.logFile(),
                     new GuardianConfig.Actions(
                         true, true, true, true, true, true, true, true, true, true, true,
-                        new ArrayList<>(), nullableList("minecraft:air", null), new ArrayList<>()),
+                        new ArrayList<>(), nullableList("minecraft:air", null), new ArrayList<>(),
+                        60_000L, 512, new ArrayList<>(), false),
                     d.permissions(), d.lookup(), d.privacy(), d.purge(), d.theme()),
                 "actions.blockBlacklist[1]")
         );
