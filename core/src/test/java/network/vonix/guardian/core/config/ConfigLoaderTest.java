@@ -289,10 +289,10 @@ class ConfigLoaderTest {
                 with(d, new GuardianConfig.Privacy(true, null)),
                 "privacy.salt"),
             Arguments.of("purge.minAgeSecondsConsole below floor",
-                with(d, new GuardianConfig.Purge(59L, 2_592_000L)),
+                with(d, new GuardianConfig.Purge(59L, 2_592_000L, 0L, "03:30")),
                 "purge.minAgeSecondsConsole"),
             Arguments.of("purge.minAgeSecondsInGame below floor",
-                with(d, new GuardianConfig.Purge(86_400L, 3_599L)),
+                with(d, new GuardianConfig.Purge(86_400L, 3_599L, 0L, "03:30")),
                 "purge.minAgeSecondsInGame"),
             Arguments.of("null blacklist element",
                 new GuardianConfig(d.database(), d.queue(), d.logFile(),
@@ -333,7 +333,7 @@ class ConfigLoaderTest {
             new GuardianConfig.Permissions(false, 17),
             new GuardianConfig.Lookup(0, 0, 50, 0),
             new GuardianConfig.Privacy(true, "x"),
-            new GuardianConfig.Purge(1L, 1L),
+            new GuardianConfig.Purge(1L, 1L, 0L, "03:30"),
             "neon-pink"
         );
         assertThatThrownBy(bad::validate)

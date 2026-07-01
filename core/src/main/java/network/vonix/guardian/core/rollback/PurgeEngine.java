@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Guarded {@code /vg purge} entry point.
@@ -24,6 +25,14 @@ import java.util.Objects;
  * <p>The engine itself is source-agnostic; callers (the brigadier command
  * handler) pick the correct {@code minAgeSeconds} from
  * {@code GuardianConfig.Purge} based on who issued the command and pass it in.
+ *
+ * <p><b>Mutex (W3-B4):</b> {@link #mutex()} returns a process-wide
+ * {@link ReentrantLock} that {@code AutoPurgeScheduler} uses to
+ * (a) serialise concurrent purges and (b) safely skip the daily run when a
+ * manual {@code /vg purge} is already in flight. The lock is <em>optional</em>
+ * on the manual path — {@link #purge} does not acquire it itself because
+ * historical callers may hold longer transactions; the auto-purge daemon
+ * uses {@code tryLock()} so it never blocks the server.
  */
 public final class PurgeEngine {
 
@@ -33,6 +42,7 @@ public final class PurgeEngine {
     public static final long OPTIMIZE_MAX_RUNTIME_MS = 5L * 60L * 1000L;
 
     private final GuardianDao dao;
+    private final ReentrantLock mutex = new ReentrantLock();
 
     public PurgeEngine(GuardianDao dao) {
         this.dao = Objects.requireNonNull(dao, "dao");
@@ -67,30 +77,52 @@ public final class PurgeEngine {
             throw new IllegalArgumentException(
                 "purge requires a time filter at least " + minAgeSeconds + "s old");
         }
-        LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={} optimize={}",
-            since, minAgeSeconds, filter.optimize());
-        long deleted = dao.purge(filter);
+        mutex.lock();
+        try {
+            LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={} optimize={}",
+                since, minAgeSeconds, filter.optimize());
+            long deleted = dao.purge(filter);
 
-        GuardianDao.OptimizeResult opt = null;
-        if (filter.optimize()) {
-            try {
-                LOG.info("PurgeEngine: #optimize requested — running storage optimize (cap={}ms)",
-                    OPTIMIZE_MAX_RUNTIME_MS);
-                opt = dao.optimize(OPTIMIZE_MAX_RUNTIME_MS);
-                if (opt.completed()) {
-                    LOG.info("PurgeEngine: optimize took {}ms, reclaimed {} bytes",
-                        opt.durationMillis(), opt.bytesFreed());
-                } else {
-                    LOG.warn("PurgeEngine: optimize did not complete within cap — {}ms elapsed, "
-                        + "bytesFreed={}", opt.durationMillis(), opt.bytesFreed());
+            GuardianDao.OptimizeResult opt = null;
+            if (filter.optimize()) {
+                try {
+                    LOG.info("PurgeEngine: #optimize requested — running storage optimize (cap={}ms)",
+                        OPTIMIZE_MAX_RUNTIME_MS);
+                    opt = dao.optimize(OPTIMIZE_MAX_RUNTIME_MS);
+                    if (opt.completed()) {
+                        LOG.info("PurgeEngine: optimize took {}ms, reclaimed {} bytes",
+                            opt.durationMillis(), opt.bytesFreed());
+                    } else {
+                        LOG.warn("PurgeEngine: optimize did not complete within cap — {}ms elapsed, "
+                            + "bytesFreed={}", opt.durationMillis(), opt.bytesFreed());
+                    }
+                } catch (Exception ex) {
+                    // Never let optimize failure erase a successful purge.
+                    LOG.warn("PurgeEngine: optimize failed post-purge (deleted={}): {}",
+                        deleted, ex.toString());
                 }
-            } catch (Exception ex) {
-                // Never let optimize failure erase a successful purge.
-                LOG.warn("PurgeEngine: optimize failed post-purge (deleted={}): {}",
-                    deleted, ex.toString());
             }
+            return new PurgeResult(deleted, minAgeSeconds, since, opt);
+        } finally {
+            mutex.unlock();
         }
-        return new PurgeResult(deleted, minAgeSeconds, since, opt);
+    }
+
+    /** DAO handle (package-visibility for {@code AutoPurgeScheduler}). */
+    public GuardianDao dao() {
+        return dao;
+    }
+
+    /**
+     * Process-wide purge mutex. Callers on the auto-purge path use
+     * {@link ReentrantLock#tryLock()} to skip a scheduled run whenever a
+     * manual purge is in flight; the manual path in {@link #purge} acquires
+     * it as a plain {@code lock()}.
+     *
+     * @return the shared purge lock; never {@code null}
+     */
+    public ReentrantLock mutex() {
+        return mutex;
     }
 
     /**

@@ -56,7 +56,7 @@ class GuardianReloadTest {
             new GuardianConfig.Permissions(true, 3),
             new GuardianConfig.Lookup(defaultPage, 10_000, 100_000, 4),
             new GuardianConfig.Privacy(hashIps, "some-16-char-salt-000000"),
-            new GuardianConfig.Purge(consoleFloor, 3_600L),
+            new GuardianConfig.Purge(consoleFloor, 3_600L, 0L, "03:30"),
             theme
         );
     }
@@ -98,7 +98,7 @@ class GuardianReloadTest {
                 initial.permissions(),
                 new GuardianConfig.Lookup(15, 10_000, 200_000, 4),
                 initial.privacy(),
-                new GuardianConfig.Purge(120L, 7200L),
+                new GuardianConfig.Purge(120L, 7200L, 0L, "03:30"),
                 "gold"
             );
             ConfigLoader.save(cfgPath, mutated);

@@ -168,12 +168,27 @@ public record GuardianConfig(
     public record Privacy(boolean hashIps, String salt) {}
 
     /**
-     * Minimum-age floors for {@code /vg purge} (CoreProtect parity).
+     * Minimum-age floors for {@code /vg purge} (CoreProtect parity) plus the
+     * background auto-purge daemon settings (W3-B4).
      *
      * @param minAgeSecondsConsole minimum age (seconds) for a purge invoked from the server console (&ge; 60)
      * @param minAgeSecondsInGame  minimum age (seconds) for a purge invoked in-game (&ge; 3600)
+     * @param autoPurgeSeconds     retention horizon for the background daily purge, in seconds.
+     *                             {@code 0} disables the daemon; otherwise must be
+     *                             {@code >= 2_592_000} (30 days) to match CP Patreon 24+ semantics.
+     * @param autoPurgeTime        wall-clock time-of-day (server local time) the daemon runs,
+     *                             in strict 24h {@code HH:mm} form; default {@code "03:30"}.
      */
-    public record Purge(long minAgeSecondsConsole, long minAgeSecondsInGame) {}
+    public record Purge(
+        long minAgeSecondsConsole,
+        long minAgeSecondsInGame,
+        long autoPurgeSeconds,
+        String autoPurgeTime
+    ) {
+        /** {@code HH:mm} matcher — 00:00..23:59. */
+        public static final java.util.regex.Pattern HHMM_PATTERN =
+            java.util.regex.Pattern.compile("^([01]\\d|2[0-3]):([0-5]\\d)$");
+    }
 
     /**
      * Build the canonical default config matching README &sect; Configuration.
@@ -205,7 +220,7 @@ public record GuardianConfig(
             new Permissions(true, 3),
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
-            new Purge(86_400L, 2_592_000L),
+            new Purge(86_400L, 2_592_000L, 0L, "03:30"),
             "aqua"
         );
     }
@@ -342,6 +357,15 @@ public record GuardianConfig(
             }
             if (purge.minAgeSecondsInGame < 3600L) {
                 errors.add("purge.minAgeSecondsInGame: must be >= 3600 (got " + purge.minAgeSecondsInGame + ")");
+            }
+            if (purge.autoPurgeSeconds != 0L && purge.autoPurgeSeconds < 2_592_000L) {
+                errors.add("purge.autoPurgeSeconds: must be 0 (disabled) or >= 2592000 (30 days) (got "
+                    + purge.autoPurgeSeconds + ")");
+            }
+            if (purge.autoPurgeTime == null
+                    || !Purge.HHMM_PATTERN.matcher(purge.autoPurgeTime).matches()) {
+                errors.add("purge.autoPurgeTime: must match HH:mm 24h format (got "
+                    + purge.autoPurgeTime + ")");
             }
         }
 

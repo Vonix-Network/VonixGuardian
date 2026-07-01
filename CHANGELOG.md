@@ -64,6 +64,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `information_schema.tables` / `pg_total_relation_size` / `pragma_page_count`).
   CoreProtect parity per NIGHTSHIFT.md B10.
 
+- **Auto-purge daemon** (W3-B4, CoreProtect Patreon 24+ parity):
+  new `AutoPurgeScheduler` runs a single background daemon thread that wakes
+  daily at the operator-configured `HH:mm` (server local time) and deletes
+  `vg_actions` rows older than `purge.autoPurgeSeconds`. Chunked
+  (`DELETE ... LIMIT 10_000`, 200 ms pause between chunks) and mutex-safe:
+  uses `PurgeEngine.mutex()` via `tryLock`, so a manual `/vg purge` or an
+  in-flight migration cleanly skips the scheduled run and reschedules for
+  tomorrow. New config keys: `purge.autoPurgeSeconds` (`0` = disabled, else
+  ≥ 30d = 2 592 000 s) and `purge.autoPurgeTime` (`HH:mm` 24h, default
+  `03:30`). New DAO primitive: `GuardianDao.purgeOlderThan(cutoffMs, limit)`.
+  Wired into `Guardian.boot()` (start) and `Guardian.shutdown()`
+  (5-second graceful await). Rows deleted since JVM restart are exposed via
+  `AutoPurgeScheduler.getRowsPurgedSinceRestart()` for a follow-up
+  `/vg status` line in cells (TODO: parent ticket, cells layer).
+
 ### Changed
 
 - **`gradle.properties`** — `mod_version` bumped `1.1.6` → `1.1.7`.

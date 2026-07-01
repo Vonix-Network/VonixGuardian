@@ -16,6 +16,7 @@ import network.vonix.guardian.core.filter.VanillaGrieferSet;
 import network.vonix.guardian.core.logfile.JsonLinesLogFile;
 import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.perms.PermissionResolver;
+import network.vonix.guardian.core.purge.AutoPurgeScheduler;
 import network.vonix.guardian.core.query.InspectorLookup;
 import network.vonix.guardian.core.queue.BatchedAsyncWriteQueue;
 import network.vonix.guardian.core.queue.EntityBlockChangeCoalescer;
@@ -83,6 +84,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private final Path dataDir;
     /** Path to the on-disk config.json; kept so /vg reload can re-read it without any cell-side plumbing. */
     private volatile Path configPath;
+    private final AutoPurgeScheduler autoPurgeScheduler;
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
@@ -98,7 +100,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                      UndoStack undoStack,
                      Theme theme,
                      EntityBlockChangeCoalescer entityBlockCoalescer,
-                     Path dataDir) {
+                     Path dataDir,
+                     AutoPurgeScheduler autoPurgeScheduler) {
         this.config = config;
         this.dao = dao;
         this.queue = queue;
@@ -111,6 +114,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.entityBlockCoalescer = entityBlockCoalescer;
         this.logFileRef = logFileRef;
         this.dataDir = dataDir;
+        this.autoPurgeScheduler = autoPurgeScheduler;
     }
 
     /**
@@ -200,7 +204,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         }
 
         LOG.info(MARKER, "VonixGuardian online.");
-        return new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir);
+        AutoPurgeScheduler autoPurge = AutoPurgeScheduler.create(config, purgeEng, dao);
+        autoPurge.start();
+        return new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir, autoPurge);
     }
 
     // -------------------------------------------------------------------- getters
@@ -214,6 +220,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public PurgeEngine purgeEngine()       { return purgeEngine; }
     public UndoStack undoStack()           { return undoStack; }
     public Theme theme()                   { return theme; }
+    /**
+     * Background auto-purge daemon (W3-B4). Non-null even when disabled —
+     * check {@link AutoPurgeScheduler#isEnabled()} before assuming it runs.
+     */
+    public AutoPurgeScheduler autoPurgeScheduler() { return autoPurgeScheduler; }
     public EventSubmitter submitter()      { return this; }
     public long submitted()                { return submitted.get(); }
     public long gated()                    { return gated.get(); }
@@ -760,6 +771,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public void shutdown() {
         LOG.info(MARKER, "Shutting down VonixGuardian (submitted={}, gated={}, queue.depth={}, queue.dropped={})",
                 submitted.get(), gated.get(), queue.depth(), queue.dropped());
+        try {
+            if (autoPurgeScheduler != null) {
+                autoPurgeScheduler.shutdown(5_000L);
+            }
+        } catch (Exception e) {
+            LOG.warn(MARKER, "AutoPurgeScheduler shutdown raised", e);
+        }
         try {
             queue.drainAndFlush(30_000L);
         } catch (Exception e) {

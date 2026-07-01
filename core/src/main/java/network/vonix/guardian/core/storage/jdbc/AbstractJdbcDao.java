@@ -400,6 +400,31 @@ public abstract class AbstractJdbcDao implements GuardianDao {
         }
     }
 
+    // ------------------------------------------------------------------ AUTO-PURGE
+
+    @Override
+    public long purgeOlderThan(long cutoffMillis, int chunkLimit) throws SQLException {
+        if (chunkLimit <= 0) {
+            throw new IllegalArgumentException("chunkLimit must be > 0 (got " + chunkLimit + ")");
+        }
+        // Portable across SQLite, MySQL, and PostgreSQL: a DELETE ... WHERE id IN (SELECT id ... LIMIT ?).
+        // MySQL does not permit LIMIT directly on a DELETE that references the same table via subquery
+        // without wrapping the subquery in an intermediate SELECT — the FROM-derived form below works
+        // on all three backends.
+        final String sql =
+            "DELETE FROM vg_actions WHERE id IN ("
+          + "SELECT id FROM (SELECT id FROM vg_actions WHERE ts < ? ORDER BY ts ASC LIMIT ?) AS victims"
+          + ")";
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, cutoffMillis);
+            ps.setInt(2, chunkLimit);
+            return ps.executeUpdate();
+        } finally {
+            release(c);
+        }
+    }
+
     // ------------------------------------------------------------ ROLLBACK BATCH
 
     @Override
