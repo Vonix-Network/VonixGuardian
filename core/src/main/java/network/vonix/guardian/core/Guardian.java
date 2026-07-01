@@ -16,6 +16,7 @@ import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.perms.PermissionResolver;
 import network.vonix.guardian.core.query.InspectorLookup;
 import network.vonix.guardian.core.queue.BatchedAsyncWriteQueue;
+import network.vonix.guardian.core.queue.EntityBlockChangeCoalescer;
 import network.vonix.guardian.core.rollback.PurgeEngine;
 import network.vonix.guardian.core.rollback.RollbackEngine;
 import network.vonix.guardian.core.rollback.UndoStack;
@@ -72,6 +73,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private final PurgeEngine purgeEngine;
     private final UndoStack undoStack;
     private final Theme theme;
+    private final EntityBlockChangeCoalescer entityBlockCoalescer;
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
@@ -85,7 +87,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                      RollbackEngine rollbackEngine,
                      PurgeEngine purgeEngine,
                      UndoStack undoStack,
-                     Theme theme) {
+                     Theme theme,
+                     EntityBlockChangeCoalescer entityBlockCoalescer) {
         this.config = config;
         this.dao = dao;
         this.queue = queue;
@@ -96,6 +99,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.purgeEngine = purgeEngine;
         this.undoStack = undoStack;
         this.theme = theme;
+        this.entityBlockCoalescer = entityBlockCoalescer;
     }
 
     /**
@@ -167,8 +171,23 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         UndoStack undo = new UndoStack(20);
         Theme theme = ThemeRegistry.get(config.theme());
 
+        // Coalescer: window > 0 enables, negative/zero disables. Backward-compat
+        // fills 0→500 in ConfigLoader; negative is an explicit operator opt-out.
+        long coalWindow = config.actions().entityBlockChangeCoalesceWindowMs();
+        int  coalMax    = config.actions().entityBlockChangeMaxTracked();
+        EntityBlockChangeCoalescer coal = null;
+        if (coalWindow > 0 && coalMax > 0) {
+            coal = new EntityBlockChangeCoalescer(coalWindow, coalMax);
+            LOG.info(MARKER, "EntityBlockChange coalescer enabled (window={}ms, maxTracked={})",
+                    coalWindow, coalMax);
+        } else {
+            LOG.warn(MARKER, "EntityBlockChange coalescer DISABLED (window={}, maxTracked={}); " +
+                    "expect queue-full spam on high-cardinality entity-change modpacks",
+                    coalWindow, coalMax);
+        }
+
         LOG.info(MARKER, "VonixGuardian online.");
-        return new Guardian(config, dao, queue, logFile, gate, perms, rollback, purgeEng, undo, theme);
+        return new Guardian(config, dao, queue, logFile, gate, perms, rollback, purgeEng, undo, theme, coal);
     }
 
     // -------------------------------------------------------------------- getters
@@ -392,6 +411,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
                                         int x, int y, int z,
                                         String oldBlockId, String newBlockId, String sourceTag) {
+        // Producer-side coalescing: HTTYD-class modpacks fire this event 100k+/sec
+        // per active dragon. Same (actor, coord) events inside a 500ms window are
+        // suppressed. Distinct actors OR distinct coords still log normally.
+        if (entityBlockCoalescer != null) {
+            String actorId = (actorUuid != null) ? actorUuid.toString()
+                                                 : (actorName != null ? actorName : "");
+            if (!entityBlockCoalescer.shouldLog(actorId, worldId, x, y, z)) {
+                gated.incrementAndGet();
+                return;
+            }
+        }
         String target = (oldBlockId != null ? oldBlockId : "?") + " -> "
                 + (newBlockId != null ? newBlockId : "?");
         submit(seed(ActionType.ENTITY_CHANGE_BLOCK, actorUuid, actorName, worldId)

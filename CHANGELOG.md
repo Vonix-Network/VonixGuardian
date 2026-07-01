@@ -5,6 +5,68 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] — 2026-07-01
+
+**Producer-side coalescing for `LivingDestroyBlockEvent` — stops HTTYD-class
+modpack write-queue floods.**
+
+Field report from `a0b7f085` (Berk / How To Train Your Dragon): a single active
+dragon fired `submitEntityChangeBlock()` ~200k times per second per dragon,
+overwhelming `BatchedAsyncWriteQueue` and generating relentless
+`AsyncWriteQueue full — dropping actions` warnings. Analysis of the producer
+histogram (v1.1.3-diag build) showed **99.994%** of ~47M events in 4 minutes
+were `ENTITY_CHANGE_BLOCK`, all attributable to the ~350 dragon variants
+Berk's modpack registers via `iobvariantloader:*`.
+
+### Added
+
+- **`EntityBlockChangeCoalescer`** (`core.queue`): producer-side dedup keyed by
+  `(actorId, worldId, x, y, z)` with a configurable time window. Same tuple
+  within window → suppressed. Different actor OR different coord → logged.
+  ~500KB memory footprint at default cap.
+- **`actions.entityBlockChangeCoalesceWindowMs`** (long, default `500`):
+  time window inside which repeat `(actor, coord)` events are collapsed.
+  `-1` or `0` (post-migration) disables. Pre-1.1.4 configs auto-backfill.
+- **`actions.entityBlockChangeMaxTracked`** (int, default `8192`): cap on
+  live `(actor, coord)` tuples tracked at once. LRU-evicted on cap pressure.
+- **`ConfigLoader.migrateForwardCompat`**: rewrites `0` values to sensible
+  defaults on load, so servers upgrading from ≤ 1.1.3 don't silently ship
+  with the coalescer disabled. Emits an INFO line naming the fill-ins.
+
+### Changed
+
+- **`Guardian.submitEntityChangeBlock()`**: consults the coalescer before
+  seeding an Action; coalesced events increment `gated` counter. All other
+  event surfaces unaffected.
+- **`Guardian` constructor + `boot()`**: takes an optional
+  `EntityBlockChangeCoalescer`; `boot()` builds one from `config.actions()`
+  and logs an INFO/WARN depending on enablement.
+
+### Verified
+
+- Boot-parity smoke test on local staging Forge 1.18.2 server with `mods/`
+  and `config/` mirrored from Berk. Both VG and DragonGuard 1.0.1 came up
+  clean. `Backfilling entityBlockChange coalescer defaults` INFO fired
+  as expected on the pre-1.1.4 config file.
+- Local MySQL 8.0.46 backend (parity with McProHosting panel1 fleet):
+  no `SQLSyntaxError`, HikariPool started clean, no schema regressions.
+- CoreProtect's `EntityChangeBlockListener` was studied for prior art;
+  their approach is a hardcoded whitelist of vanilla entity classes
+  (Enderman, EnderDragon, Fox, Wither, Turtle, Ravager, Zombie,
+  Silverfish, WindCharge, BreezeWindCharge, FallingBlock). We chose a
+  coord-time coalescer over an entity-class allowlist because it
+  requires zero mod-specific knowledge and handles the modded case
+  (300+ dragon variants) without operator intervention.
+
+### Known limitations
+
+- The coalescer suppresses at the granularity of `(actor, exact coord)`.
+  A single dragon flying across 100 blocks per second still submits
+  ~100 events/sec — but that's 3 orders of magnitude below the pre-fix rate.
+- If a dragon repeatedly destroys and reforms the same block within 500ms,
+  only the first destruction is logged. Rollback correctness is preserved
+  (the block state is the same before and after the dropped events).
+
 ## [1.1.2] — 2026-06-30
 
 **Hotfix release: MySQL dialect compatibility.**

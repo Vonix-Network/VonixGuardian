@@ -85,8 +85,59 @@ public final class ConfigLoader {
         if (cfg == null) {
             throw new JsonSyntaxException("Config file " + path + " parsed to null (empty document?)");
         }
+        cfg = migrateForwardCompat(cfg);
         cfg.validate();
         return cfg;
+    }
+
+    /**
+     * Forward-compat fill-ins for fields added in later versions than the on-disk
+     * config file predates. Missing/absent fields deserialize to zero-value defaults
+     * (int=0, long=0, boolean=false, list=null), which for some fields would
+     * silently disable safety features. This method rewrites those zero-values to
+     * the current sensible defaults from {@link GuardianConfig#defaults()}.
+     *
+     * <p>Rewrites (as of 1.1.4):
+     * <ul>
+     *   <li>{@code actions.entityBlockChangeCoalesceWindowMs == 0} → 500ms</li>
+     *   <li>{@code actions.entityBlockChangeMaxTracked == 0} → 8192</li>
+     * </ul>
+     *
+     * <p>An operator who explicitly wants to <em>disable</em> the coalescer must
+     * set {@code entityBlockChangeCoalesceWindowMs} to a negative value, not
+     * zero. This is a deliberate footgun-prevention choice: on 200k+ events/sec
+     * modpacks (HTTYD, dragon packs), disabling the coalescer will drown the
+     * write queue and the operator likely didn't intend to.
+     */
+    private static GuardianConfig migrateForwardCompat(GuardianConfig cfg) {
+        if (cfg.actions() == null) return cfg;
+        var a = cfg.actions();
+        boolean needsRewrite =
+                (a.entityBlockChangeCoalesceWindowMs() == 0L) ||
+                (a.entityBlockChangeMaxTracked() == 0);
+        if (!needsRewrite) return cfg;
+
+        long window = a.entityBlockChangeCoalesceWindowMs() == 0L
+                ? 500L
+                : a.entityBlockChangeCoalesceWindowMs();
+        int maxTracked = a.entityBlockChangeMaxTracked() == 0
+                ? 8192
+                : a.entityBlockChangeMaxTracked();
+        LOG.info("Backfilling entityBlockChange coalescer defaults from pre-1.1.4 config " +
+                 "(window={}ms, maxTracked={}); use -1/-1 to opt out.",
+                 window, maxTracked);
+        var newActions = new GuardianConfig.Actions(
+                a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(),
+                a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(),
+                a.logSigns(), a.logInteractions(), a.logWorldEvents(),
+                a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(),
+                window, maxTracked
+        );
+        return new GuardianConfig(
+                cfg.database(), cfg.queue(), cfg.logFile(), newActions,
+                cfg.permissions(), cfg.lookup(), cfg.privacy(), cfg.purge(),
+                cfg.theme()
+        );
     }
 
     /**

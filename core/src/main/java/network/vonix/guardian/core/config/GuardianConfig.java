@@ -101,6 +101,14 @@ public record GuardianConfig(
      * @param worldBlacklist  world keys (e.g. {@code minecraft:overworld}) to skip
      * @param blockBlacklist  block ids to skip (e.g. {@code minecraft:air})
      * @param sourceBlacklist sourceTag values to skip (e.g. {@code explosion:tnt})
+     * @param entityBlockChangeCoalesceWindowMs  producer-side dedup window for
+     *                                            {@code LivingDestroyBlockEvent}. Same (actor, coord)
+     *                                            events within this many ms are collapsed into a single
+     *                                            audit action. Prevents HTTYD-style dragon floods.
+     *                                            {@code 0} disables coalescing. Default 500ms.
+     * @param entityBlockChangeMaxTracked         max number of (actor, coord) tuples tracked by the
+     *                                            coalescer at once. Older entries LRU-evicted on cap
+     *                                            pressure. Default 8192 (&asymp;500KB heap).
      */
     public record Actions(
         boolean logBlocks,
@@ -116,7 +124,9 @@ public record GuardianConfig(
         boolean logWorldEvents,
         List<String> worldBlacklist,
         List<String> blockBlacklist,
-        List<String> sourceBlacklist
+        List<String> sourceBlacklist,
+        long entityBlockChangeCoalesceWindowMs,
+        int entityBlockChangeMaxTracked
     ) {}
 
     /**
@@ -169,7 +179,8 @@ public record GuardianConfig(
             new Actions(
                 true, true, true, true, true, true, true, true, true,
                 true, true,
-                worldBlacklist, blockBlacklist, sourceBlacklist
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                500L, 8192              // entityBlockChange coalescer defaults (see EntityBlockChangeCoalescer)
             ),
             new Permissions(true, 3),
             new Lookup(7, 10_000, 100_000, 4),
