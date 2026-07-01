@@ -5,6 +5,26 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Griefer whitelist consolidation** (WAVE-AUDIT-1.1.5 A3+A4):
+  `stripMobPrefix` is now a single `public static` helper on
+  `network.vonix.guardian.core.filter.VanillaGrieferSet` (previously duplicated
+  verbatim across four cell `Events.java` files). `Guardian.submitEntityChangeBlock`
+  now enforces the vanilla-griefer whitelist centrally at the core boundary; the
+  cell-side check remains in place as a redundant fast-path and will be dropped
+  in a follow-up wave.
+
+### Removed
+
+- **Dead allowlist entries** (WAVE-AUDIT-1.1.5 A5): `minecraft:wind_charge` and
+  `minecraft:breeze_wind_charge` removed from `VanillaGrieferSet.DEFAULT_ALLOWLIST`.
+  Both are `Projectile`, not `LivingEntity`, so they could never satisfy
+  `LivingDestroyBlockEvent`'s dispatch signature — their presence was misleading
+  dead code with zero runtime effect.
+
 ## [1.1.5] — 2026-07-01
 
 **CoreProtect-style vanilla-griefer allowlist at the listener — the real fix
