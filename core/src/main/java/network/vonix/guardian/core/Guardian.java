@@ -177,6 +177,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 tf);
 
         EventGate gate = new EventGate(config.actions());
+        // W3-B11: public cancellable pre-log hook. Registered LAST so that
+        // cheaper built-in hooks (per-world overrides — B5, blacklist.txt — B6)
+        // get first crack before we pay a native-bus dispatch.
+        gate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
         RollbackEngine rollback = new RollbackEngine(dao, mutator, mainThreadExec);
         PurgeEngine purgeEng = new PurgeEngine(dao);
