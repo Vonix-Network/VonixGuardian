@@ -5,6 +5,44 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **W2-01: RollbackEngine two-phase pipeline (plan → execute).**
+  `RollbackEngine.rollback(...)` and `restore(...)` no longer interleave DAO
+  reads, plan construction, and executor dispatch in a single method. The
+  refactor splits the workflow into `plan(filter, mode, actorUuid)` — pure,
+  no side effects, returns an immutable `RollbackPlan` — and
+  `execute(RollbackPlan, boolean preview)` — opens the audit batch row and
+  dispatches world mutations. The old `rollback(...)` / `restore(...)`
+  signatures are kept as thin wrappers so no callers break. Failures during
+  planning can no longer leave a half-open `vg_rollback_batches` row
+  because the batch is opened strictly inside `execute(...)`, after the
+  plan is fully built.
+- **`RollbackPlan` is now a tagged value object** carrying `actionIds`,
+  `skippedIds`, `steps` (`PlannedStep` records), the originating
+  `QueryFilter`, `RollbackResult.Mode`, and `actorUuid`. Adds
+  `plannedSteps()` alongside the existing `size()` / `isEmpty()` accessors.
+  Legacy `RollbackPlan.build(List<Action>)` is retained for backwards
+  compatibility.
+- **`RollbackResult` carries `originalFilter`** (A2) so `/vg undo` can pop
+  an entry and invoke the inverse operation (`restore(filter)` after a
+  rollback, `rollback(filter)` after a restore) on the exact same action
+  set without reconstructing the filter from user input. Added
+  `inverseMode()` helper. The pre-existing 7-arg constructor is retained
+  as a delegator to the new 8-arg canonical form so pre-v1.1.6 call sites
+  (including `UndoStackTest`) still compile.
+
+### Added
+
+- **`RollbackPlanTest`** — regression suite proving the plan/execute split:
+  `plan(...)` opens no batch, calls no mutator, calls no `markRolledBack`;
+  a plan can be built, inspected, and discarded without side effects; a
+  single plan can be executed twice (preview then real) independently; a
+  legacy plan built without a mode is rejected by `execute(...)`; the
+  result carries `originalFilter` for undo replay.
+
 ## [1.1.5] — 2026-07-01
 
 **CoreProtect-style vanilla-griefer allowlist at the listener — the real fix
