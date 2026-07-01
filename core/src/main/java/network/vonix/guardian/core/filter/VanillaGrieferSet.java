@@ -29,10 +29,18 @@ import java.util.Set;
  */
 public final class VanillaGrieferSet {
 
+    /** Sentinel prefix produced by {@code EntitySentinel.of(...)} on the cell layer. */
+    private static final String MOB_SENTINEL_PREFIX = "#mob:";
+
     /**
      * CoreProtect's hardcoded whitelist, ported. Each entry is a fully qualified
      * MC registry key {@code minecraft:<path>} that corresponds to a vanilla
      * entity class known to genuinely change block state via AI paths.
+     *
+     * <p><strong>Removed 1.1.6:</strong> {@code minecraft:wind_charge} and
+     * {@code minecraft:breeze_wind_charge}. Both are {@code Projectile}, not
+     * {@code LivingEntity}, so they never satisfy {@code LivingDestroyBlockEvent}
+     * dispatch and their presence here was dead code (WAVE-AUDIT-1.1.5 A5).
      */
     public static final Set<String> DEFAULT_ALLOWLIST = Set.of(
         "minecraft:enderman",         // picks up blocks
@@ -43,12 +51,28 @@ public final class VanillaGrieferSet {
         "minecraft:turtle",           // lays eggs
         "minecraft:fox",              // picks up items (edge case)
         "minecraft:zombie",           // breaks doors (breaking event only)
-        "minecraft:falling_block",    // gravity conversions
-        "minecraft:wind_charge",      // 1.21+ wind physics
-        "minecraft:breeze_wind_charge" // 1.21+ breeze
+        "minecraft:falling_block"     // gravity conversions
     );
 
     private VanillaGrieferSet() {}
+
+    /**
+     * Strip the {@code "#mob:"} sentinel prefix produced by the cell-side
+     * {@code EntitySentinel.of(...)} helper, yielding a bare registry key
+     * suitable for {@link #shouldRecord} / {@link #DEFAULT_ALLOWLIST} lookup.
+     *
+     * <p>Centralised here in 1.1.6 (WAVE-AUDIT-1.1.5 A3): previously duplicated
+     * verbatim in all four cell {@code Events.java} files.
+     *
+     * @param sentinel a sentinel like {@code "#mob:minecraft:creeper"}, or any
+     *                 other string; may be {@code null}
+     * @return the bare registry key (e.g. {@code "minecraft:creeper"}) if the
+     *         input starts with {@code "#mob:"}; otherwise {@code null}
+     */
+    public static String stripMobPrefix(String sentinel) {
+        if (sentinel == null || !sentinel.startsWith(MOB_SENTINEL_PREFIX)) return null;
+        return sentinel.substring(MOB_SENTINEL_PREFIX.length());
+    }
 
     /**
      * Decide whether an entity's block-change should be recorded, given the

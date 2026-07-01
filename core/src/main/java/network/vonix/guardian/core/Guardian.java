@@ -11,6 +11,7 @@ import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.Sentinel;
+import network.vonix.guardian.core.filter.VanillaGrieferSet;
 import network.vonix.guardian.core.logfile.JsonLinesLogFile;
 import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.perms.PermissionResolver;
@@ -411,6 +412,21 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
                                         int x, int y, int z,
                                         String oldBlockId, String newBlockId, String sourceTag) {
+        // Central vanilla-griefer whitelist gate (WAVE-AUDIT-1.1.5 A4).
+        // The cell layer still runs its own check for now — this belt-and-braces
+        // enforcement means any future submitter that forgets the check is still
+        // guarded. When actorName is a "#mob:<ns>:<path>" sentinel we strip it
+        // and require the registry key be in DEFAULT_ALLOWLIST or config.
+        // Player-driven paths (actorName not a mob sentinel) are pass-through.
+        String stripped = VanillaGrieferSet.stripMobPrefix(actorName);
+        if (stripped != null) {
+            if (!VanillaGrieferSet.shouldRecord(stripped,
+                    config.actions().entityChangeAllowlist(),
+                    config.actions().entityChangeLogAllEntities())) {
+                gated.incrementAndGet();
+                return;
+            }
+        }
         // Producer-side coalescing: HTTYD-class modpacks fire this event 100k+/sec
         // per active dragon. Same (actor, coord) events inside a 500ms window are
         // suppressed. Distinct actors OR distinct coords still log normally.
