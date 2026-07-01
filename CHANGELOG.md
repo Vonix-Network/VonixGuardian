@@ -44,6 +44,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **W3-B5 — Per-world config overrides (CoreProtect `world_nether.yml` shadow
+  pattern).** Drop a `config/vonixguardian/worlds/<world_key>.json` file
+  beside `config.json` to shadow the root `actions.*` block for that world
+  only. World key format mirrors the vanilla registry id with the colon
+  replaced by a double underscore — e.g. `minecraft:the_nether` becomes
+  `minecraft__the_nether.json`. Each file is a partial `Actions` block; any
+  subset of the 18 fields is accepted and missing fields inherit from root.
+  - New `core.config.PerWorldConfigStore` scans the `worlds/` dir once at
+    boot, materializes each file into a fully-merged
+    `GuardianConfig.Actions` snapshot, and caches the result in an
+    immutable `Map<String worldId, Actions>` so the hot path is a single
+    lookup with zero allocation. Malformed files are logged and skipped
+    (one bad file doesn't poison the store).
+  - New `core.event.PerWorldEventHook implements EventHook` is registered
+    on `EventGate` when the `worlds/` dir exists at boot. It re-evaluates
+    the built-in type toggle plus the world / block / source blacklists
+    against the OVERRIDDEN view and returns `DENY` if the overridden
+    config would exclude the event; otherwise `PASS` so B6 (blacklist
+    file) and B11 (`PreLogEvent`) still fire. Never returns `ACCEPT`.
+  - `/vg reload` (W3-B1) now also re-scans the `worlds/` dir, points the
+    store at the freshly-loaded root `actions` block, and re-registers the
+    hook on the newly-built `EventGate`. The set of loaded worlds is
+    surfaced through `ReloadResult.hotSwapped` (`"per-world: N world(s)
+    loaded, added=…, removed=…"`).
+  - Regression coverage: `PerWorldConfigStoreTest`,
+    `PerWorldEventHookTest`.
+
 - **`core/build.gradle`** — `publishing {}` block with a `maven(MavenPublication)` from `components.java` (POM: name, description, url, MIT license, developer, SCM) and a `GitHubPackages` remote (`https://maven.pkg.github.com/Vonix-Network/VonixGuardian`, credentials via `GITHUB_ACTOR` / `GITHUB_TOKEN` env vars). Artifact coord: `network.vonix.guardian:vonixguardian-core:1.1.7`.
 - **`docs/API.md`** — new **§1a "Using in Gradle"** section covering the Maven coordinate, `mavenLocal()` and `GitHubPackages` repository snippets, the `compileOnly(...) { transitive = false }` pattern (so consumers don't pull sqlite/hikaricp/gson onto their compile classpath), and a bootstrap example that resolves via the Maven coord instead of a locally-built jar.
 
