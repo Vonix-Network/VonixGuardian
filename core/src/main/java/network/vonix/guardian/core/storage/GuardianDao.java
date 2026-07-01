@@ -33,6 +33,40 @@ public interface GuardianDao extends AutoCloseable {
     /** Delete records matching filter (purge). Returns rows deleted. */
     long purge(QueryFilter filter) throws Exception;
 
+    /**
+     * Dialect-specific storage optimization for the Guardian tables
+     * ({@code vg_actions}, {@code vg_rollback_batches},
+     * {@code vg_rollback_batch_actions}).
+     *
+     * <ul>
+     *   <li>MySQL / MariaDB — {@code OPTIMIZE TABLE ...}.</li>
+     *   <li>PostgreSQL — {@code VACUUM ANALYZE ...} (autocommit).</li>
+     *   <li>SQLite — {@code VACUUM} (whole-db; SQLite auto-optimizes).</li>
+     * </ul>
+     *
+     * <p>Best-effort — implementations MUST NOT throw when a table is missing
+     * or the dialect has no equivalent. A per-run soft cap of
+     * {@code maxRuntimeMillis} is applied via {@code Statement.setQueryTimeout};
+     * if the cap trips, the method returns whatever progress was made and
+     * leaves the DB consistent.
+     *
+     * @param maxRuntimeMillis soft cap on total wall-clock time, in ms
+     * @return outcome (duration, best-effort bytes freed)
+     */
+    OptimizeResult optimize(long maxRuntimeMillis) throws Exception;
+
+    /**
+     * Outcome of {@link #optimize(long)}.
+     *
+     * @param durationMillis wall-clock time the optimization took
+     * @param bytesFreed     best-effort estimate of space reclaimed;
+     *                       {@code -1} if the dialect cannot report it
+     * @param completed      {@code true} if all statements ran to completion;
+     *                       {@code false} if the runtime cap tripped or a
+     *                       non-fatal error was swallowed
+     */
+    record OptimizeResult(long durationMillis, long bytesFreed, boolean completed) {}
+
     /** Resolve / insert user, return user_id. */
     int resolveUser(UUID uuid, String name) throws Exception;
 

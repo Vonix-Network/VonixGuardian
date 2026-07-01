@@ -186,4 +186,30 @@ class SqliteDaoIntegrationTest {
         dao.init();
         assertThat(dao.isHealthy()).isTrue();
     }
+
+    @Test
+    void optimize_runs_vacuum_and_returns_completed_result() throws Exception {
+        // Populate + purge to create free pages, then VACUUM should reclaim them.
+        long t0 = 1_700_000_000_000L;
+        List<Action> batch = new ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            batch.add(new Action(-1L, t0 + i, ActionType.BLOCK_PLACE,
+                users.get(0), userNames.get(0), worlds.get(0),
+                i, 64, 0, "minecraft:stone", null, 1, false, null));
+        }
+        dao.insertBatch(batch);
+        dao.purge(QueryFilter.builder().untilMillis(t0 + 100).build());
+
+        var result = dao.optimize(60_000L);
+
+        assertThat(result).isNotNull();
+        assertThat(result.completed()).isTrue();
+        assertThat(result.durationMillis()).isGreaterThanOrEqualTo(0L);
+        // SQLite reports page_count * page_size, so bytesFreed should be a real
+        // number (>= -1 always; typically >= 0 on a purged DB).
+        assertThat(result.bytesFreed()).isGreaterThanOrEqualTo(-1L);
+        // DB still functional after VACUUM.
+        assertThat(dao.isHealthy()).isTrue();
+        assertThat(dao.count(QueryFilter.empty())).isGreaterThan(0L);
+    }
 }
