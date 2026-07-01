@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Diagnostic log spam eliminated** (`BatchedAsyncWriteQueue`). The v1.1.3-diag
+  histogram fired unconditionally every 30s at `WARN` level, producing hundreds
+  of lines per hour on busy servers (operator report from Linggango deploy of
+  1.1.5). Now:
+  - Emits at `WARN` only when there are dropped rows (`droppedTotal > 0`).
+  - Emits at `WARN` when queue depth is materially non-empty (> 25% of
+    capacity).
+  - Otherwise silent, unless the operator drops the logger to `DEBUG`
+    (`network.vonix.guardian.core.queue`).
+  - Zero-drops steady-state is completely quiet — matching CoreProtect's
+    posture that diagnostics are on-demand (`/vg status`), not spam.
+
+### Added
+
+- **`/vg status` is now a full multi-line diagnostic**, matching CoreProtect's
+  `/co status` contract. Single on-demand surface for every subsystem — no
+  new subcommand tree, no always-on logs.
+  - New `core.diagnostics.GuardianStatus.render(Guardian)` returns an ordered
+    `List<String>` of report lines. Section headers begin with `§ ` and are
+    rendered bold-accent-colored by cells; body lines primary.
+  - Sections: VonixGuardian version · Storage (backend / schema / health) ·
+    Writer queue (consumer state, depth, submitted, gated, dropped, per-type
+    histogram) · Coalescer (window / tracked / active) · Event hooks
+    (registered chain in order) · Per-world overrides (count + list) ·
+    Blacklist file (rule count) · Auto-purge (state + rows purged since
+    restart) · Permissions (default-op + per-node overrides) · Public API
+    (version).
+  - Every subsystem accessor wrapped in `try/catch` in the renderer — a
+    broken subsystem yields a single `(err: XxxException)` line, never
+    aborts the whole status.
+  - Wired into all 8 cells' `Status.run` with `ChatRenderer.section()`
+    (new helper: bold + secondary color).
+- `BatchedAsyncWriteQueue.submittedByTypeSnapshot()` /
+  `droppedByTypeSnapshot()` — public, thread-safe, allocation-per-call
+  snapshots of the per-`ActionType` histograms. Consumed by
+  `GuardianStatus.render()`.
+- `Guardian.gate()` / `Guardian.entityBlockCoalescer()` — new public
+  accessors so diagnostics can read the live `EventGate` hook chain and the
+  coalescer's state.
+- `ChatRenderer.section(Theme, String)` in all 8 cells — bold + secondary
+  color renderer for `/vg status` section headers.
+
+
 ### Added
 
 - **W3-B12+B13 — Public typed Java API surface.** New

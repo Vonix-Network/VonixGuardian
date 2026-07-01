@@ -262,6 +262,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public GuardianConfig config()         { return config; }
     public GuardianDao dao()               { return dao; }
     public BatchedAsyncWriteQueue queue()  { return queue; }
+    /** Live {@link EventGate} the hook chain is registered on. Diagnostics only. */
+    public EventGate gate()                { return gate; }
+    /** Live coalescer, or {@code null} when disabled by config. Diagnostics only. */
+    public EntityBlockChangeCoalescer entityBlockCoalescer() { return entityBlockCoalescer; }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }
     /** CP-1:1 purge entry point — enforces config.purge() minimum-age floor. */

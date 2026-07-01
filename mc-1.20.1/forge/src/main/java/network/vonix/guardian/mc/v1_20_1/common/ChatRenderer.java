@@ -49,6 +49,19 @@ public final class ChatRenderer {
         return styled(text, theme == null ? null : theme.muted());
     }
 
+    /**
+     * Bold section header for {@code /vg status} — accent color + bold.
+     * Falls back gracefully when the theme is null or the accent hex is invalid.
+     * @since 1.1.7
+     */
+    public static MutableComponent section(Theme theme, String text) {
+        MutableComponent c = styled(text, theme == null ? null : theme.secondary());
+        try {
+            c.setStyle(c.getStyle().withBold(true));
+        } catch (Throwable ignored) { }
+        return c;
+    }
+
     public static MutableComponent styled(String text, String hex) {
         MutableComponent c = Component.literal(text == null ? "" : text);
         if (hex == null || hex.isBlank()) {

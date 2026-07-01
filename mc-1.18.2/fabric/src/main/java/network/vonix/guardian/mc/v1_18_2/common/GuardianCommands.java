@@ -570,12 +570,15 @@ public final class GuardianCommands {
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
-            send(src, ChatRenderer.primary(g.theme(),
-                    "[VonixGuardian] submitted=" + g.submitted()
-                            + " gated=" + g.gated()
-                            + " queue.depth=" + g.queue().depth()
-                            + " queue.dropped=" + g.queue().dropped()
-                            + " consumer=" + (g.queue().isPaused() ? "paused" : "running")));
+            // v1.1.7: full CoreProtect-parity /vg status — multi-line, on-demand.
+            // Section headers begin with "§ " and render as bold+aqua; body lines as primary.
+            for (String line : network.vonix.guardian.core.diagnostics.GuardianStatus.render(g)) {
+                if (line.startsWith("§ ")) {
+                    send(src, ChatRenderer.section(g.theme(), "[VonixGuardian] " + line.substring(2)));
+                } else {
+                    send(src, ChatRenderer.primary(g.theme(), line));
+                }
+            }
             return 1;
         }
     }

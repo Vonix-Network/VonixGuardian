@@ -161,6 +161,36 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         return permanentlyDropped.get();
     }
 
+    /**
+     * Immutable snapshot of the per-type submit histogram &mdash; called from
+     * {@code /vg status} on demand. Never mutates state; safe from any thread.
+     *
+     * @return unmodifiable map of {@code ActionType} name &rarr; count submitted
+     * @since 1.1.7
+     */
+    public java.util.Map<String, Long> submittedByTypeSnapshot() {
+        java.util.LinkedHashMap<String, Long> snap = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, java.util.concurrent.atomic.LongAdder> e : submittedByType.entrySet()) {
+            snap.put(e.getKey(), e.getValue().sum());
+        }
+        return java.util.Collections.unmodifiableMap(snap);
+    }
+
+    /**
+     * Immutable snapshot of the per-type drop histogram &mdash; the sibling of
+     * {@link #submittedByTypeSnapshot()}. Empty when no drops have occurred.
+     *
+     * @return unmodifiable map of {@code ActionType} name &rarr; count dropped
+     * @since 1.1.7
+     */
+    public java.util.Map<String, Long> droppedByTypeSnapshot() {
+        java.util.LinkedHashMap<String, Long> snap = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, java.util.concurrent.atomic.LongAdder> e : droppedByType.entrySet()) {
+            snap.put(e.getKey(), e.getValue().sum());
+        }
+        return java.util.Collections.unmodifiableMap(snap);
+    }
+
     @Override
     public void close() {
         drainAndFlush(30_000L);
@@ -283,10 +313,14 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     }
 
     /**
-     * v1.1.3-diag: emit a per-type histogram of submitted + dropped counts every
-     * {@value #HISTOGRAM_LOG_INTERVAL_NS} ns (30s). Called from every submit() —
-     * gated by a nanoTime + CAS so contention is one atomic read per submit,
-     * one atomic write per 30s.
+     * v1.1.7: emit a per-type histogram at most once per {@value #HISTOGRAM_LOG_INTERVAL_NS} ns
+     * (30s), and ONLY when there are actionable signals to report — droppedTotal &gt; 0
+     * OR queueDepth is materially non-empty. Zero-drops steady-state is silent
+     * (fixes the WARN-flood operator complaint in v1.1.5/v1.1.6 where the
+     * histogram fired every 30s regardless of drops).
+     *
+     * <p>Called from every submit() — gated by a nanoTime + CAS so contention is one
+     * atomic read per submit, one atomic write per 30s.</p>
      *
      * <p>Format: {@code [DIAG histogram t=30s] submitted: TYPE=N, ...  |  dropped: TYPE=N, ...}
      */
@@ -294,6 +328,18 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         long now = System.nanoTime();
         long last = lastHistogramLogNs.get();
         if (last != Long.MIN_VALUE && now - last < HISTOGRAM_LOG_INTERVAL_NS) {
+            return;
+        }
+        // v1.1.7: gate emission on actionable signal. Nothing dropped AND queue not
+        // backed up = silent. Operators can force verbose mode by dropping the log
+        // level for network.vonix.guardian.core.queue to DEBUG.
+        long droppedTotal = dropped.get();
+        int queueDepth = queue.size();
+        int capacity = queueDepth + queue.remainingCapacity();
+        boolean actionable = droppedTotal > 0 || queueDepth > (capacity / 4);
+        if (!actionable && !LOG.isDebugEnabled()) {
+            // Still advance the CAS so the next tick's 30s window starts now.
+            lastHistogramLogNs.compareAndSet(last, now);
             return;
         }
         if (!lastHistogramLogNs.compareAndSet(last, now)) {
@@ -324,9 +370,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         if (drop.length() == 0) drop.append("(none)");
 
-        LOG.warn(MARKER,
-                "[DIAG histogram t=30s] queueDepth={} submittedTotal={} droppedTotal={} | submitted-by-type: {} | dropped-by-type: {}",
-                queue.size(), sumAll(submittedByType), dropped.get(), sub, drop);
+        // Level chosen by actionability: WARN on drops (operators need to see),
+        // DEBUG in verbose steady-state (log-level gated above).
+        if (droppedTotal > 0) {
+            LOG.warn(MARKER,
+                    "[DIAG histogram t=30s] queueDepth={} submittedTotal={} droppedTotal={} | submitted-by-type: {} | dropped-by-type: {}",
+                    queueDepth, sumAll(submittedByType), droppedTotal, sub, drop);
+        } else {
+            LOG.debug(MARKER,
+                    "[DIAG histogram t=30s] queueDepth={} submittedTotal={} droppedTotal={} | submitted-by-type: {} | dropped-by-type: {}",
+                    queueDepth, sumAll(submittedByType), droppedTotal, sub, drop);
+        }
     }
 
     private static long sumAll(ConcurrentHashMap<String, LongAdder> map) {
