@@ -109,6 +109,16 @@ public record GuardianConfig(
      * @param entityBlockChangeMaxTracked         max number of (actor, coord) tuples tracked by the
      *                                            coalescer at once. Older entries LRU-evicted on cap
      *                                            pressure. Default 8192 (&asymp;500KB heap).
+     * @param entityChangeAllowlist               extra entity registry keys (e.g.
+     *                                            {@code "iceandfire:fire_dragon"}) to record beyond the
+     *                                            hardcoded vanilla whitelist. Non-vanilla entities that
+     *                                            aren't in this list have {@code LivingDestroyBlockEvent}
+     *                                            firings silently discarded at the listener before any
+     *                                            attribution/queue work. Empty list = vanilla-only.
+     * @param entityChangeLogAllEntities          if {@code true}, bypass the whitelist entirely and
+     *                                            record every {@code LivingDestroyBlockEvent}. This
+     *                                            restores pre-1.1.5 behavior and will re-drown modded
+     *                                            packs; do not enable unless you know what you're doing.
      */
     public record Actions(
         boolean logBlocks,
@@ -126,7 +136,9 @@ public record GuardianConfig(
         List<String> blockBlacklist,
         List<String> sourceBlacklist,
         long entityBlockChangeCoalesceWindowMs,
-        int entityBlockChangeMaxTracked
+        int entityBlockChangeMaxTracked,
+        List<String> entityChangeAllowlist,
+        boolean entityChangeLogAllEntities
     ) {}
 
     /**
@@ -172,6 +184,12 @@ public record GuardianConfig(
         List<String> worldBlacklist = new ArrayList<>();
         List<String> blockBlacklist = new ArrayList<>(List.of("minecraft:air"));
         List<String> sourceBlacklist = new ArrayList<>();
+        // Empty allowlist = vanilla-only recording via the hardcoded set in
+        // VanillaGrieferSet.DEFAULT_ALLOWLIST. Modded mobs need explicit opt-in.
+        // This is the correct semantic for a CoreProtect-style audit tool:
+        // record things a rollback command would meaningfully undo (player
+        // actions + vanilla mob griefing), not ambient world behavior.
+        List<String> entityChangeAllowlist = new ArrayList<>();
         return new GuardianConfig(
             new Database("sqlite", "vonixguardian.db", null, null, null),
             new Queue(50_000, 5_000L, 1_000),
@@ -180,7 +198,9 @@ public record GuardianConfig(
                 true, true, true, true, true, true, true, true, true,
                 true, true,
                 worldBlacklist, blockBlacklist, sourceBlacklist,
-                500L, 8192              // entityBlockChange coalescer defaults (see EntityBlockChangeCoalescer)
+                500L, 8192,             // entityBlockChange coalescer defaults
+                entityChangeAllowlist,  // entityChangeAllowlist: empty = vanilla-only
+                false                    // entityChangeLogAllEntities: DO NOT flip this
             ),
             new Permissions(true, 3),
             new Lookup(7, 10_000, 100_000, 4),
@@ -274,6 +294,7 @@ public record GuardianConfig(
             checkNoNullElems(errors, "actions.worldBlacklist", actions.worldBlacklist);
             checkNoNullElems(errors, "actions.blockBlacklist", actions.blockBlacklist);
             checkNoNullElems(errors, "actions.sourceBlacklist", actions.sourceBlacklist);
+            checkNoNullElems(errors, "actions.entityChangeAllowlist", actions.entityChangeAllowlist);
         }
 
         if (permissions == null) {

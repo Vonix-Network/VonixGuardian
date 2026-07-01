@@ -48,6 +48,7 @@ import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.IpHasher;
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.Sentinel;
+import network.vonix.guardian.core.filter.VanillaGrieferSet;
 import network.vonix.guardian.mc.v1_19_2.common.ChatRenderer;
 import network.vonix.guardian.mc.v1_19_2.common.EntitySentinel;
 import network.vonix.guardian.mc.v1_19_2.common.GuardianCommands;
@@ -197,9 +198,16 @@ public final class ForgeEvents {
     public static void onLivingDestroyBlock(LivingDestroyBlockEvent ev) {
         try {
             EventSubmitter s = sub();
-            if (s == null) return;
+            GuardianConfig c = cfg();
+            if (s == null || c == null) return;
             LivingEntity e = ev.getEntity();
             if (e == null) return;
+            String entityKey = stripMobPrefix(EntitySentinel.of(e.getType()));
+            if (!VanillaGrieferSet.shouldRecord(entityKey,
+                    c.actions().entityChangeAllowlist(),
+                    c.actions().entityChangeLogAllEntities())) {
+                return;
+            }
             Attribution attr = ForgeBootstrap.resolver != null
                     ? ForgeBootstrap.resolver.resolve(e, System.currentTimeMillis())
                     : Attribution.unknown(EntitySentinel.of(e));
@@ -212,6 +220,11 @@ public final class ForgeEvents {
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onLivingDestroyBlock failed", t);
         }
+    }
+
+    private static String stripMobPrefix(String sentinel) {
+        if (sentinel == null || !sentinel.startsWith("#mob:")) return null;
+        return sentinel.substring(5);
     }
 
     @SubscribeEvent

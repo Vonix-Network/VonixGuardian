@@ -45,6 +45,7 @@ import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.IpHasher;
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.Sentinel;
+import network.vonix.guardian.core.filter.VanillaGrieferSet;
 import network.vonix.guardian.mc.v1_21_1.common.ChatRenderer;
 import network.vonix.guardian.mc.v1_21_1.common.EntitySentinel;
 import network.vonix.guardian.mc.v1_21_1.common.GuardianCommands;
@@ -177,9 +178,16 @@ public final class NeoForgeEvents {
     public static void onLivingDestroyBlock(LivingDestroyBlockEvent ev) {
         try {
             EventSubmitter s = sub();
-            if (s == null) return;
+            GuardianConfig c = cfg();
+            if (s == null || c == null) return;
             LivingEntity e = ev.getEntity();
             if (e == null) return;
+            String entityKey = stripMobPrefix(EntitySentinel.of(e.getType()));
+            if (!VanillaGrieferSet.shouldRecord(entityKey,
+                    c.actions().entityChangeAllowlist(),
+                    c.actions().entityChangeLogAllEntities())) {
+                return;
+            }
             Attribution attr = NeoForgeBootstrap.resolver != null
                     ? NeoForgeBootstrap.resolver.resolve(e, System.currentTimeMillis())
                     : Attribution.unknown(EntitySentinel.of(e));
@@ -192,6 +200,11 @@ public final class NeoForgeEvents {
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onLivingDestroyBlock failed", t);
         }
+    }
+
+    private static String stripMobPrefix(String sentinel) {
+        if (sentinel == null || !sentinel.startsWith("#mob:")) return null;
+        return sentinel.substring(5);
     }
 
     /** Explosion detonate — log every affected block with a joined target list. */

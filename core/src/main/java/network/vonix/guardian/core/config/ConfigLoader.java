@@ -97,10 +97,11 @@ public final class ConfigLoader {
      * silently disable safety features. This method rewrites those zero-values to
      * the current sensible defaults from {@link GuardianConfig#defaults()}.
      *
-     * <p>Rewrites (as of 1.1.4):
+     * <p>Rewrites (as of 1.1.5):
      * <ul>
-     *   <li>{@code actions.entityBlockChangeCoalesceWindowMs == 0} → 500ms</li>
-     *   <li>{@code actions.entityBlockChangeMaxTracked == 0} → 8192</li>
+     *   <li>{@code actions.entityBlockChangeCoalesceWindowMs == 0} → 500ms (added 1.1.4)</li>
+     *   <li>{@code actions.entityBlockChangeMaxTracked == 0} → 8192 (added 1.1.4)</li>
+     *   <li>{@code actions.entityChangeAllowlist == null} → empty list (added 1.1.5)</li>
      * </ul>
      *
      * <p>An operator who explicitly wants to <em>disable</em> the coalescer must
@@ -108,13 +109,17 @@ public final class ConfigLoader {
      * zero. This is a deliberate footgun-prevention choice: on 200k+ events/sec
      * modpacks (HTTYD, dragon packs), disabling the coalescer will drown the
      * write queue and the operator likely didn't intend to.
+     *
+     * <p>The {@code entityChangeLogAllEntities} flag has no backfill — it defaults
+     * to {@code false} which is the safe post-1.1.5 behavior.
      */
     private static GuardianConfig migrateForwardCompat(GuardianConfig cfg) {
         if (cfg.actions() == null) return cfg;
         var a = cfg.actions();
         boolean needsRewrite =
                 (a.entityBlockChangeCoalesceWindowMs() == 0L) ||
-                (a.entityBlockChangeMaxTracked() == 0);
+                (a.entityBlockChangeMaxTracked() == 0) ||
+                (a.entityChangeAllowlist() == null);
         if (!needsRewrite) return cfg;
 
         long window = a.entityBlockChangeCoalesceWindowMs() == 0L
@@ -123,15 +128,21 @@ public final class ConfigLoader {
         int maxTracked = a.entityBlockChangeMaxTracked() == 0
                 ? 8192
                 : a.entityBlockChangeMaxTracked();
-        LOG.info("Backfilling entityBlockChange coalescer defaults from pre-1.1.4 config " +
-                 "(window={}ms, maxTracked={}); use -1/-1 to opt out.",
-                 window, maxTracked);
+        java.util.List<String> allowlist = a.entityChangeAllowlist() == null
+                ? new java.util.ArrayList<>()
+                : a.entityChangeAllowlist();
+        LOG.info("Backfilling entityBlockChange defaults from pre-1.1.5 config " +
+                 "(coalesceWindow={}ms, maxTracked={}, allowlistSize={}); " +
+                 "modded mob-griefing recording remains OFF by default — add mod entity keys " +
+                 "to entityChangeAllowlist to opt in.",
+                 window, maxTracked, allowlist.size());
         var newActions = new GuardianConfig.Actions(
                 a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(),
                 a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(),
                 a.logSigns(), a.logInteractions(), a.logWorldEvents(),
                 a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(),
-                window, maxTracked
+                window, maxTracked,
+                allowlist, a.entityChangeLogAllEntities()
         );
         return new GuardianConfig(
                 cfg.database(), cfg.queue(), cfg.logFile(), newActions,

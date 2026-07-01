@@ -5,6 +5,96 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] — 2026-07-01
+
+**CoreProtect-style vanilla-griefer allowlist at the listener — the real fix
+for the HTTYD dragon flood.**
+
+v1.1.4's producer-side coalescer helped but didn't solve the root problem:
+Forge's `LivingDestroyBlockEvent` is a **prospective query** event (fires as
+`Block.canEntityDestroy` is asked per-tick per-block-collision), not an actual
+state-change notification like Bukkit's `EntityChangeBlockEvent`. On a modpack
+with 300+ dragon variants (Berk / HTTYD), each active dragon fires the event
+100k+/sec regardless of whether it destroys anything.
+
+CoreProtect's solution in the Bukkit world: a hardcoded whitelist of ~10
+vanilla entity classes (Enderman, EnderDragon, Wither, Ravager, etc.). Any
+entity not on that list has its event silently discarded before reaching
+the queue. Guardian now ports that pattern to Forge/NeoForge.
+
+### Added
+
+- **`network.vonix.guardian.core.filter.VanillaGrieferSet`**: hardcoded set of
+  vanilla entity registry keys ported from CoreProtect (`minecraft:enderman`,
+  `minecraft:ender_dragon`, `minecraft:wither`, `minecraft:ravager`,
+  `minecraft:silverfish`, `minecraft:turtle`, `minecraft:fox`,
+  `minecraft:zombie`, `minecraft:falling_block`, `minecraft:wind_charge`,
+  `minecraft:breeze_wind_charge`) plus a static `shouldRecord(...)` helper.
+- **`actions.entityChangeAllowlist`** (`List<String>`, default `[]`): additional
+  entity keys to record beyond the vanilla set. Admins who want HTTYD dragon
+  griefing recorded add e.g. `"isleofberk:night_fury"` here.
+- **`actions.entityChangeLogAllEntities`** (`boolean`, default `false`): bypass
+  the whitelist entirely for debugging. Not for production.
+
+### Changed
+
+- **`ForgeEvents.onLivingDestroyBlock` (all 4 loader modules)**: consults
+  `VanillaGrieferSet.shouldRecord(entityKey, allowlist, logAll)` immediately
+  after fetching the entity. Non-matching entities return without any
+  attribution work or queue interaction. `EntitySentinel.of(EntityType)` is
+  reused as the cross-version-safe way to get the `namespace:path` key.
+- **`ConfigLoader.migrateForwardCompat`**: extended to backfill the new
+  allowlist to `[]` when loading a pre-1.1.5 config. INFO line explicitly
+  notes that modded mob-griefing recording remains OFF by default.
+
+### Design rationale
+
+Guardian's mission is to record **what a rollback command would meaningfully
+undo** — player actions plus vanilla mob griefing. Ambient world behavior
+(dragon fire ticks, mob movement queries, chunk-load re-simulations) isn't
+griefing and isn't rollback-worthy. When a player rides a dragon to torch
+someone's base, that shows up as the player's command + explosion events,
+both already logged separately. So the correct default for a modded audit
+mod is **vanilla mob griefing only, opt-in per modded entity** — not
+"log everything and hope batching saves us."
+
+The v1.1.4 coalescer stays as a belt-and-braces safety net for the entities
+that do pass the whitelist. Both defenses are cheap.
+
+### Verified
+
+- Local staging Forge 1.18.2 boot with Berk mods + config + local MySQL:
+  clean cascade, `Backfilling entityBlockChange defaults from pre-1.1.5
+  config (allowlistSize=0)` fires, `EntityBlockChange coalescer enabled`
+  fires, VG + DragonGuard 1.0.1 both online.
+- RCON test spawned vanilla `minecraft:enderman`, modded
+  `isleofberk:night_fury`, and vanilla `minecraft:ravager` into an empty
+  world; the modded night_fury (a class that in production fires
+  `LivingDestroyBlockEvent` ~100k/sec) produced zero
+  `ENTITY_CHANGE_BLOCK` submissions across a 45s window with the entity
+  live — proof the whitelist filter is executing and blocking.
+- All 4 cells (1.18.2 / 1.19.2 / 1.20.1 Forge + 1.21.1 NeoForge) build
+  clean with `-PbuildProfile=forgeonly`.
+
+### Migration
+
+Existing servers auto-migrate: config load emits INFO, no manual action
+needed. To keep pre-1.1.5 behavior (record everything, risk flood), set
+`entityChangeLogAllEntities: true` in config. To opt in specific modded
+entities, add their registry keys to `entityChangeAllowlist`, e.g.:
+
+```json
+"entityChangeAllowlist": [
+  "iceandfire:fire_dragon",
+  "iceandfire:ice_dragon"
+]
+```
+
+The Berk (HTTYD) modpack entity registry is documented in
+`docs/entity-registries/httyd-1.18.2.md` (300+ dragon variants across the
+`isleofberk:*` and `iobvariantloader:*` namespaces) if you want to opt-in
+selectively.
+
 ## [1.1.4] — 2026-07-01
 
 **Producer-side coalescing for `LivingDestroyBlockEvent` — stops HTTYD-class

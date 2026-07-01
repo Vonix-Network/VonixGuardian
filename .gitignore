@@ -47,3 +47,4 @@ remappedSrc/
 # Distribution artifacts (CI uploads only; release/ kept out of git too)
 dist/
 release/
+.workflow/
