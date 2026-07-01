@@ -5,6 +5,26 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Fixed
+
+- **`/vg reload` now actually reloads** (Wave-3 B1). Previously the command
+  in every one of the 8 loader cells printed *"not implemented yet — restart
+  the server to re-read config"* — a CoreProtect-parity gap flagged in
+  `docs/COREPROTECT-COMPARISON.md` § 1.2 and `NIGHTSHIFT.md` B1.
+  - New `Guardian.reloadConfig(Path)` re-reads `config.json` via
+    `ConfigLoader.load`, hot-swaps the safe subset in-flight, and reports
+    what would need a server restart.
+  - Hot-swap safe: `actions.*` (toggles, blacklists, coalescer knobs,
+    entity allowlist), `logFile.enabled`, `lookup.defaultPageSize` /
+    `maxRadius` / `maxResultRows`, `privacy.hashIps`, `purge.*`, `theme`.
+  - Restart required (change detected but held back): `database.*`,
+    `queue.*`, `logFile.directory` / `gzipRotated` / `retentionDays`,
+    `permissions.*`, `lookup.maxConcurrent`, `privacy.salt`.
+  - `Guardian.ReloadResult(hotSwapped, requiresRestart, errors)` is an
+    immutable record; the `Reload.run` command handler in every cell prints
+    a 3-line color-formatted summary. Regression coverage in
+    `core/src/test/java/network/vonix/guardian/core/GuardianReloadTest.java`.
+
 ### Added
 
 - **`core/build.gradle`** — `publishing {}` block with a `maven(MavenPublication)` from `components.java` (POM: name, description, url, MIT license, developer, SCM) and a `GitHubPackages` remote (`https://maven.pkg.github.com/Vonix-Network/VonixGuardian`, credentials via `GITHUB_ACTOR` / `GITHUB_TOKEN` env vars). Artifact coord: `network.vonix.guardian:vonixguardian-core:1.1.7`.
