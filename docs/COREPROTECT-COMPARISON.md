@@ -1,270 +1,404 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-Snapshot: VG `v1.1.5-entity-filter` HEAD (2026-07-01) — including the in-flight `VanillaGrieferSet` work the other agent is landing on `v1.1.5-entity-filter`.
-Reference: CoreProtect docs @ `docs.coreprotect.net` (v23.x + v24 Patreon features).
+Snapshot: **VG @ `5508b7c`** on branch `v1.1.5-entity-filter` (2026-07-01) — includes the v1.1.5 `VanillaGrieferSet` vanilla-griefer allowlist.
+CP reference: `docs.coreprotect.net` v23.x stable + v24 Patreon (auto-purge, migrate-db, CP-Fabric-Edition Patreon preview MC 26.1.2).
 
-TL;DR: VG is a **clean-room, CoreProtect-shaped audit/rollback tool for the modded loaders CP does not target** (Forge / NeoForge / Fabric on MC 1.18.2–1.21.1). The command surface, filter mini-language and hashtag flags are 1:1 with CP. The engine, storage, packaging, permission model, per-world config, blacklist, database migration, TNT/creeper attribution, API contract, and third-party integration ecosystem all diverge.
+**Method.** This document was produced by 7 parallel subagent audits — 6 dimension-owners (command surface, action taxonomy, storage/perf, config/perms, API/ecosystem, modded-runtime) plus 1 adversarial wiring auditor. Every claim about VG cites `file:line`; every claim about CP cites the frozen doc snapshot section. Findings that turned into bugs live in the sibling doc [`WAVE-AUDIT-1.1.5.md`](./WAVE-AUDIT-1.1.5.md).
+
+Legend: ✅ full parity · 🟡 partial · 🟥 stub / broken / dead / advertised-but-unwired · ❌ missing · ❓ unverifiable
 
 ---
 
-## 1. Platform & runtime
+## Executive summary
 
-| Dimension | CoreProtect (23.x / 24 Patreon) | VonixGuardian (1.1.5) |
+**~85% of CP's user-visible command + filter + hashtag surface is bit-for-bit parity** on VG, verified line-by-line in `QueryParser.java` and `GuardianCommands.java`. VG's engine goes beyond CP in 5 concrete places (modded loaders, PostgreSQL, universal attribution chain, producer-side flood defense, 39-entry action taxonomy).
+
+But the wave-1 audit surfaced **real bugs the CHANGELOG marketed as fixed** — most importantly the CRITICAL `RollbackPlan.isRollbackable` silent-default that swallows 14 of the 19 rollback handlers CHANGELOG v1.0.3 shipped. Details in the audit doc.
+
+### Ahead of CP (real gains)
+
+- 8 GA jars across Forge / NeoForge / Fabric × MC 1.18.2 → 1.21.1. CP ships zero GA modded jars; CP-Fabric is Patreon-only dev preview.
+- **PostgreSQL** as a first-class backend (`Schema.Dialect.POSTGRES`).
+- **Universal attribution chain** — `TamableAnimal → OwnableEntity → Projectile shooter → passenger → nearest recent interactor` with dual `actor_uuid` + `source_tag` columns and 19-entry `#sentinel` vocabulary. CP has nothing analogous.
+- **Producer-side `EntityBlockChangeCoalescer`** (v1.1.4) for the modded `LivingDestroyBlockEvent` prospective-query flood (200k+/sec on HTTYD dragons). CP doesn't need it — Bukkit fires on genuine change only.
+- **`VanillaGrieferSet`** (v1.1.5) ports CP's hardcoded `EntityChangeBlockListener` whitelist character-for-character (11 vanilla types) plus an admin-configurable `entityChangeAllowlist` for modded opt-in.
+- 39-entry `ActionType` taxonomy (vs CP's ~20) covering hopper push/pull, structure grow, portal create, hanging place/break, entity interact, chunk populate.
+- `viewothers` permission node — filter-scoping fallback so ops can be denied cross-user lookups.
+- Rolling JSON-Lines side-channel audit log (`logs/vonixguardian/audit-YYYY-MM-DD.log`, gzip-rotated). CP has no equivalent.
+- Fail-fast config validator with 17+ invariants (single aggregate `IllegalStateException` listing every problem).
+- MIT license, full source on GitHub, no Patreon paywall.
+
+### Behind CP (real gaps)
+
+1. **`/vg reload` is a stub** (`GuardianCommands.java:540-541`) — literally prints "not implemented yet — restart the server". Every config field is currently restart-required in practice.
+2. **`/vg undo` is a history-pop, not a world revert** (`GuardianCommands.java:457-470`) — semantic mismatch with CP's contract that `undo` reverses the last rollback/restore.
+3. **`GuardianSuggestions.ACTIONS` L62-75 advertises 12 tokens the parser rejects** — `+kill`, `+chat`, `+command`, `+click`, `+sign`, `+username` and their `-` counterparts. Tab-complete → `QueryParseException("unknown action")` at execution time.
+4. **`r:#worldedit` / `r:#we` accepted as no-op** (`QueryParser.java:272-278`) with in-code comment "leave radius/world unset". Silently returns global scope. No WorldEdit selection integration exists.
+5. **`#optimize` accepted at parse layer but no-op at storage layer** — zero grep hits in `core/…/storage` for the flag.
+6. **No `/co migrate-db` equivalent** (SQLite ↔ MySQL migration). Real gap.
+7. **No auto-purge daemon** — CP has `auto-purge: 180d` + `auto-purge-time: 03:30`. VG requires cron.
+8. **No per-world config overrides** (`world_the_nether.yml` shadowing root). VG's `worldBlacklist` is drop-all-events, not per-world knob overrides.
+9. **No user/entity/command blacklist file** — CP's `blacklist.txt` supports `Notch`, `#tnt`, `/help`, `minecraft:creeper`, `minecraft:shears@#dispenser` composite filters. VG's blacklists are 3 exact-match JSON arrays (`worldBlacklist`, `blockBlacklist`, `sourceBlacklist`).
+10. **No child permissions** — CP has 12 `coreprotect.lookup.<category>` negative-perm gates. VG has 1 `command.lookup` node. Op-level fallback grants **all** VG nodes with no granular alternative when LP is absent.
+11. **No decimal / range time syntax** — CP accepts `t:2.50h` and `t:1h-2h`; VG accepts combined (`t:1d12h`) only.
+12. **Sign edits via mixin** — CHANGELOG v1.0.4 P0 list flags front/back + dye + waxed (CP v24 columns) for the deferred 1.0.5 mixin wave. VG persists a single joined-lines string.
+13. **Fabric BLOCK_PLACE + LivingDestroyBlock + explosion + piston + item toss/pickup/craft + sign edit — all deferred behind mixin wave.** Fabric currently piggybacks on `UseBlockCallback` (fires on right-click use, not real place). CHANGELOG v1.0.4 L145 / L589. This is 4 loader cells × 7 event families still missing.
+14. **NeoForge 1.21.1 `BUCKET_EMPTY`/`BUCKET_FILL` unwired** — `FillBucketEvent` was removed upstream in NeoForge 1.21+. TODO at `NeoForgeEvents.java:636-638`. CHANGELOG v1.0.4 says "0% → 100% Forge-family coverage" but 1.21.1 is actually 0% on this pair.
+15. **`EventSubmitter` declares `submitBurn`/`Ignite`/`Fade`/`Form`/`Spread`/`Dispense`/`LeavesDecay` — zero matching `@SubscribeEvent` handlers on any loader.** The entire vanilla world-events family is unwired. Config toggle `logWorldEvents = true` is a lie for these. See audit doc.
+16. **No PreLogEvent / no cancellability** (grep 0 hits for `PreLogEvent`, `Cancellable`, `GuardianEvent` in `core/`) — third-party mods cannot intercept or cancel a log the way CP allows via `CoreProtectPreLogEvent`.
+17. **No published maven artifact** — `core/build.gradle:10` applies `maven-publish` but `publishing {}` block has 0 grep hits in the repo. Plugin loaded, never configured. GitHub Releases only.
+18. **No `hasPlaced` / `hasRemoved` / `queueLookup` / `APIVersion()` / `testAPI()`** — CP API v12 helpers third-party plugins rely on.
+19. **No per-family typed result classes** — CP has 9 typed result types (`BlockResult`, `ContainerResult`, `InventoryResult`, `ItemResult`, `MessageResult`, `SessionResult`, `SignResult`, `UsernameResult`, `ParseResult`) all implementing `CoreProtectResult`. VG has single `Action` sum-type + `ActionType` discriminator. Not wrong, just different — but does mean CP's API examples don't port 1:1.
+20. **No language support** — CP has 100+ ISO codes via Google Translate. VG is English-only.
+21. **Zero third-party integration ecosystem** — CP has ~20 documented integrations (WorldEdit, LightUp, Lumen, XRayHunter, ShadowTrace, Movecraft-CP, M0-CoreCord Discord bridge, Axiom Paper, BlocksHub, DesirePaths, Watson, CP Lookup Web UI, etc.). VG has zero.
+22. **No `/co teleport` or `/co give`** — CP has both (permission-gated).
+23. **Default IP-hashing salt** ships as literal placeholder; validator only WARNs. Trivially attackable.
+
+### Deliberately not implementing (design choices, not gaps)
+
+- **Bukkit/Spigot/Paper build** — CP owns that space; VG's reason to exist is the loaders CP doesn't cover.
+- **Networking API** (`coreprotect.networking`) — out of scope for v1.x.
+- **Hytale** — CP has a dedicated Hytale build; VG does not target.
+
+---
+
+## 1. Command surface (verified line-by-line)
+
+### 1.1 Root command + aliases
+
+| | CP | VG |
 |---|---|---|
-| Target platform | Bukkit / Spigot / Paper (+ Fabric build + Hytale build) | Fabric, Forge, NeoForge — vanilla MC server |
-| MC versions | Whatever the Paper/Bukkit build targets (single track) | 1.18.2, 1.19.2, 1.20.1, 1.21.1 (8 jars in matrix) |
-| Loader coverage matrix | N/A (Bukkit) | Fabric×4, Forge×3 (18.2/19.2/20.1), NeoForge×1 (21.1) |
-| Language | Java | Java |
-| License | Artistic-2.0 | MIT |
-| Source model | Closed-source binaries (public docs); paid Patreon builds | Fully open source, GitHub public repo |
-| Distribution | SpigotMC / bukkit.org / patreon | GitHub Releases + planned CurseForge/Modrinth |
+| Primary | `/co` | `/vg` (and `/guardian`) |
+| Aliases | `/core`, `/coreprotect` (default off) | `/co`, `/guardian` (redirected to same Brigadier tree in v1.1.0) |
+| Perm gate | `coreprotect.co` default true, `.core` and `.coreprotect` default false | `vonixguardian.command.use` (single root gate). `/co` alias has **no separate perm gate** on VG. |
 
----
-
-## 2. Command surface
-
-**Root command.** CP uses `/co` (+ `/core`, `/coreprotect`). VG uses `/vg` (primary) with `/co` and `/guardian` as first-class aliases resolved into the same Brigadier tree — CP muscle memory works verbatim on VG.
-
-**Subcommand parity (1:1 as of VG 1.1.0):**
+### 1.2 Subcommand parity
 
 | Subcommand | CP | VG | Notes |
 |---|---|---|---|
-| `help` | ✅ | ✅ | |
-| `inspect` (`i`) | ✅ | ✅ | Toggle; left/right-click block for history |
+| `help` | ✅ | ✅ | CP-style listing |
+| `inspect` (`i`) | ✅ | ✅ | Left/right click semantics identical |
 | `lookup` (`l`) | ✅ | ✅ | Same paginator `<page>` / `<page>:<perPage>` |
-| `rollback` (`rb`) | ✅ | ✅ | Default `r:10` when a positioned caller omits radius (matches CP) |
+| `rollback` (`rb`) | ✅ | ✅ | Default `r:10` when positioned caller omits radius; console `r:<n>` forbidden |
 | `restore` (`rs`) | ✅ | ✅ | |
-| `purge` | ✅ | ✅ | CP: console ≥ 24h, in-game ≥ 30d. VG: same defaults, enforced in `PurgeEngine` |
-| `reload` | ✅ | ✅ | CP fully reloads config; **VG 1.0.0 reload is currently a stub** — most keys are restart-required until a later release lands the handler. This is a real gap. |
+| `purge` | ✅ | ✅ | Console ≥ 24h, in-game ≥ 30d (v1.1.0 CRITICAL fix — enforced in `PurgeEngine`) |
+| `reload` | ✅ (fully reloads) | 🟥 stub (`GuardianCommands.java:540-541`) | Prints "not implemented yet — restart the server". Every config field is currently restart-required. |
 | `status` | ✅ | ✅ | Both show version + queue state |
-| `consumer` (`pause`/`resume`) | ✅ | ✅ | VG adds `toggle` |
-| `migrate-db` | ✅ (**Patreon-only 23.0+**) | ❌ | Not implemented on VG. See §5 |
-| `near` | ✅ (`r:5` shortcut) | ✅ (`r:5 t:1h`) | VG defaults to 1h window as well; CP has no time default on `near` |
-| `undo` | ✅ | ✅ | Reverses your own last rollback/restore |
-| `teleport` | ✅ | ❌ | CP has `/co teleport` (perm gate exists); VG does not |
-| `give` | ✅ (default deny) | ❌ | CP restore-give helper; VG does not implement |
+| `consumer pause/resume` | ✅ | ✅ + `toggle` | VG adds `toggle` |
+| `migrate-db` | ✅ (Patreon 23+) | ❌ Not implemented | Real gap |
+| `near` | ✅ (`r:5`) | ✅ (`r:5 t:1h`) | VG adds time default; CP has none on near |
+| `undo` | ✅ (reverses last rollback/restore) | 🟥 history-pop only (`GuardianCommands.java:457-470`) | Never reverts world state — semantic mismatch |
+| `teleport` | ✅ | ❌ | Not implemented |
+| `give` | ✅ (default deny) | ❌ | Not implemented |
 
-**Filter tokens: 1:1 parity.**
+### 1.3 Filter tokens (verified in `QueryParser.java`)
 
-`u:` `t:` `r:` `a:` `i:` `e:` — every token, every combining form. VG adds `w:<world>` as a first-class filter (CP folds worlds into `r:#world_<key>`; VG accepts both).
+**`u:` — user.** Both accept single, comma-separated multi, and `#sentinel` tokens. CP: `Notch`, `Notch,Intelli`, `#fire,#tnt,#creeper,#explosion`. VG: same plus structured `#mob:<ns>:<path>` sentinels (`EntitySentinel.java:19`).
 
-**User actor sentinels: 1:1 parity.** `u:#fire`, `u:#tnt`, `u:#creeper`, `u:#explosion` — all supported.
-
-**Time syntax.** CP supports combined+decimal (`t:2w,5d,7h`, `t:2.5h`) and **ranges** (`t:1h-2h` for "between one and two hours ago"). VG accepts combined durations (`t:1d12h`) but does **not** implement CP's decimal (`t:2.5h`) or range (`t:1h-2h`) syntax — small parity gap.
-
-**Hashtag flags:**
-
-| Flag | CP | VG |
+**`t:` — time.**
+| | CP | VG |
 |---|---|---|
-| `#preview` | ✅ | ✅ |
-| `#count` | ✅ | ✅ |
-| `#verbose` | ✅ | ✅ (VG's `#verbose` also dumps `source_tag` + `actor_uuid` — modded attribution) |
-| `#silent` | ✅ | ✅ |
-| `#optimize` (MySQL only) | ✅ | ✅ (parsed as of 1.1.0; SQLite/PG paths are no-op) |
-| `#worldedit` / `#we` on `r:` | ✅ (WE selection as radius) | ⚠ Parsed as a tab-completion suggestion but **no WorldEdit selection integration ships** (there is no WorldEdit-for-modded to bridge to on Forge/Fabric out of the box). Falls back to unbounded scope. |
+| Combined | ✅ `t:2w,5d,7h,2m,10s`, `t:5d2h` | ✅ (`QueryParser.java` — combined form) |
+| Decimal | ✅ `t:2.50h` | 🟥 not implemented |
+| Range | ✅ `t:1h-2h` | 🟥 not implemented |
+| Suffixes | `s/m/h/d/w` | `s/m/h/d/w` |
 
-**Action tokens:** identical set. `a:block`, `a:+block`, `a:-block`, `a:chat`, `a:click`, `a:command`, `a:container`, `a:+container`, `a:-container`, `a:inventory`, `a:+inventory`, `a:-inventory`, `a:item`, `a:+item`, `a:-item`, `a:kill`, `a:session`, `a:+session` (alias `a:login`), `a:-session` (alias `a:logout`), `a:sign`, `a:username`. VG also exposes umbrella tokens `a:block`, `a:container`, `a:item`, `a:entity`, `a:player`, `a:world`.
-
-**Radius shortcuts:** `r:#global`, `r:#world_<key>`, `r:#worldedit`/`r:#we`, `r:#nether`, `r:#overworld`, `r:#end` — all identical.
-
----
-
-## 3. Recorded action taxonomy
-
-CP audits ~20 action categories through its Bukkit event surface. VG audits **39 action types** (`ActionType.java`), a superset driven by the modded event surface (Forge `LivingDestroyBlockEvent`, `BlockEvent.FluidPlaceBlockEvent`, `FillBucketEvent`, `ExplosionEvent.Detonate`, `PistonEvent.Pre`, hopper events, hanging events, `EntityJoinLevelEvent`, portal + structure events, etc).
-
-Diff:
-
-**Both cover:** block place/break, container in/out, item drop/pickup, entity kill, chat, commands, signs, sessions (join/quit), username changes, click, inventory in/out, explosions, burn/ignite/fade/form/spread, dispense, piston extend/retract, bucket empty/fill, leaves decay.
-
-**VG-only / modded-specific:**
-
-| Action | Category | Why VG has it |
+**`r:` — radius.**
+| | CP | VG |
 |---|---|---|
-| `ENTITY_CHANGE_BLOCK` | BLOCK | Modded mobs (dragons, ravagers, Create contraptions) change blocks by AI/physics. |
-| `HOPPER_PUSH` / `HOPPER_PULL` | CONTAINER | Automation-heavy modpacks want per-transaction attribution. |
-| `ITEM_CRAFT` | ITEM | JEI-driven grief traces (crafted a wither skull → find who). |
-| `ENTITY_SPAWN` | ENTITY | With `sourceTag = "spawn:join"` filter to exclude chunk-load reanimation flood (v1.0.4 fix). |
-| `ENTITY_INTERACT` | ENTITY | Mount/dismount, tame, breed, ownership transfer. |
-| `HANGING_PLACE` / `HANGING_BREAK` | ENTITY | Item frames, paintings, GlowFrames, etc. |
-| `STRUCTURE_GROW` | WORLD | Sapling → tree, mushroom, etc. Rollback treats as lossy (removes result, doesn't reseed). |
-| `PORTAL_CREATE` | WORLD | Nether/end portal generation. |
-| `CHUNK_POPULATE` | WORLD | Refused for rollback (would require worldgen replay). |
+| Numeric | ✅ | ✅ (console callers rejected — `QueryParser.java:312-314`) |
+| `#global` | ✅ | ✅ |
+| `#world_<key>` | ✅ | ✅ (passthrough at `QueryParser.java:286-293`) |
+| `#worldedit` / `#we` | ✅ (reads real WE selection) | 🟥 accepted as no-op with in-code comment (`QueryParser.java:272-278`) — no WorldEdit-modded exists to bridge to. Silently returns global scope. |
+| `#nether` / `#overworld` / `#end` | ❌ | ✅ mapped to canonical `minecraft:the_nether` / `minecraft:overworld` / `minecraft:the_end` (v1.1.0 HIGH fix — `QueryParser.java:282-284`) |
 
-**CP-only / partial VG coverage:**
+**`a:` — action.** Umbrellas + `+`/`-` sign variants. CP set (verbatim from snapshot §1): `block`, `+block`, `-block`, `chat`, `click`, `command`, `container`, `+container`, `-container`, `inventory`, `+inventory`, `-inventory`, `item`, `+item`, `-item`, `kill`, `session`, `+session` (alias `login`), `-session` (alias `logout`), `sign`, `username`. All 21 CP tokens present in VG's `ActionType.BY_TOKEN`. **Plus 21 VG-only expansion tokens** — see § 2.
 
-- **Sign edits via mixin** — CP captures sign-edit events cleanly; VG 1.0.4 flags `SIGN edits via mixin` as a P0 gap for the 1.0.5 mixin wave. Text is captured on save, but front/back and dye-color signs from 1.20+ need mixin work.
-- **Fabric BLOCK_PLACE parity** — VG 1.0.4 P0 list still shows Fabric block-place doesn't fully match Forge coverage; needs mixin.
-- **Deeper `ENTITY_CHANGE_BLOCK` beyond `LivingDestroyBlockEvent`** — Fluid/piston/state changes CP catches via Bukkit are still queued behind the 1.0.5 mixin wave.
+**`i:` / `e:` — include / exclude.** Both accept comma-separated namespaced IDs (`minecraft:diamond_ore`, `create:andesite_alloy`). VG: exact-match only, no globs. CP v23+/v24 semantics same (also no globs).
+
+### 1.4 Hashtag flags
+
+| Flag | CP | VG | Notes |
+|---|---|---|---|
+| `#preview` | ✅ | ✅ | |
+| `#count` | ✅ | ✅ | |
+| `#verbose` | ✅ | ✅ | VG's `#verbose` also dumps `source_tag` + `actor_uuid` (modded attribution) |
+| `#silent` | ✅ | ✅ | |
+| `#optimize` | ✅ (MySQL purge only, 2.15+) | 🟡 parsed (`QueryParser.java:439`) but DAOs are all no-op — dead flag |
+
+### 1.5 Actor sentinels
+
+CP: `#fire`, `#tnt`, `#creeper`, `#explosion` (v24 adds `#dispenser` for filters).
+VG: all 4 CP sentinels + structured `#mob:<ns>:<path>` family + `#natural`, `#natural:raid`, `#tnt:priming_actor` for attribution-chain results.
+
+### 1.6 Tab completion coverage
+
+Verified across all 8 loader cells (`GuardianCommands.java` @ 580-585 lines each, diff = 17 lines modulo package name / MC-version quirks).
+
+🟥 **`GuardianSuggestions.ACTIONS` L62-75 advertises 12 tokens the parser rejects.** Tab-completion offers `+kill`, `-kill`, `+chat`, `-chat`, `+command`, `-command`, `+click`, `-click`, `+sign`, `-sign`, `+username`, `-username` — none of these exist in `ActionType.BY_TOKEN` (strict `HashMap.get`, `ActionType.java:180-184`). Users tab-completing → `QueryParseException("unknown action")` at execution. Genuine v1.1.0 miss (see audit doc for suggested fix).
 
 ---
 
-## 4. Modded-attribution feature (VG-only)
+## 2. Recorded action taxonomy
 
-This is the differentiating feature and does not exist in CP:
+VG has **39 `ActionType` constants**, ids 1..39 dense. CP has ~20 documented (block/container/item/kill/chat/click/command/inventory/session/sign/username, plus v23+/v24 additions).
 
-- **Universal attribution chain.** `TamableAnimal → OwnableEntity → Projectile shooter → passenger → nearest recent interactor` — VG walks all of these to attribute a mob-driven change back to the responsible player when possible. Row stores both a `#sentinel` (`#mob:iceandfire:fire_dragon`) and `actor_uuid` for the rider.
-- **`#sentinel` tokens for non-player actors** (`#mob:<key>`, `#natural`, `#natural:raid`, `#tnt`, etc.) — VG-exclusive vocabulary.
-- **`docs/MODDED-ATTRIBUTION.md`** documents Dragon Mounts / Create / wither cases end to end.
-- Row schema carries `source_tag` and `actor_uuid` in parallel — CP has neither in its schema.
+### 2.1 Overlap (16 actions both audit)
 
-CP's `EntityChangeBlockListener` in Bukkit has a **hardcoded** ~11-class vanilla-mob whitelist (Enderman, EnderDragon, Wither, Ravager, Silverfish, Turtle, Fox, Zombie, FallingBlock, WindCharge, BreezeWindCharge). VG 1.1.5 **ports that exact list** as `VanillaGrieferSet.DEFAULT_ALLOWLIST` and stacks an admin-configurable `entityChangeAllowlist` on top. That's the in-flight work the other agent is landing right now (see §11).
+`BLOCK_PLACE`, `BLOCK_BREAK`, `CONTAINER_DEPOSIT`/`WITHDRAW`, `ITEM_DROP`/`PICKUP`, `INVENTORY_DEPOSIT`/`WITHDRAW`, `ITEM_CRAFT`, `ENTITY_KILL`, `CHAT`, `COMMAND`, `SIGN`, `SESSION_JOIN`/`LEAVE`, `USERNAME_CHANGE`, `CLICK`.
+
+### 2.2 VG-only actions (23 modded/vanilla-griefing expansions)
+
+`EXPLOSION` (as atomic row), `ENTITY_CHANGE_BLOCK`, `BURN`, `IGNITE`, `FADE`, `FORM`, `SPREAD`, `DISPENSE`, `PISTON_EXTEND`/`RETRACT`, `BUCKET_EMPTY`/`FILL`, `LEAVES_DECAY`, `HOPPER_PUSH`/`PULL`, `ENTITY_SPAWN`, `ENTITY_INTERACT`, `HANGING_PLACE`/`BREAK`, `STRUCTURE_GROW`, `PORTAL_CREATE`, `CHUNK_POPULATE`.
+
+### 2.3 CP-only surface
+
+- Sign v24 columns: `getColor`, `getColorSecondary`, `isFront`, `isFrontGlowing`, `isBackGlowing`, `isWaxed`. VG's `submitSign` only takes `joinedLines` (single string, `EventSubmitter.java:189-190`). Schema (`Schema.java:184`) only shows `source_tag VARCHAR(64)` extension. **Deferred P0** in CHANGELOG v1.0.4.
+- `CoreProtectPreLogEvent` — public cancellable pre-log hook. VG has an internal `EventGate` filter but no public bus other mods can intercept.
+- `blacklist.txt` composite filters (`id@user`).
+
+### 2.4 Rollback-vs-record parity matrix
+
+11 action types are **explicitly refused** by `RollbackEngine.applyInverse/applyForward` with per-type WARN messages (v1.0.3 fix removed the silent default branch): `DISPENSE`, `PISTON_EXTEND`, `PISTON_RETRACT`, `INVENTORY_DEPOSIT`, `INVENTORY_WITHDRAW`, `ITEM_CRAFT`, `ENTITY_SPAWN`, `ENTITY_INTERACT`, `CHUNK_POPULATE`, `CLICK`, plus `CHAT`/`COMMAND`/`SIGN`/`SESSION_*`/`USERNAME_CHANGE` (non-mutating audit-only). Verified in `RollbackEngine.java:311-329`.
+
+Asymmetric: `HANGING_PLACE` rollback refused (no `WorldMutator.removeEntity`), forward reapplies. `HANGING_BREAK` rollback respawns, restore refused. Both flagged as TODO in CHANGELOG v1.0.3.
+
+**🚨 CRITICAL BUG: `RollbackPlan.isRollbackable` (line 96-108) silently returns `false` for 14 of the 19 expansion types.** The plan filters them out at line 60-63 before the engine ever sees them, making all the case arms in `RollbackEngine.applyInverse` for `BURN`, `IGNITE`, `FADE`, `LEAVES_DECAY`, `BUCKET_FILL`, `FORM`, `SPREAD`, `BUCKET_EMPTY`, `STRUCTURE_GROW`, `PORTAL_CREATE`, `ENTITY_CHANGE_BLOCK`, `HOPPER_PUSH`, `HOPPER_PULL`, `HANGING_BREAK` **dead code**. CHANGELOG v1.0.3 marketed "19 new rollback handlers" — 14 of them cannot execute. See [`WAVE-AUDIT-1.1.5.md`](./WAVE-AUDIT-1.1.5.md#critical-1) for the fix.
+
+### 2.5 Producer-side filtering (VG only)
+
+- **`EntityBlockChangeCoalescer`** (v1.1.4): dedup by `(actor, world, x, y, z)` in a 500ms LRU-bounded window. Fires against Forge's `LivingDestroyBlockEvent` which is a **prospective-query** event (fires on every mob tick per block-in-collision-box, 200k+/sec per HTTYD dragon). CP-invisible: Bukkit's `EntityChangeBlockEvent` fires on genuine change only.
+- **`VanillaGrieferSet`** (v1.1.5): CP's hardcoded `EntityChangeBlockListener` whitelist ported character-for-character (Enderman / EnderDragon / Wither / Ravager / Silverfish / Turtle / Fox / Zombie / FallingBlock / WindCharge / BreezeWindCharge). Admin allowlist `entityChangeAllowlist` for modded opt-in + `entityChangeLogAllEntities` escape hatch. Filters BEFORE attribution + coalescer.
+
+### 2.6 Event-hook surface per loader
+
+Full table in `/tmp/vg-vs-cp/wave1-02-actions.md § 7`. Summary:
+
+| Event family | Forge 1.18.2 / 1.19.2 / 1.20.1 / NeoForge 1.21.1 | Fabric (all 4 MC) |
+|---|---|---|
+| Block place | ✅ `BlockEvent.EntityPlaceEvent` | 🟥 `UseBlockCallback` only (right-click use, NOT real place) — TODO(v0.2.0) mixin |
+| Block break | ✅ | 🟥 (deferred, mixin) |
+| Living destroy block | ✅ (with v1.1.5 whitelist gate) | 🟥 |
+| Explosion detonate | ✅ | 🟥 |
+| Piston pre | ✅ | 🟥 |
+| Fill bucket | ✅ 1.18.2 / 1.19.2 / 1.20.1; **🟥 NeoForge 1.21.1** (event removed upstream, TODO L636-638) | 🟥 |
+| Item toss / pickup / craft | ✅ | 🟥 |
+| Container open / close | ✅ | 🟥 |
+| Chat (HIGHEST + receiveCanceled) | ✅ verified in all 4 cells | ✅ |
+| Sign change | 🟥 **all Forge/NeoForge** — CHANGELOG v1.0.4 P0, mixin wave | 🟥 |
+| Hanging place / break | 🟥 refuse-rollback wired; **no submit path via grep** — audit-only rows may never populate | 🟥 |
+| **Burn / Ignite / Fade / Form / Spread / Dispense / LeavesDecay** | 🟥 **declared in `EventSubmitter` but zero matching `@SubscribeEvent` handlers** — the whole vanilla world-events family is unwired | 🟥 |
+
+The last row is a genuine bug — `EventSubmitter` promises the API surface, config toggle `logWorldEvents = true` implies it's on by default, but no listener ever fires the event. See audit doc.
 
 ---
 
-## 5. Storage backends
+## 3. Storage, schema, purge, queue
+
+### 3.1 Backend matrix
 
 | Backend | CP | VG |
 |---|---|---|
-| SQLite | ✅ (default) | ✅ (default; JIJ'd sqlite-jdbc, JNI symbol path preserved) |
-| MySQL | ✅ | ✅ (JIJ'd `mysql-connector-j` 8.4.0 as of 1.1.1) |
-| MariaDB | ✅ (via MySQL driver) | ✅ (same driver; VG 1.1.2 fixed `CREATE INDEX IF NOT EXISTS` MariaDB-vs-MySQL dialect drift) |
-| PostgreSQL | ❌ | ✅ (JIJ'd `postgresql` 42.7.4) |
-| DB migration tool | ✅ **`/co migrate-db`** — Patreon-only, SQLite↔MySQL | ❌ Not implemented. Real gap. |
-| Auto-purge daemon | ✅ **Patreon-only** — `auto-purge: 180d`, `auto-purge-time: 03:30`, background chunked purger | ❌ Not implemented. Real gap. Operator must cron `/vg purge`. |
+| SQLite | ✅ default | ✅ default (`Schema.Dialect.SQLITE`) |
+| MySQL | ✅ | ✅ (`mysql-connector-j` 8.4.0 JIJ'd since v1.1.1) |
+| MariaDB | ✅ (via MySQL driver) | ✅ (same driver; v1.1.2 fixed the `CREATE INDEX IF NOT EXISTS` MariaDB-vs-MySQL dialect drift) |
+| **PostgreSQL** | ❌ | ✅ (`postgresql` 42.7.4 JIJ'd since v1.1.1) — **VG uniqueness** |
+| `/co migrate-db` (SQLite ↔ MySQL) | ✅ Patreon 23+ | ❌ Not implemented — real gap |
+| Auto-purge daemon | ✅ Patreon 24+ (`auto-purge: 180d`, `auto-purge-time: 03:30`) | ❌ Not implemented — real gap |
 
-Purge safety floors: identical (`console ≥ 24h`, `in-game ≥ 30d`). VG enforces them source-side inside `PurgeEngine` (v1.1.0 CRITICAL fix); CP enforces at command layer.
+### 3.2 Driver packaging (VG modded runtime)
+
+- **Forge / NeoForge**: JarInJar (`jarJar` block per cell). Preserves JNI symbol path `Java_org_sqlite_core_NativeDB_*` (v1.0.0 fix).
+- **Fabric**: Shadow with `exclude 'module-info.class'` + `META-INF/versions/*/module-info.class` (v1.0.1 hotfix for Sinytra Connector JPMS layer collision).
+- `org.sqlite` never relocated.
+
+### 3.3 Schema
+
+VG has 5 tables + 5 indices (`Schema.java`), schema version `v2`. `stampVersion` rewritten in v1.1.2 to use MySQL-portable derived-table INSERT.
+
+Column set on the main `vg_actions` table: `id`, `ts`, `world_id`, `x`, `y`, `z`, `action_id`, `actor_uuid`, `actor_name`, `source_tag`, `target_id`, `target_meta`. Indices on `(world_id, x, z, y, ts)` for hot-path queries, plus `(actor_uuid, ts DESC)`, `(action_id, ts DESC)`.
+
+CP schema: not public in v24 docs beyond the API-exposed columns; treat as ❓.
+
+### 3.4 Purge
+
+- Safety floors identical (console 24h / in-game 30d).
+- **VG enforces in-engine** at `PurgeEngine.java:53-56` — defense-in-depth vs CP's command-layer enforcement.
+- World filter (`r:#world_<key>`) — both.
+- Block filter (`i:stone,dirt` on purge) — CP v23+, VG same.
+- `#optimize` — CP: real MySQL `OPTIMIZE TABLE`; VG: 🟡 accepted at parse but no-op in storage layer.
+
+### 3.5 Queue architecture
+
+CP: consumer queue with `pause` / `resume`.
+
+VG: `BatchedAsyncWriteQueue` — bounded ring buffer, time-budgeted `poll()` (Kafka `linger.ms` pattern, v1.0.4 fix — before that flush only triggered on batch-full or `poll()` timeout, so a steady arrival rate kept the batch growing forever and `/vg lookup` returned stale data until restart). Rate-limited WARN, tick-never-blocked. `maxSize` default 50 000. `/vg status` exposes depth. Producer-side histogram diagnostic (v1.1.3-diag).
+
+VG-only:
+- **`EntityBlockChangeCoalescer`** — see § 2.5.
+- Rollback-batch crash-recovery tables (undo/restore restarts survive server crashes).
+- `/vg consumer toggle` (CP has pause/resume only).
+
+### 3.6 MySQL dialect quirks VG had to fix
+
+- `CREATE INDEX IF NOT EXISTS` MySQL 8 rejects; MariaDB accepts. Fix: bare `CREATE INDEX` + swallow error 1061 (v1.1.2).
+- `SELECT ? WHERE NOT EXISTS` needs a `FROM`. Fix: derived-table form (v1.1.2).
+- CP: unknowable — closed source.
 
 ---
 
-## 6. Configuration model
+## 4. Configuration model
 
 | Feature | CP | VG |
 |---|---|---|
-| Config format | YAML (`config.yml`) | **JSON** (`config/vonixguardian/config.json`) |
-| Per-world config overrides | ✅ (`world_the_end.yml`, `world_nether.yml` shadow the root) | ❌ Not implemented. **Real gap.** VG has `worldBlacklist` (drop-all-events for the world) but no per-world knob overrides. |
-| Category toggles | ✅ | ✅ (`logBlocks`, `logContainers`, `logItems`, `logEntities`, `logExplosions`, `logChat`, `logCommands`, `logSessions`, `logSigns`, `logInteractions`, `logWorldEvents`) |
-| Blacklist file | ✅ (`blacklist.txt`, granular: `user`, `id@user`, `block`, `entity`, `item@container`) | ⚠ Partial — `worldBlacklist`, `blockBlacklist`, `sourceBlacklist` in JSON. **No user blacklist. No `id@user` composite. No `entity` blacklist. Exact-match only (no globs).** Real gap. |
-| Live reload | ✅ (`/co reload`) | ⚠ Command exists but **handler is a stub in 1.0.0**; treat every field as restart-required. |
-| IP hashing / privacy | ✅ (implicit) | ✅ (`privacy.hashIps`, `privacy.salt`, HMAC-style, ships with placeholder salt + validator WARN) |
-| Config validation | soft (per-key defaulting) | fail-fast, one exception listing every problem |
+| Format | YAML flat (`config.yml`) | JSON, 9-section carved (`config/vonixguardian/config.json`) |
+| Validation | soft per-key defaulting | fail-fast aggregate `IllegalStateException` listing every problem |
+| Per-world overrides | ✅ `world_the_end.yml` / `world_nether.yml` shadow-config | 🟥 not implemented — `worldBlacklist` is drop-all only |
+| `blacklist.txt` (users, commands, blocks, entities, `id@user`) | ✅ (v23+ blocks, v24+ entities + filters) | 🟥 3 exact-match JSON arrays (`worldBlacklist`, `blockBlacklist`, `sourceBlacklist`) — no user, no entity, no commands, no globs, no composites. VG-only strength: `sourceBlacklist` (drop by `sourceTag`) |
+| Language | ✅ 100+ ISO codes via Google Translate | 🟥 English-only |
+| Live reload | ✅ (`/co reload` reads file) | 🟥 stub in 1.0.0 — every field is currently restart-required |
+| Category toggles | ✅ | ✅ 11 booleans (`logBlocks`, `logContainers`, `logItems`, `logEntities`, `logExplosions`, `logChat`, `logCommands`, `logSessions`, `logSigns`, `logInteractions`, `logWorldEvents`) — note `logWorldEvents=true` is a lie today (see § 2.6 last row) |
+| IP hashing | ❓ not in snapshot | ✅ `privacy.hashIps` + `privacy.salt` (default salt is trivially weak; validator only WARNs) |
+| Config sub-blocks (VG only) | | `queue.maxSize/flushIntervalMs/batchSize`, `lookup.defaultPageSize/maxRadius/maxResultRows/maxConcurrent`, `purge.minAgeSecondsConsole/minAgeSecondsInGame`, `logFile.enabled/directory/gzipRotated/retentionDays` |
+| Migration on load | ❓ not documented | ✅ `ConfigLoader.migrateForwardCompat` backfills 1.1.4 coalescer defaults + 1.1.5 allowlist to sensible values for pre-1.1.4/1.1.5 configs. Treats `0` as "unset"; negative to actually disable (deliberate footgun-prevention) |
 
 ---
 
-## 7. Permissions
+## 5. Permissions
 
-| Feature | CP | VG |
+| | CP | VG |
 |---|---|---|
-| Node prefix | `coreprotect.*` | `vonixguardian.*` |
-| Base command nodes | 11 (`inspect`, `lookup`, `rollback`, `restore`, `teleport`, `help`, `purge`, `reload`, `status`, `consumer`, `give`, `networking`) | 10 (matches minus `teleport`, `give`, `networking`) |
-| Command-handler nodes | 3 (`coreprotect.co`, `.core`, `.coreprotect`) | 1 (`vonixguardian.command.use`) — root gate |
-| Child permissions | ✅ 11 lookup child perms (`lookup.block`, `lookup.chat`, `lookup.click`, `lookup.command`, `lookup.container`, `lookup.inventory`, `lookup.item`, `lookup.kill`, `lookup.near`, `lookup.session`, `lookup.sign`, `lookup.username`) — negative perms for granular lookup gating | ❌ Not implemented. Real gap — VG has one `command.lookup` node, no per-category negative perms |
-| Networking API perm | `coreprotect.networking` — required to use the CP networking API | ❌ N/A — no networking API in VG |
-| `bypass` node (suppresses logging for holder) | ✅ | ✅ `vonixguardian.command.bypass` |
-| `viewothers` node | ❌ | ✅ `vonixguardian.command.viewothers` — VG scopes lookups to the caller unless this is granted |
-| Backend | Bukkit permissions (Vault / LP / PEX) | LuckPerms via reflection (**soft dep**, cached tri-state); op-level fallback with configurable `defaultOpLevel` (default `3`) |
+| Base nodes | 13: `.*`, `.inspect`, `.lookup`, `.rollback`, `.restore`, `.teleport`, `.help`, `.purge`, `.reload`, `.status`, `.consumer`, `.give` (default false), `.networking` | 10: `.command.use`, `.command.inspect`, `.lookup`, `.rollback`, `.restore`, `.purge`, `.near`, `.undo`, `.status`, `.reload` |
+| **Child nodes (negative-perm gates)** | **12** — `.lookup.block/chat/click/command/container/inventory/item/kill/near/session/sign/username` | 🟥 **0** — real gap |
+| Command-handler nodes | 3 (`.co` default true, `.core` / `.coreprotect` default false) | 1 (`.command.use`) |
+| `bypass` (suppress logging for holder) | ✅ | ✅ `vonixguardian.command.bypass` |
+| `viewothers` (filter-scoping) | ❌ | ✅ `vonixguardian.command.viewothers` — VG-uniqueness |
+| Teleport / give / networking | ✅ | ❌ (VG doesn't ship these subcommands) |
+| Backend | Bukkit permissions (Vault / LP / PEX chain) | LuckPerms via **pure-reflection** soft-dep (`LuckPermsBridge` never imports `net.luckperms.*`), cached tri-state (`null` unprobed / `TRUE` / `FALSE`). Op-level fallback with `defaultOpLevel=3`. `IllegalStateException` deliberately not cached (transient LP-not-yet-registered case). |
+
+**⚠ Op-level fallback anti-symmetry.** When LP is absent, VG's op-level check grants **all** nodes to any op ≥ `defaultOpLevel`. No granular fallback. CP has 12 child perms usable exactly for this granular-deny case. On a modded server without LP, VG has no way to give a moderator lookup-only.
 
 ---
 
-## 8. API / integration
+## 6. Public Java API + third-party ecosystem
 
-| Feature | CP | VG |
+### 6.1 Method inventory
+
+CP API v12 (~30 methods, per snapshot §6): `performLookup/Rollback/Restore`, `blockLookup(Block, LookupOptions)`, `containerLookup`, `itemLookup`, `inventoryLookup`, `chatLookup`, `commandLookup`, `signLookup`, `sessionLookup`, `usernameLookup`, `queueLookup(Block)`, `parseResult`, `logChat`, `logCommand`, `logPlacement(x2)`, `logRemoval(x2)`, `logContainerTransaction`, `logInteraction`, `hasPlaced`, `hasRemoved`, `performPurge`, `isEnabled`, `testAPI`, `APIVersion`.
+
+VG (35 typed `submit*` methods on `EventSubmitter` — broader write side; single `dao().query(QueryFilter, offset, limit)` funnel on read side).
+
+Gaps in VG relative to CP:
+- `PreLogEvent` / cancellability — 🟥 grep 0 hits for `PreLogEvent`, `Cancellable`, `GuardianEvent` in `core/`
+- `APIVersion()` / `testAPI()` — 🟥 missing
+- `hasPlaced` / `hasRemoved` — 🟥 must count via blocking DAO
+- `queueLookup` — 🟥 internal `BatchedAsyncWriteQueue` not exposed
+- Per-family typed result types (9 of them) — 🟥 VG has single `Action` sum-type + `ActionType` discriminator
+- Deliberately excluded from API: `performRollback/Restore/Purge` (per `docs/API.md:217`) — VG's public API is intentionally read + write-log, not rollback
+
+Gains vs CP: blanket thread-safety on all writes; non-blocking `submit`; native typed `Action` records (no `parseResult` decode); UUID-first actor identity; producer-side coalescer.
+
+### 6.2 Distribution
+
+- CP: `maven.playpro.com`, group `net.coreprotect`, version 24.0.
+- VG: **🟥 no published maven artifact.** `core/build.gradle:10` applies `maven-publish` but `publishing {}` block has 0 grep hits in the whole repo. Plugin loaded, never configured. GitHub Releases only.
+
+### 6.3 Third-party ecosystem
+
+CP has ~20 documented integrations: WorldEdit, CoreProtect-Anti-Xray, CoreProtect TNT, CoreProtect Time-Lapse (CPTL), LightUp, Lumen, FRTrustSystem, Movecraft-CoreProtect, M0-CoreCord (Discord bridge), XRayHunter, ShadowTrace (server + client), WildInspect, ExplosionProtector, Axiom Paper Plugin, BlocksHub, SpitSTIK, XRay Informer, DesirePaths, Watson, CoreProtect Lookup Web UI.
+
+VG: 🟥 **zero third-party integrations.** Ecosystem is nascent.
+
+---
+
+## 7. Modded-runtime engineering (CP-invisible)
+
+Every VG hotfix through v1.1.5 addressed a problem CP will never see because CP targets Bukkit's classloader model and event contracts, not vanilla MC + Forge/NeoForge/Fabric.
+
+| Version | Symptom | Fix | CP-affected? |
+|---|---|---|---|
+| v1.0.0 | JNI relocation trap on shaded SQLite | JarInJar the driver; JNI symbol path preserved | ❌ (Bukkit differs) |
+| v1.0.1 | Silent-boot Gson MR-jar `module-info.class` colliding with Sinytra Connector JPMS layer | Shadow exclude both top-level and `META-INF/versions/*/module-info.class` | ❌ |
+| v1.0.1 | `MinecraftServer.getServerDirectory()` return-type drift under Sinytra Connector | Reflective `resolveServerDir` helper (accepts `File` or `Path`) | ❌ |
+| v1.0.1 | `RegisterCommandsEvent` firing on `Worker-Main-*` before `Guardian.boot()` | Deferred-and-replay dispatcher pattern | ❌ (Bukkit registers via PluginManager) |
+| v1.0.2 | `EntityType.getType()` SRG-vs-Mojmap flood on deep-modded packs | `MethodHandles.publicLookup()` chain + rate-limited WARN | ❌ |
+| v1.0.3 | Silent `default -> false` in `RollbackEngine.applyInverse` | Explicit refusals per type | ❌ |
+| v1.0.4 | `BatchedAsyncWriteQueue.runWorker()` flush-trigger bug — steady-state kept batch growing forever, `/vg lookup` returned stale until restart | Kafka `linger.ms` time-budgeted poll | ❌ |
+| v1.0.4 | Cross-dimension lookup scoping (default world not folded) | `QueryParser.parse` folds caller's world when source is a player and `w:` absent | ❌ |
+| v1.0.4 | `PISTON_RETRACT` never emitted (binary else branch on `PistonMoveType`) | Explicit `else if (RETRACT)` | ❌ |
+| v1.0.4 | `ENTITY_SPAWN` flood from chunk-load reanimation | `ev.loadedFromDisk()` gate; surviving rows tag `sourceTag=spawn:join` | ❌ |
+| v1.0.4 | `BUCKET_FILL`/`EMPTY` 0% Forge coverage | New `FillBucketEvent` handler | ❌ |
+| v1.0.4 | Chat cancelled-events dropped by anti-spam mods | `@SubscribeEvent(priority=HIGHEST, receiveCanceled=true)` in all Forge/NeoForge cells | ❌ |
+| v1.1.0 | `/vg purge` bypass of `PurgeEngine` safety floor (dao().purge() called directly) | Route through `purgeEngine().purge(filter, minAgeSeconds)` with source-based floor | ❌ |
+| v1.1.0 | `r:#nether`/`#overworld`/`#end` stored as bare tokens instead of canonical `minecraft:the_nether` — silently returned zero rows | Canonicalize at parse time | ❌ |
+| v1.1.0 | Tab-completion missed 12 tokens the parser accepts | New `GuardianSuggestions` | ❌ (but see § 1.6 — 12 tokens now advertised that the parser rejects — regression) |
+| v1.1.1 | JDBC drivers not on classpath by default (Paper ships them; Forge/NeoForge don't) | JIJ `mysql-connector-j` + `postgresql` | ❌ |
+| v1.1.2 | `CREATE INDEX IF NOT EXISTS` MySQL 8 rejects | Split DDL + swallow MySQL 1061 | Would affect CP if they hit MySQL 8 the same way; ❓ |
+| v1.1.4 | HTTYD dragon 200k/sec `LivingDestroyBlockEvent` prospective-event flood | `EntityBlockChangeCoalescer` producer-side dedup | ❌ (Bukkit event fires on genuine change only) |
+| v1.1.5 | Modded mob-griefing over-recording | `VanillaGrieferSet` whitelist port from CP + admin `entityChangeAllowlist` | ❌ |
+
+Known unfixed: Sinytra Connector `Commands.literal()` remap breaks `/vg` command tree registration; VG's engine still functions (v1.0.1 known issue, no fix as of v1.1.5).
+
+---
+
+## 8. Attribution model divergence
+
+VG's attribution chain (unique, no CP equivalent):
+
+```
+LivingEntity that changed the block
+├── getControllingPassenger() → if player, actor_uuid = them
+├── TamableAnimal → getOwnerUUID() → actor_uuid = them
+├── OwnableEntity (Create contraptions, Dragon Mounts) → getOwnerUUID() → actor_uuid
+├── Projectile → getOwner() recursion (arrow shot by tamed dragon = credit rider)
+└── nearest recent interactor from AttributionResolver's LRU cache
+```
+
+Row schema: dual `actor_uuid` (nullable) + `source_tag` (`#mob:dragonmounts:fire_dragon`, `#natural`, `#tnt`, etc.). Lookups can filter on either side. `/vg lookup #verbose` dumps both columns.
+
+**19-entry `#sentinel` vocabulary** in `Sentinel.java` for non-player attribution — vastly richer than CP's ~5 documented sentinels.
+
+VG's `Attribution.resolver` — LRU cache keyed by entity ID → most-recent-interactor UUID + timestamp. Populated by `PlayerInteractEvent`, `AttackEntityEvent`, mount/dismount. Used as last-resort attribution when the ownership chain is empty.
+
+---
+
+## 9. Loader-glue architecture
+
+```
+core/                            Pure Java, no MC deps, 380 unit tests, 100% covered
+                                 (JDBC, queue, log, query parser, rollback, config,
+                                 attribution, filter, sentinels)
+mc-<ver>/common/                 Per-MC shared surface (NBT codecs, command tree,
+                                 event payload models). Mojmap.
+mc-<ver>/{fabric,forge,neoforge}/    30-50 LOC glue — event subscriptions, mod entry
+                                     point, permission bridge, world mutator impl.
+buildSrc/                        Gradle convention plugins.
+gradle/libs.versions.toml        Single version catalog.
+```
+
+No architectury runtime — `core` is plain Java and loader modules import it directly. Smaller jars, no abstraction tax. Pattern matches LuckPerms / FastBackups / Ledger.
+
+**8 jars** in the CI matrix (Fabric×4 + Forge×3 + NeoForge×1).
+
+---
+
+## 10. Interop matrix
+
+| Server type | Recommended | Why |
 |---|---|---|
-| Public Java API | ✅ **API version 12**, versioned, `maven.playpro.com` maven repo, stable across 24.x | ✅ v1.0.0 documented in `docs/API.md` — `Guardian` facade implementing `EventSubmitter`, `GuardianDao` for reads, soft-dep reflection pattern documented |
-| Maven repo | ✅ published | ❌ Not yet published to a maven repo — GitHub Releases only |
-| Custom-log entries from other plugins/mods | ✅ | ✅ (via `EventSubmitter.submit*`) |
-| Networking API | ✅ (`coreprotect.networking` perm) — remote lookups | ❌ Not implemented |
-| Third-party ecosystem | ✅ ~15+ documented integrations: WorldEdit, CoreProtect-Anti-Xray, CoreProtect TNT, Time-Lapse (CPTL), LightUp, Lumen, FRTrustSystem, Movecraft-CoreProtect, M0-CoreCord (Discord bridge), XRayHunter, ShadowTrace, WildInspect, ExplosionProtector, Axiom Paper Plugin, BlocksHub, SpitSTIK, DesirePaths, Watson, CP Lookup Web UI | ❌ Zero third-party integrations — VG is new; no ecosystem yet |
+| Paper / Spigot / Purpur (vanilla Bukkit API) | **CP** | Native platform, mature, ~20 integrations |
+| Fabric (any of 1.18.2/1.19.2/1.20.1/1.21.1) | **VG** (Fabric jar has known block-place gap deferred to mixin wave; use CP-Fabric Patreon dev preview only if MC target matches its 26.1.2 aim) | VG has GA cover; CP-Fabric is dev-only |
+| Forge 1.18.2 / 1.19.2 / 1.20.1 | **VG** | CP has no Forge target |
+| NeoForge 1.21.1 | **VG** | CP has no NeoForge target |
+| Sinytra Connector (Forge+Fabric hybrid) | **VG** (NeoForge jar; command tree registration blocked by Connector's `Commands.literal()` remap until mixin wave — engine works, `/vg` doesn't) | Explicit VG hardening in v1.0.1; no CP equivalent |
+| Mohist / Arclight (Forge+Bukkit hybrid) | **CP** likely (they emulate Bukkit) | VG doesn't target Bukkit |
+| Hytale | **CP** (dedicated Hytale build) | VG doesn't target |
 
 ---
 
-## 9. Performance & queue engineering
+## References
 
-| Aspect | CP | VG |
-|---|---|---|
-| Async writer | ✅ (consumer queue, `pause`/`resume`) | ✅ `BatchedAsyncWriteQueue` — bounded ring buffer, time-budgeted `poll()` (Kafka `linger.ms` pattern, fixed in v1.0.4) |
-| Backpressure policy | drop + warn | **drop + rate-limited WARN, tick never blocked**. `maxSize` default 50 000; sized against event rate. `/vg status` exposes depth |
-| Batching | prepared-statement batch | prepared statement batch, `batchSize` configurable |
-| Query indices | `(user, time)`, `(x,z,y,time)` | `(world, x, z, y, time)` + user + time-desc indices |
-| Producer-side coalescing | ❌ (CP relies on Bukkit `EntityChangeBlockEvent` firing on state change only) | ✅ **`EntityBlockChangeCoalescer`** (v1.1.4) — dedup by `(actor, world, x, y, z)` within a 500ms window because Forge `LivingDestroyBlockEvent` is a *prospective query* event that fires on every mob tick per block-in-collision-box (200k/sec per HTTYD dragon). CP's Bukkit source doesn't need this because the Bukkit event is genuine-change-only. |
-| Chat capture priority | (Bukkit `HIGHEST` monitor) | ✅ Forge/NeoForge listener registered `EventPriority.HIGHEST` + `receiveCanceled=true` (v1.0.4) — logs cancelled chat too, matches CP contract |
-
----
-
-## 10. Deployment & failure modes VG had to solve that CP never sees
-
-These are all consequences of running on Forge/NeoForge instead of Bukkit — CP's target has none of them:
-
-- **JNI relocation trap on shaded SQLite** (VG 1.0.0 fix — JarInJar the driver instead of shading, so JNI symbol path is preserved). Not relevant to CP: Bukkit doesn't shade SQLite the same way.
-- **`module-info.class` JPMS leak breaking Sinytra Connector boot** (VG 1.0.1 hotfix). CP-invisible.
-- **`MinecraftServer.getServerDirectory()` return-type drift** from Connector remap (VG 1.0.1 hotfix — reflective resolve). CP-invisible.
-- **`EntityType.getType()` SRG-vs-Mojmap resolution flood on deep-modded packs** (VG 1.0.2 — `MethodHandles.publicLookup()` chain + rate-limited WARN). CP-invisible.
-- **NeoForge `RegisterCommandsEvent` firing on `Worker-Main-*` before `Guardian.boot()`** (VG 1.0.0 fix — deferred-and-replay dispatcher). CP registers commands via `PluginManager`, no timing race.
-- **JDBC drivers not on classpath by default** (VG 1.1.1 — JIJ `mysql-connector-j` + `postgresql`). Paper ships them; VG had to.
-- **`CREATE INDEX IF NOT EXISTS` MySQL-vs-MariaDB dialect drift** (VG 1.1.2 — split DDL, swallow MySQL 1061). CP-invisible.
-- **`Sinytra Connector Commands.literal()` remap** (VG 1.0.1 known issue — command tree fails to register on Connector, engine still functions). No CP equivalent.
-
----
-
-## 11. In-flight on `v1.1.5-entity-filter` (the branch the other agent is working)
-
-Uncommitted changes on the current branch as of 2026-07-01 15:xx UTC:
-
-- **New file `core/src/main/java/network/vonix/guardian/core/filter/VanillaGrieferSet.java`** — ports CP's hardcoded `EntityChangeBlockListener` whitelist verbatim: `minecraft:{enderman, ender_dragon, wither, ravager, silverfish, turtle, fox, zombie, falling_block, wind_charge, breeze_wind_charge}`.
-- **`GuardianConfig.Actions`** grows two fields: `entityChangeAllowlist: List<String>` (admin opt-in for modded mob keys like `iceandfire:fire_dragon`) and `entityChangeLogAllEntities: boolean` (escape hatch — restores pre-1.1.5 flood behavior).
-- **`ConfigLoader.migrateForwardCompat`** now backfills `entityChangeAllowlist = []` on pre-1.1.5 configs and logs the fill-in.
-- **`ForgeEvents.onLivingDestroyBlock`** in `mc-1.18.2/forge`, `mc-1.19.2/forge`, `mc-1.20.1/forge`, `mc-1.21.1/neoforge` — all four cells now gate the listener on `VanillaGrieferSet.shouldRecord(entityKey, allowlist, logAll)` **before** any attribution work. Non-vanilla entities exit the handler without touching the queue or the attribution resolver.
-- `mod_version` bumped 1.1.4 → 1.1.5 in `gradle.properties`.
-
-**Net effect vs CP:** VG will now match CP's whitelist semantics *exactly* for the vanilla case, while additionally exposing an admin allowlist for modded packs that want to record specific modded griefers (something CP cannot express because it doesn't run on Forge).
-
-**Note vs the 1.1.4 coalescer:** 1.1.4's `EntityBlockChangeCoalescer` (time+coord dedup) and 1.1.5's `VanillaGrieferSet` (entity-class whitelist) are complementary — the whitelist eliminates modded floods at the source (the CP approach), the coalescer clamps the surviving vanilla-mob load. Both stay in.
-
----
-
-## 12. Summary: where VG is behind, at, or ahead of CP
-
-**Ahead of CP** (things CP simply doesn't do):
-- Forge / NeoForge / Fabric coverage across 4 MC versions
-- PostgreSQL backend
-- Universal modded attribution chain (`TamableAnimal → OwnableEntity → Projectile → passenger`)
-- `#sentinel` actor vocabulary + `actor_uuid` beside `source_tag` in the schema
-- Producer-side `EntityBlockChangeCoalescer` for the modded prospective-event flood
-- 39-entry `ActionType` taxonomy (hopper push/pull, structure grow, portal create, hanging place/break, entity interact, chunk populate)
-- Admin-configurable modded-entity allowlist (v1.1.5)
-- `viewothers` permission node
-- Fail-fast config validator
-
-**At parity with CP** (1:1):
-- `/vg` command tree + `/co`, `/guardian` aliases → identical subcommand set (minus `teleport`, `give`, `migrate-db`)
-- Filter mini-language (`u:` `t:` `r:` `a:` `i:` `e:` `w:`)
-- Hashtag flags (`#preview`, `#count`, `#verbose`, `#silent`, `#optimize`)
-- Actor sentinels (`u:#tnt` `u:#creeper` `u:#fire` `u:#explosion`)
-- Purge safety floors (24h console / 30d in-game)
-- Async writer + `consumer pause/resume`
-- LuckPerms integration (via soft-dep reflection instead of Vault)
-- SQLite + MySQL + MariaDB backends
-- Vanilla mob-griefing whitelist (Enderman / Ender Dragon / Wither / Ravager / Silverfish / Turtle / Fox / Zombie / FallingBlock / WindCharge / BreezeWindCharge — after the 1.1.5 landing)
-- `+session`/`-session` action aliases (`a:login`, `a:logout`)
-
-**Behind CP** (real gaps to close):
-1. **`/vg reload` is a stub** — 1.0.0 handler doesn't re-read the file; treat every field as restart-required. CP does full live reload.
-2. **No database migration tool** — CP has `/co migrate-db` (Patreon-only, SQLite↔MySQL). VG has none.
-3. **No auto-purge daemon** — CP has `auto-purge: 180d` + `auto-purge-time: 03:30` (Patreon-only). VG requires cron.
-4. **No per-world config overrides** — CP allows `world_the_nether.yml` to shadow root `config.yml` per-world. VG only offers `worldBlacklist`.
-5. **No user/entity blacklist file** — CP has a rich `blacklist.txt` (`Notch`, `#tnt`, `/help`, `minecraft:stone`, `minecraft:creeper`, `minecraft:shears@#dispenser`). VG only has `worldBlacklist`, `blockBlacklist`, `sourceBlacklist` (exact-match, no globs, no user/entity variants).
-6. **No child permissions** — CP has 11 `coreprotect.lookup.<category>` negative-perm gates. VG has one `command.lookup` node.
-7. **No `#worldedit` selection integration** — parses the token but no live WE-selection bridge (no WE on modded Forge/Fabric to bridge to).
-8. **No decimal/range time syntax** — CP accepts `t:2.5h` and `t:1h-2h`. VG accepts combined (`t:1d12h`) only.
-9. **Sign edits via mixin** — VG 1.0.4 P0 list still flagging front/back + dye-color signs from 1.20+ for the 1.0.5 mixin wave.
-10. **Fabric `BLOCK_PLACE` parity** — VG 1.0.4 P0 list: full Fabric block-place coverage still queued behind mixin wave.
-11. **No published maven repo** — third parties integrate via GitHub Release jars, no coordinate for `implementation` yet.
-12. **No third-party integration ecosystem** — CP has ~15 documented plugin integrations, VG has zero.
-13. **No `/co teleport` or `/co give`** — CP has both (permission-gated), VG has neither.
-
-**Deliberate not-implementing** (design choices, not gaps):
-- Bukkit / Paper build (CP owns that space; VG's reason to exist is the loaders CP doesn't cover).
-- Networking API (`coreprotect.networking`) — out of scope for v1.x.
-
----
-
-## 13. Interop matrix (which server should run which?)
-
-| Server type | Recommended tool | Why |
-|---|---|---|
-| Paper / Spigot / Purpur (vanilla API) | **CoreProtect** | Native platform, larger ecosystem, mature |
-| Fabric | **VonixGuardian** | CP-Fabric exists but VG covers 1.18.2→1.21.1 uniformly + modded attribution |
-| Forge (1.18.2 / 1.19.2 / 1.20.1) | **VonixGuardian** | CP does not target Forge |
-| NeoForge 1.21.1 | **VonixGuardian** | CP does not target NeoForge |
-| Sinytra Connector (Forge+Fabric hybrid) | **VonixGuardian** (with the caveat that command tree registration is blocked by Connector's `Commands.literal()` remap until VG 1.0.2's mixin wave — engine still functions) | CP still targets Bukkit; VG has explicit Connector hardening |
-| Hytale | **CoreProtect** (has a dedicated Hytale build) | VG does not target Hytale |
+- Wave 1 subagent reports: `/tmp/vg-vs-cp/wave1-01-commands.md`, `wave1-02-actions.md`, `wave1-03-storage-perf.md`, `wave1-04-config-perms.md`, `wave1-05-api-ecosystem.md`, `wave1-06-modded-runtime.md`
+- Wave 2 adversarial wiring audit: `/tmp/vg-vs-cp/wiring-audit-report.md` (→ [`WAVE-AUDIT-1.1.5.md`](./WAVE-AUDIT-1.1.5.md))
+- Frozen CP docs snapshot: `/tmp/vg-vs-cp/CP-DOCS-SNAPSHOT.md`
+- CP live docs (may drift): https://docs.coreprotect.net/
