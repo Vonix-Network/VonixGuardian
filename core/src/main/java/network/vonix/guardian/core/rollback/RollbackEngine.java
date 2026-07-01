@@ -11,7 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,19 +72,96 @@ public final class RollbackEngine {
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
-        return execute(filter, preview, RollbackResult.Mode.ROLLBACK, null);
+        return execute(plan(filter, RollbackResult.Mode.ROLLBACK, null), preview);
     }
 
     public RollbackResult restore(QueryFilter filter, boolean preview) throws Exception {
-        return execute(filter, preview, RollbackResult.Mode.RESTORE, null);
+        return execute(plan(filter, RollbackResult.Mode.RESTORE, null), preview);
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview, UUID actorUuid) throws Exception {
-        return execute(filter, preview, RollbackResult.Mode.ROLLBACK, actorUuid);
+        return execute(plan(filter, RollbackResult.Mode.ROLLBACK, actorUuid), preview);
     }
 
     public RollbackResult restore(QueryFilter filter, boolean preview, UUID actorUuid) throws Exception {
-        return execute(filter, preview, RollbackResult.Mode.RESTORE, actorUuid);
+        return execute(plan(filter, RollbackResult.Mode.RESTORE, actorUuid), preview);
+    }
+
+    /**
+     * Phase 1 of the W2-01 two-phase pipeline: query the DAO and build an
+     * immutable {@link RollbackPlan}. No batch record is opened, no executor
+     * task is submitted — the caller can inspect the plan and discard it
+     * without side effects.
+     */
+    public RollbackPlan plan(QueryFilter filter,
+                             RollbackResult.Mode mode,
+                             UUID actorUuid) throws Exception {
+        Objects.requireNonNull(filter, "filter");
+        Objects.requireNonNull(mode, "mode");
+        QueryFilter effective = withRolledBack(filter, mode == RollbackResult.Mode.RESTORE);
+        List<Action> matches = fetchMatches(effective);
+        if (matches.isEmpty()) {
+            LOG.debug("RollbackEngine.{}: 0 matches", mode);
+            return RollbackPlan.empty(effective, mode, actorUuid);
+        }
+        return RollbackPlan.build(matches, effective, mode, actorUuid);
+    }
+
+    /**
+     * Phase 2 of the W2-01 two-phase pipeline: execute a previously built
+     * {@link RollbackPlan}. Opens the {@code vg_rollback_batches} audit row,
+     * dispatches mutations to the main-thread executor, marks the affected
+     * IDs in the DAO, then closes the batch row. In {@code preview} mode no
+     * batch is opened and no mutations are dispatched.
+     */
+    public RollbackResult execute(RollbackPlan plan, boolean preview) throws Exception {
+        Objects.requireNonNull(plan, "plan");
+        RollbackResult.Mode mode = plan.mode();
+        if (mode == null) {
+            throw new IllegalArgumentException(
+                "RollbackPlan has no mode — use RollbackEngine.plan(...) to build it");
+        }
+        UUID actorUuid = plan.actorUuid();
+        QueryFilter effective = plan.originalFilter();
+        List<Long> affectedIds = plan.actionIds();
+        List<Long> skippedIds = plan.skippedIds();
+        int planned = plan.plannedSteps();
+
+        if (!plan.skipped().isEmpty()) {
+            LOG.warn("RollbackEngine.{}: {} action(s) excluded as not rollbackable",
+                mode, plan.skipped().size());
+        }
+
+        if (preview || planned == 0) {
+            return new RollbackResult(actorUuid, mode, preview,
+                affectedIds, skippedIds, planned, 0, effective);
+        }
+
+        String filterJson = encodeFilter(effective);
+        long batchId = dao.openRollbackBatch(actorUuid, mode.ordinal(), filterJson, affectedIds);
+
+        int dispatched;
+        try {
+            dispatched = dispatchBatches(plan.ordered(), mode);
+            // Mark IDs *after* dispatch is enqueued. Mutation completion is async on
+            // the main-thread executor; the DB state reflects intent, not landing.
+            boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
+            dao.markRolledBack(affectedIds, targetFlag);
+        } catch (Exception e) {
+            LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
+                mode, batchId, e);
+            throw e;
+        }
+
+        try {
+            dao.closeRollbackBatch(batchId);
+        } catch (Exception e) {
+            LOG.error("RollbackEngine.{}: failed to close batch id={}", mode, batchId, e);
+            throw e;
+        }
+
+        return new RollbackResult(actorUuid, mode, false,
+            affectedIds, skippedIds, planned, dispatched, effective);
     }
 
     /**
@@ -106,62 +182,6 @@ public final class RollbackEngine {
     }
 
     // ---------------------------------------------------------------------
-
-    private RollbackResult execute(QueryFilter filter,
-                                   boolean preview,
-                                   RollbackResult.Mode mode,
-                                   UUID actorUuid) throws Exception {
-        Objects.requireNonNull(filter, "filter");
-        Objects.requireNonNull(mode, "mode");
-
-        QueryFilter effective = withRolledBack(filter, mode == RollbackResult.Mode.RESTORE);
-
-        List<Action> matches = fetchMatches(effective);
-        if (matches.isEmpty()) {
-            LOG.debug("RollbackEngine.{}: 0 matches", mode);
-            return new RollbackResult(actorUuid, mode, preview,
-                List.of(), List.of(), 0, 0);
-        }
-
-        RollbackPlan plan = RollbackPlan.build(matches);
-        List<Long> skippedIds = collectIds(plan.skipped());
-        if (!plan.skipped().isEmpty()) {
-            LOG.warn("RollbackEngine.{}: {} action(s) excluded as not rollbackable", mode, plan.skipped().size());
-        }
-
-        List<Long> affectedIds = collectIds(plan.ordered());
-        int planned = plan.size();
-
-        if (preview || planned == 0) {
-            return new RollbackResult(actorUuid, mode, preview, affectedIds, skippedIds, planned, 0);
-        }
-
-        String filterJson = encodeFilter(effective);
-        long batchId = dao.openRollbackBatch(actorUuid, mode.ordinal(), filterJson, affectedIds);
-
-        int dispatched;
-        try {
-            dispatched = dispatchBatches(plan.ordered(), mode);
-
-            // Mark IDs *after* dispatch is enqueued. Mutation completion is async on
-            // the main-thread executor; the DB state reflects intent, not landing.
-            boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
-            dao.markRolledBack(affectedIds, targetFlag);
-        } catch (Exception e) {
-            LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
-                mode, batchId, e);
-            throw e;
-        }
-
-        try {
-            dao.closeRollbackBatch(batchId);
-        } catch (Exception e) {
-            LOG.error("RollbackEngine.{}: failed to close batch id={}", mode, batchId, e);
-            throw e;
-        }
-
-        return new RollbackResult(actorUuid, mode, false, affectedIds, skippedIds, planned, dispatched);
-    }
 
     /**
      * Pages the DAO with the filter as given. The {@code rolledBack} predicate
@@ -460,17 +480,6 @@ public final class RollbackEngine {
             LOG.warn("RollbackEngine: malformed explosion entry '{}'", entry);
             return null;
         }
-    }
-
-    private static List<Long> collectIds(List<Action> actions) {
-        if (actions.isEmpty()) {
-            return List.of();
-        }
-        List<Long> ids = new ArrayList<>(actions.size());
-        for (Action a : actions) {
-            ids.add(a.id());
-        }
-        return Collections.unmodifiableList(ids);
     }
 
     /** For tests + internal use only. */

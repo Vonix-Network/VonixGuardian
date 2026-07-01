@@ -9,6 +9,20 @@ Legend: ✅ full parity · 🟡 partial · 🟥 stub / broken / dead / advertise
 
 ---
 
+## Field-report deltas since v1.1.5 (2026-07-01 nightshift)
+
+Refresh pass triggered by the wiring-audit follow-up (`docs/WAVE-AUDIT-1.1.5.md`) and the CP-Berk field report at 08:05. Since the initial 07:45 write-up, the following claims in the tables below have flipped or gained new severity:
+
+- 🚨 **NEW CRITICAL — `target VARCHAR(192)` is undersized (A11).** Chat, command, sign, and explosion submits all funnel through `Guardian.java:296-310` → `ActionBuilder.java:170` → `vg_actions.target VARCHAR(192) NOT NULL` (`Schema.java:180`). Any chat line > 192 UTF-8 bytes, any command with long arg list, any pasted sign, and any multi-entity-victim explosion serialization is silently truncated (SQLite) or hard-rejected (MySQL strict mode). CP's equivalent `message`/`data` columns are `TEXT`. See new "Schema comparison" subsection under §3.
+- 🟥 **CONFIRMED — burn/ignite/fade/form/spread/dispense/leaves_decay handlers unwired (A8).** The wiring auditor's grep now has a matching bug ticket. `EventSubmitter` declares the API, config toggle `logWorldEvents=true` implies it's on by default, but **no** `@SubscribeEvent` handler in any of the 4 Forge/NeoForge cells fires those submits. The parity-table rows for `Burn`, `Ignite`, `Fade`, `Form`, `Spread`, `Dispense`, `LeavesDecay` in §2.6 are all 🟥, not ✅.
+- 🟥 **CONFIRMED — HANGING_PLACE/BREAK rollback wired but no submit path (A10).** `RollbackEngine` explicitly handles both directions with per-type WARN/refuse, yet nowhere in the 4 cells is `submitHangingPlace` / `submitHangingBreak` called. The audit-only rows never materialize.
+- 🟥 **CONFIRMED — NeoForge 1.21.1 `BUCKET_EMPTY`/`FILL` unwired (A9).** `FillBucketEvent` was removed upstream. TODO at `NeoForgeEvents.java:636`. CHANGELOG v1.0.4's "0% → 100% Forge-family coverage" is inaccurate for 1.21.1.
+- 🚨 **CRITICAL still open — `RollbackPlan.isRollbackable` silent-default (A1).** Not new tonight but re-confirmed. 14 of 19 CHANGELOG-v1.0.3 rollback handlers remain dead code.
+
+These map to Wave-2 subagent slots W2-01 (A1), W2-05 (A8/A9/A10 — this task), and W2-06 (A11) in `NIGHTSHIFT.md`. Everything below is the surgical delta from the 07:45 baseline; the rest of the doc is otherwise unchanged.
+
+---
+
 ## Executive summary
 
 **~85% of CP's user-visible command + filter + hashtag surface is bit-for-bit parity** on VG, verified line-by-line in `QueryParser.java` and `GuardianCommands.java`. VG's engine goes beyond CP in 5 concrete places (modded loaders, PostgreSQL, universal attribution chain, producer-side flood defense, 39-entry action taxonomy).
@@ -43,8 +57,8 @@ But the wave-1 audit surfaced **real bugs the CHANGELOG marketed as fixed** — 
 11. **No decimal / range time syntax** — CP accepts `t:2.50h` and `t:1h-2h`; VG accepts combined (`t:1d12h`) only.
 12. **Sign edits via mixin** — CHANGELOG v1.0.4 P0 list flags front/back + dye + waxed (CP v24 columns) for the deferred 1.0.5 mixin wave. VG persists a single joined-lines string.
 13. **Fabric BLOCK_PLACE + LivingDestroyBlock + explosion + piston + item toss/pickup/craft + sign edit — all deferred behind mixin wave.** Fabric currently piggybacks on `UseBlockCallback` (fires on right-click use, not real place). CHANGELOG v1.0.4 L145 / L589. This is 4 loader cells × 7 event families still missing.
-14. **NeoForge 1.21.1 `BUCKET_EMPTY`/`BUCKET_FILL` unwired** — `FillBucketEvent` was removed upstream in NeoForge 1.21+. TODO at `NeoForgeEvents.java:636-638`. CHANGELOG v1.0.4 says "0% → 100% Forge-family coverage" but 1.21.1 is actually 0% on this pair.
-15. **`EventSubmitter` declares `submitBurn`/`Ignite`/`Fade`/`Form`/`Spread`/`Dispense`/`LeavesDecay` — zero matching `@SubscribeEvent` handlers on any loader.** The entire vanilla world-events family is unwired. Config toggle `logWorldEvents = true` is a lie for these. See audit doc.
+14. **NeoForge 1.21.1 `BUCKET_EMPTY`/`BUCKET_FILL` unwired** — `FillBucketEvent` was removed upstream in NeoForge 1.21+. TODO at `NeoForgeEvents.java:636-638`. CHANGELOG v1.0.4 says "0% → 100% Forge-family coverage" but 1.21.1 is actually 0% on this pair. **[A9, re-confirmed 2026-07-01]**
+15. **`EventSubmitter` declares `submitBurn`/`Ignite`/`Fade`/`Form`/`Spread`/`Dispense`/`LeavesDecay` — zero matching `@SubscribeEvent` handlers on any loader.** The entire vanilla world-events family is unwired. Config toggle `logWorldEvents = true` is a lie for these. See audit doc. **[A8, confirmed with matching W2-05 bug ticket 2026-07-01]**
 16. **No PreLogEvent / no cancellability** (grep 0 hits for `PreLogEvent`, `Cancellable`, `GuardianEvent` in `core/`) — third-party mods cannot intercept or cancel a log the way CP allows via `CoreProtectPreLogEvent`.
 17. **No published maven artifact** — `core/build.gradle:10` applies `maven-publish` but `publishing {}` block has 0 grep hits in the repo. Plugin loaded, never configured. GitHub Releases only.
 18. **No `hasPlaced` / `hasRemoved` / `queueLookup` / `APIVersion()` / `testAPI()`** — CP API v12 helpers third-party plugins rely on.
@@ -186,8 +200,8 @@ Full table in `/tmp/vg-vs-cp/wave1-02-actions.md § 7`. Summary:
 | Container open / close | ✅ | 🟥 |
 | Chat (HIGHEST + receiveCanceled) | ✅ verified in all 4 cells | ✅ |
 | Sign change | 🟥 **all Forge/NeoForge** — CHANGELOG v1.0.4 P0, mixin wave | 🟥 |
-| Hanging place / break | 🟥 refuse-rollback wired; **no submit path via grep** — audit-only rows may never populate | 🟥 |
-| **Burn / Ignite / Fade / Form / Spread / Dispense / LeavesDecay** | 🟥 **declared in `EventSubmitter` but zero matching `@SubscribeEvent` handlers** — the whole vanilla world-events family is unwired | 🟥 |
+| Hanging place / break | 🟥 refuse-rollback wired; **no submit path via grep** — audit-only rows may never populate. **[A10, confirmed 2026-07-01]** | 🟥 |
+| **Burn / Ignite / Fade / Form / Spread / Dispense / LeavesDecay** | 🟥 **declared in `EventSubmitter` but zero matching `@SubscribeEvent` handlers** — the whole vanilla world-events family is unwired. **[A8, confirmed 2026-07-01]** | 🟥 |
 
 The last row is a genuine bug — `EventSubmitter` promises the API surface, config toggle `logWorldEvents = true` implies it's on by default, but no listener ever fires the event. See audit doc.
 
@@ -219,6 +233,27 @@ VG has 5 tables + 5 indices (`Schema.java`), schema version `v2`. `stampVersion`
 Column set on the main `vg_actions` table: `id`, `ts`, `world_id`, `x`, `y`, `z`, `action_id`, `actor_uuid`, `actor_name`, `source_tag`, `target_id`, `target_meta`. Indices on `(world_id, x, z, y, ts)` for hot-path queries, plus `(actor_uuid, ts DESC)`, `(action_id, ts DESC)`.
 
 CP schema: not public in v24 docs beyond the API-exposed columns; treat as ❓.
+
+### 3.3.1 Schema comparison — column widths (A11)
+
+CP's `CP-DOCS-SNAPSHOT.md` and `/tmp/vg-vs-cp/wave1-03-storage-perf.md § 3.3` confirm that **CP does not publish column-level DDL** — full width is unknowable from the public docs alone. But the CP API's `String[]` result shape (snapshot §6) and the `MessageResult` / `SignResult` payloads (unbounded UTF-8 strings) strongly imply CP uses `TEXT` (SQLite / MySQL) — not a bounded `VARCHAR`. Any long chat line, pasted sign, or multi-arg command survives in CP.
+
+VG's equivalent column is `vg_actions.target VARCHAR(192) NOT NULL` (`Schema.java:180`, verified in `wave1-03 § 3.1 line 56`). Every chat, command, sign, and explosion submit funnels through it via `ActionBuilder.java:170`.
+
+| Source event | Payload size in the wild | VG column | Verdict |
+|---|---|---|---|
+| Chat (`CHAT`) | up to server chat cap, typically 256+ chars | `target VARCHAR(192)` | 🚨 truncated / rejected |
+| Command (`COMMAND`) | `/execute` chains, JSON args → 500+ chars common | `target VARCHAR(192)` | 🚨 truncated / rejected |
+| Sign (`SIGN`) | 4 lines joined; front+back+dye+waxed (v24) → 300+ chars | `target VARCHAR(192)` | 🚨 truncated / rejected |
+| Explosion serialized victim list | N entity type strings joined | `target VARCHAR(192)` | 🚨 truncated / rejected |
+| Block target namespaced ID (e.g. `minecraft:stone`) | ≤ 96 chars | `target VARCHAR(192)` | ✅ fits |
+
+**Assessment.** VG's `VARCHAR(192)` is undersized vs the (assumed) CP `TEXT` reference for the 4 non-block action families above. Behavior differs by backend:
+- SQLite: type-affinity is advisory — silently accepts the oversized string.
+- MySQL / MariaDB (strict mode, default since 5.7): rejects the INSERT → row lost, WARN logged.
+- PostgreSQL: hard-rejects with `22001 string_data_right_truncation` → row lost.
+
+**Fix path** (Wave-2 W2-06 in `NIGHTSHIFT.md`): schema-version bump v2 → v3 with `ALTER TABLE vg_actions MODIFY target VARCHAR(4096)` (or `TEXT` on all dialects). Round-trip regression test for a 512-char chat submit.
 
 ### 3.4 Purge
 
