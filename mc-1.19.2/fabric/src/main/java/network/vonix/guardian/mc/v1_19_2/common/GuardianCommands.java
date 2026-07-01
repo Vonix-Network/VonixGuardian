@@ -16,6 +16,8 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.action.Action;
+import network.vonix.guardian.core.perms.LookupPermissionFilter;
+import network.vonix.guardian.core.perms.PermissionNode;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.query.QueryParseException;
 import network.vonix.guardian.core.query.QueryParser;
@@ -302,6 +304,9 @@ public final class GuardianCommands {
                     long total = g.dao().count(filter);
                     int offset = (pageF - 1) * perPageF;
                     List<Action> rows = g.dao().query(filter, offset, perPageF);
+                    // W3-B7: filter rows by CoreProtect-style child perms (e.g. lookup.chat)
+                    UUID viewer = actorUuid(src);
+                    rows = LookupPermissionFilter.filter(g.perms(), viewer, PermissionNode.LOOKUP, rows);
                     long now = System.currentTimeMillis();
                     List<Component> pageOut = LookupFormatter.page(g.theme(), rows, total, pageF, perPageF, now);
                     server.execute(() -> {
