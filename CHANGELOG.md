@@ -5,6 +5,21 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **W2-04 / A7**: `GuardianSuggestions.ACTIONS` now sources from
+  `ActionTokens.ALL` — the canonical parser-verified list. Removes 12 tokens
+  the parser rejected (`+kill`, `-kill`, `+chat`, `-chat`, `+command`,
+  `-command`, `+click`, `-click`, `+sign`, `-sign`, `+username`, `-username`)
+  and adds 23 missing ones (`burn`, `ignite`, `fade`, `form`, `spread`,
+  `dispense`, `decay`, `entityblock`, `explosion`, `craft`, `spawn`,
+  `einteract`, `grow`, `portal`, `populate`, `+piston`, `-piston`, `+bucket`,
+  `-bucket`, `+hanging`, `-hanging`, `+hopper`, `-hopper`) plus the family
+  umbrellas `entity`, `world`, `message`, `interact`. Regression test in
+  `ActionTokenParityTest` locks the invariant.
+
 ## [1.1.5] — 2026-07-01
 
 **CoreProtect-style vanilla-griefer allowlist at the listener — the real fix
