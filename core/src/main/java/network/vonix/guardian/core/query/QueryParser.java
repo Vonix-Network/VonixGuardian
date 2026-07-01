@@ -253,6 +253,12 @@ public final class QueryParser {
         if (!anyComponent) {
             throw bad(tok, "empty duration");
         }
+        // Clamp: a caller-typed duration that rounds down to less than 1 second
+        // (e.g. `t:0.001s`) is almost certainly a mistake but should not silently
+        // become "0 ms ago = now". Clamp to 1 second for CoreProtect parity.
+        if (total < 1_000L) {
+            total = 1_000L;
+        }
         return total;
     }
 
