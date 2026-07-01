@@ -168,10 +168,30 @@ public record GuardianConfig(
     /**
      * Permission resolution settings.
      *
-     * @param useLuckPerms   try to bridge LuckPerms via reflection
-     * @param defaultOpLevel fallback permission level required when LP is absent
+     * @param useLuckPerms      try to bridge LuckPerms via reflection
+     * @param defaultOpLevel    fallback permission level required when LP is absent and no
+     *                          per-node override applies
+     * @param perNodeOpLevels   optional per-{@code PermissionNode.node()} override map for the
+     *                          op-level fallback path (values must be in {@code [0,4]}).
+     *                          {@code null} is tolerated and treated as an empty map. Unknown
+     *                          keys are logged as WARN by the validator and skipped at runtime.
+     *                          Added in W3-B8.
      */
-    public record Permissions(boolean useLuckPerms, int defaultOpLevel) {}
+    public record Permissions(
+        boolean useLuckPerms,
+        int defaultOpLevel,
+        java.util.Map<String, Integer> perNodeOpLevels
+    ) {
+        /** Backward-compat constructor for callers/tests written before {@code perNodeOpLevels} existed. */
+        public Permissions(boolean useLuckPerms, int defaultOpLevel) {
+            this(useLuckPerms, defaultOpLevel, java.util.Map.of());
+        }
+
+        /** Null-safe accessor: returns an empty map when the field is {@code null}. */
+        public java.util.Map<String, Integer> perNodeOpLevelsOrEmpty() {
+            return perNodeOpLevels == null ? java.util.Map.of() : perNodeOpLevels;
+        }
+    }
 
     /**
      * {@code /vg lookup} UX settings.
@@ -241,7 +261,7 @@ public record GuardianConfig(
                 entityChangeAllowlist,  // entityChangeAllowlist: empty = vanilla-only
                 false                    // entityChangeLogAllEntities: DO NOT flip this
             ),
-            new Permissions(true, 3),
+            new Permissions(true, 3, java.util.Map.of()),
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
             new Purge(86_400L, 2_592_000L, 0L, "03:30"),
@@ -362,8 +382,38 @@ public record GuardianConfig(
 
         if (permissions == null) {
             errors.add("permissions: section missing");
-        } else if (permissions.defaultOpLevel < 0 || permissions.defaultOpLevel > 4) {
-            errors.add("permissions.defaultOpLevel: must be in [0,4] (got " + permissions.defaultOpLevel + ")");
+        } else {
+            if (permissions.defaultOpLevel < 0 || permissions.defaultOpLevel > 4) {
+                errors.add("permissions.defaultOpLevel: must be in [0,4] (got " + permissions.defaultOpLevel + ")");
+            }
+            java.util.Map<String, Integer> overrides = permissions.perNodeOpLevels;
+            if (overrides != null) {
+                Set<String> known = new java.util.HashSet<>();
+                for (network.vonix.guardian.core.perms.PermissionNode n
+                        : network.vonix.guardian.core.perms.PermissionNode.values()) {
+                    known.add(n.node());
+                }
+                for (java.util.Map.Entry<String, Integer> e : overrides.entrySet()) {
+                    String key = e.getKey();
+                    Integer val = e.getValue();
+                    if (key == null) {
+                        errors.add("permissions.perNodeOpLevels: null key not allowed");
+                        continue;
+                    }
+                    if (val == null) {
+                        errors.add("permissions.perNodeOpLevels[" + key + "]: value must be non-null");
+                        continue;
+                    }
+                    if (val < 0 || val > 4) {
+                        errors.add("permissions.perNodeOpLevels[" + key
+                            + "]: value must be in [0,4] (got " + val + ")");
+                    }
+                    if (!known.contains(key)) {
+                        // Unknown keys are NOT hard errors — WARN and skip at runtime.
+                        LOG.warn("permissions.perNodeOpLevels: unknown node \"{}\" — will be ignored", key);
+                    }
+                }
+            }
         }
 
         if (lookup == null) {

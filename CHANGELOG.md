@@ -101,6 +101,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `LookupPermissionFilterTest.java` (6 tests — console bypass,
     grant-all, deny-all, rollback fall-open on messages, empty in/out,
     null-arg rejection).
+- **W3-B8: per-node op-level fallback for granular permission gating when
+  LuckPerms is absent.** Previously VonixGuardian fell back to a single
+  coarse `permissions.defaultOpLevel` regardless of which `PermissionNode`
+  a subcommand required — so once LuckPerms was out of the picture,
+  `/vg purge` and `/vg lookup` were gated identically. Closes the
+  CoreProtect-parity gap called out in `NIGHTSHIFT.md` B8 and
+  `COREPROTECT-COMPARISON.md`.
+  - New `PermissionResolver.has(UUID, PermissionNode)` overload consults
+    LuckPerms first (unchanged), and on `UNDEFINED`/absent LP falls back
+    to `perNodeOpLevel(node)` — which honors `PermissionNode.defaultOpLevel()`
+    plus any operator override.
+  - New `PermissionResolver.perNodeOpLevel(PermissionNode)` reads
+    `GuardianConfig.Permissions.perNodeOpLevels`; out-of-range or unknown
+    entries are ignored with a WARN and the node's default is used.
+  - New optional `permissions.perNodeOpLevels: Map<String,Integer>` config
+    field. Keys must be known `PermissionNode.node()` strings; values 0..4.
+    Unknown keys → WARN and skip. `null` is tolerated and treated as an
+    empty map.
+  - `ConfigLoader.migrateForwardCompat` backfills `perNodeOpLevels = {}` on
+    pre-W3-B8 configs (same forward-compat treatment as W2-06's schema
+    migration).
+  - Legacy `PermissionResolver.has(UUID, String)` still works, but now
+    emits a throttled one-shot WARN per known node string, nudging callers
+    to migrate to the enum-based overload so per-node overrides are
+    honored.
+  - Regression coverage: `PermissionResolverPerNodeTest`,
+    `PermsPerNodeOverrideTest`. Existing string-based tests unchanged.
 
 ### Fixed
 
