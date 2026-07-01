@@ -679,6 +679,54 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         return dialect();
     }
 
+    // ------------------------------------------------------------------ API PROBE (W3-B12)
+
+    @Override
+    public boolean hasActionsInWindow(UUID user, String worldId, int x, int y, int z,
+                                      ActionType[] types, long withinMillis) throws SQLException {
+        if (user == null) throw new IllegalArgumentException("user must not be null");
+        if (worldId == null) throw new IllegalArgumentException("worldId must not be null");
+
+        // Build the WHERE incrementally so we can skip clauses when unbounded / any-type.
+        StringBuilder sb = new StringBuilder(
+                "SELECT 1 FROM vg_actions a "
+              + "JOIN vg_users  u ON u.id = a.user_id "
+              + "JOIN vg_worlds w ON w.id = a.world_id "
+              + "WHERE u.uuid = ? AND w.world_key = ? "
+              + "AND a.x = ? AND a.y = ? AND a.z = ?");
+        List<Object> binds = new ArrayList<>();
+        binds.add(user.toString());
+        binds.add(worldId);
+        binds.add(x);
+        binds.add(y);
+        binds.add(z);
+
+        if (withinMillis > 0L) {
+            sb.append(" AND a.ts >= ?");
+            binds.add(System.currentTimeMillis() - withinMillis);
+        }
+        if (types != null && types.length > 0) {
+            sb.append(" AND a.type IN (");
+            for (int i = 0; i < types.length; i++) {
+                if (i > 0) sb.append(',');
+                sb.append('?');
+                binds.add(types[i].id());
+            }
+            sb.append(')');
+        }
+        sb.append(" LIMIT 1");
+
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(sb.toString())) {
+            bind(ps, binds);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } finally {
+            release(c);
+        }
+    }
+
     // ------------------------------------------------------------------ UTIL
 
     static void bind(PreparedStatement ps, List<Object> binds) throws SQLException {
