@@ -15,6 +15,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.decoration.HangingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -32,6 +33,7 @@ import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDestroyBlockEvent;
+import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.event.entity.player.ItemEntityPickupEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerContainerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
@@ -638,6 +640,97 @@ public final class NeoForgeEvents {
     // CommonHooks#onFillBucket without a fire-able event. CoreProtect-parity bucket
     // logging here requires either (a) a Mixin into BucketItem#use, or (b) listening
     // to BlockEvent.FluidPlaceBlockEvent + a UseItemOnBlockEvent pre-check. Deferred.
+
+    // ====================================================================== hanging entities
+
+    /**
+     * W2-02 / A10: HANGING_PLACE submit path.
+     * <p>NeoForge has no dedicated {@code HangingPlaceEvent} (that's a Bukkit API).
+     * We observe hanging entities being added to the world via {@link EntityJoinLevelEvent}
+     * and filter for {@link HangingEntity} subclasses (ItemFrame, GlowItemFrame,
+     * Painting, LeashFenceKnotEntity). Attribution runs through the shared
+     * damage-history resolver so player-placed frames get the placer as actor;
+     * synthetic sources fall back to {@link Sentinel#UNKNOWN}.
+     */
+    @SubscribeEvent
+    public static void onHangingJoinLevel(EntityJoinLevelEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            Entity e = ev.getEntity();
+            if (!(e instanceof HangingEntity)) return;
+            // Loaded-from-disk = chunk reload, not a fresh place — skip to avoid a flood
+            // of replayed placements every time the chunk paging cycles.
+            if (ev.loadedFromDisk()) return;
+            String type = EntitySentinel.of(e);
+            BlockPos pos = e.blockPosition();
+            Attribution attr = NeoForgeBootstrap.resolver != null
+                    ? NeoForgeBootstrap.resolver.resolve(e, System.currentTimeMillis())
+                    : Attribution.unknown(EntitySentinel.UNKNOWN);
+            s.submitHangingPlace(attr.actorUuid(),
+                    attr.actorName() != null ? attr.actorName() : Sentinel.UNKNOWN,
+                    WorldKey.of(ev.getLevel()),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    type, SourceTagger.tag(e));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onHangingJoinLevel failed", t);
+        }
+    }
+
+    /**
+     * W2-02 / A10: HANGING_BREAK submit path — player-caused only.
+     * <p>{@link AttackEntityEvent} fires the tick a player hits an entity; if the
+     * target is a {@link HangingEntity} vanilla will remove it on that same swing.
+     * We log the break here with the attacking player as actor.
+     * <p>TODO(A9-style): arrow / explosion / mob-caused hanging breaks need a mixin
+     * on {@code HangingEntity#kill()} or {@code HangingEntity#hurt}; NeoForge
+     * exposes no direct event for those paths. Deferred to the A9-mixin wave.
+     */
+    @SubscribeEvent
+    public static void onAttackHanging(AttackEntityEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            Player p = ev.getEntity();
+            Entity target = ev.getTarget();
+            if (p == null || !(target instanceof HangingEntity)) return;
+            String type = EntitySentinel.of(target);
+            BlockPos pos = target.blockPosition();
+            s.submitHangingBreak(p.getUUID(), p.getName().getString(),
+                    WorldKey.of(p.level()),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    type, SourceTagger.tag(target));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onAttackHanging failed", t);
+        }
+    }
+
+    // ====================================================================== vanilla block-state changes (Burn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay)
+
+    // TODO(A9-style, W2-02): NeoForge exposes NO fire-able events for
+    //   BlockBurnEvent / BlockIgniteEvent / BlockFadeEvent / BlockFormEvent /
+    //   BlockSpreadEvent / BlockDispenseEvent / LeavesDecayEvent — those are
+    //   Bukkit/Spigot APIs; NeoForge only patches the underlying vanilla classes
+    //   without an event surface. Wiring these on the NeoForge cell requires
+    //   mixins:
+    //     - BURN         → mixin on FireBlock#tick / #checkBurnOut around the
+    //                       BlockPos removal (state == AIR before, was flammable).
+    //     - IGNITE       → mixin on FireBlock#tick where a neighbour is set to
+    //                       Blocks.FIRE.defaultBlockState() (also FlintAndSteelItem
+    //                       and LightningBoltEntity#spawnFire paths).
+    //     - FADE         → mixin on IceBlock#tick, FrostedIceBlock#slightlyMelt,
+    //                       SnowLayerBlock#tick.
+    //     - FORM         → mixin on ConcretePowderBlock, WaterBlock (freeze),
+    //                       LavaBlock/FireBlock (obsidian/cobble/basalt), etc.
+    //     - SPREAD       → mixin on SpreadingSnowyDirtBlock#tick (grass/mycelium),
+    //                       MushroomBlock#growMushroom, VineBlock#tick.
+    //     - DISPENSE     → mixin on DispenserBlock#dispenseFrom capturing the
+    //                       ejected ItemStack and the origin BlockPos.
+    //     - LEAVES_DECAY → mixin on LeavesBlock#randomTick where the block is
+    //                       replaced with air after LeavesBlock#decaying returns true.
+    //   All of these need a companion `guardian.mixins.json` and would be scheduled
+    //   into a dedicated mixin wave (A9-mixin). Handlers are intentionally left
+    //   unwired here so the audit stays honest: nothing "kind of" logs these.
 
     // ====================================================================== commands wiring
 
