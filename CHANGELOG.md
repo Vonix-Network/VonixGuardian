@@ -123,7 +123,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     + waxed), `LegacySignSubmitTest` (legacy 7-arg overload persists NULL
     metadata and the interface's default 10-arg method routes back through
     the legacy impl).
-
 - **`core/build.gradle`** — `publishing {}` block with a `maven(MavenPublication)` from `components.java` (POM: name, description, url, MIT license, developer, SCM) and a `GitHubPackages` remote (`https://maven.pkg.github.com/Vonix-Network/VonixGuardian`, credentials via `GITHUB_ACTOR` / `GITHUB_TOKEN` env vars). Artifact coord: `network.vonix.guardian:vonixguardian-core:1.1.7`.
 - **`docs/API.md`** — new **§1a "Using in Gradle"** section covering the Maven coordinate, `mavenLocal()` and `GitHubPackages` repository snippets, the `compileOnly(...) { transitive = false }` pattern (so consumers don't pull sqlite/hikaricp/gson onto their compile classpath), and a bootstrap example that resolves via the Maven coord instead of a locally-built jar.
 

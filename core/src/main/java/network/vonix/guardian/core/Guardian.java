@@ -11,8 +11,10 @@ import network.vonix.guardian.core.api.GuardianAPI;
 import network.vonix.guardian.core.api.VonixGuardianAPI;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.config.PerWorldConfigStore;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
+import network.vonix.guardian.core.event.PerWorldEventHook;
 import network.vonix.guardian.core.event.Sentinel;
 import network.vonix.guardian.core.filter.VanillaGrieferSet;
 import network.vonix.guardian.core.logfile.JsonLinesLogFile;
@@ -87,6 +89,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     /** Path to the on-disk config.json; kept so /vg reload can re-read it without any cell-side plumbing. */
     private volatile Path configPath;
     private final AutoPurgeScheduler autoPurgeScheduler;
+    /** Per-world config override cache (W3-B5); {@code null} when the {@code worlds/} dir doesn't exist. */
+    private volatile PerWorldConfigStore perWorldStore;
 
     /** Latched on first {@link #api()} call. */
     private final AtomicReference<GuardianAPI> apiRef = new AtomicReference<>();
@@ -211,7 +215,21 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         LOG.info(MARKER, "VonixGuardian online.");
         AutoPurgeScheduler autoPurge = AutoPurgeScheduler.create(config, purgeEng, dao);
         autoPurge.start();
-        return new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir, autoPurge);
+        Guardian g = new Guardian(config, dao, queue, logHolder, gate, perms, rollback, purgeEng, undo, theme, coal, dataDir, autoPurge);
+
+        // W3-B5: per-world config overrides (CoreProtect world_nether.yml shadow pattern).
+        // Only wire when the operator has actually created a worlds/ dir — no silent surprise
+        // registration on fresh installs.
+        Path worldsDir = dataDir.resolve("config").resolve("vonixguardian").resolve("worlds");
+        if (java.nio.file.Files.isDirectory(worldsDir)) {
+            PerWorldConfigStore store = new PerWorldConfigStore(config.actions());
+            store.reload(worldsDir);
+            gate.addHook(new PerWorldEventHook(store, config.actions()));
+            g.perWorldStore = store;
+            LOG.info(MARKER, "Per-world overrides loaded: {} world(s) — {}",
+                    store.overriddenWorlds().size(), store.overriddenWorlds());
+        }
+        return g;
     }
 
     // -------------------------------------------------------------------- getters
@@ -230,6 +248,12 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * check {@link AutoPurgeScheduler#isEnabled()} before assuming it runs.
      */
     public AutoPurgeScheduler autoPurgeScheduler() { return autoPurgeScheduler; }
+    /**
+     * Per-world config override store (W3-B5). Returns {@code null} when the
+     * {@code config/vonixguardian/worlds/} dir did not exist at boot AND has
+     * never been created via {@code /vg reload}.
+     */
+    public PerWorldConfigStore perWorldStore() { return perWorldStore; }
     public EventSubmitter submitter()      { return this; }
 
     /**
@@ -408,6 +432,51 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.config = merged;
         this.gate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
+
+        // W3-B5: per-world overrides. Point the store at the new root, re-scan the
+        // worlds/ dir (files may have been added/removed), and re-register the hook
+        // on the freshly-built gate. If no store was ever created (fresh install
+        // without worlds/ dir) but the dir now exists, build one now.
+        try {
+            Path worldsDir = dataDir != null
+                ? dataDir.resolve("config").resolve("vonixguardian").resolve("worlds")
+                : null;
+            PerWorldConfigStore store = this.perWorldStore;
+            if (worldsDir != null && java.nio.file.Files.isDirectory(worldsDir)) {
+                if (store == null) {
+                    store = new PerWorldConfigStore(merged.actions());
+                    this.perWorldStore = store;
+                } else {
+                    store.updateRoot(merged.actions());
+                }
+                java.util.Set<String> before = new java.util.HashSet<>(store.overriddenWorlds());
+                store.reload(worldsDir);
+                java.util.Set<String> after = store.overriddenWorlds();
+                this.gate.addHook(new PerWorldEventHook(store, merged.actions()));
+                if (!before.equals(after)) {
+                    java.util.Set<String> added = new java.util.HashSet<>(after);
+                    added.removeAll(before);
+                    java.util.Set<String> removed = new java.util.HashSet<>(before);
+                    removed.removeAll(after);
+                    hot.add("per-world: " + after.size() + " world(s) loaded"
+                            + (added.isEmpty() ? "" : ", added=" + added)
+                            + (removed.isEmpty() ? "" : ", removed=" + removed));
+                } else if (!after.isEmpty()) {
+                    hot.add("per-world: " + after.size() + " world(s) reloaded (" + after + ")");
+                }
+            } else if (store != null) {
+                // worlds/ dir vanished — clear the cache. Hook stays registered but
+                // now always returns PASS.
+                store.updateRoot(merged.actions());
+                boolean hadEntries = !store.overriddenWorlds().isEmpty();
+                store.reload(worldsDir);
+                this.gate.addHook(new PerWorldEventHook(store, merged.actions()));
+                if (hadEntries) hot.add("per-world: cleared (worlds/ dir gone)");
+            }
+        } catch (Exception e) {
+            errs.add("per-world reload failed: " + e.getMessage());
+            LOG.warn(MARKER, "per-world reload failed", e);
+        }
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
         // (build a new JsonLinesLogFile at the same directory).
