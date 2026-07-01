@@ -5,6 +5,44 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **W3-B7 — CoreProtect-compatible child permission nodes + silent result
+  filter.** Closes the granular-permissions gap flagged in
+  `docs/COREPROTECT-COMPARISON.md` and `NIGHTSHIFT.md` B7. Admins can now
+  hand out scoped access (e.g. "can lookup blocks but not chat", "can
+  rollback containers but not blocks") using LuckPerms-friendly nodes that
+  mirror CoreProtect's own naming.
+  - `core.perms.PermissionNode` gains 12 new child constants:
+    `LOOKUP_BLOCK`, `LOOKUP_CONTAINER`, `LOOKUP_ITEM`, `LOOKUP_KILL`,
+    `LOOKUP_SESSION`, `LOOKUP_SIGN` (opLevel 2);
+    `ROLLBACK_BLOCK`, `ROLLBACK_CONTAINER`, `ROLLBACK_ITEM`,
+    `RESTORE_BLOCK`, `RESTORE_CONTAINER`, `RESTORE_ITEM` (opLevel 3). All
+    strings follow `vonixguardian.<family>.<child>` so
+    `vonixguardian.lookup.*` LuckPerms wildcards work naturally.
+  - `PermissionNode.childFor(family, category)` and
+    `PermissionNode.childForAction(family, actionType)` dispatch a raw
+    action to its tightest applicable child, or fall-open to the family
+    node when no per-category scoping is defined (e.g. rollback-of-chat).
+  - New `core.perms.CommandGate` utility centralises the LP-first +
+    op-level-fallback check so cells no longer hand-write raw permission
+    strings for family-level gating.
+  - New `core.perms.LookupPermissionFilter` runs every lookup-result row
+    through `childForAction` and silently drops the ones the source can't
+    see — the CoreProtect contract of *"show only what you're allowed to
+    inspect"*, applied automatically inside `Lookup.runWithFilter` in all
+    8 loader cells (1.18.2 forge/fabric, 1.19.2 forge/fabric, 1.20.1
+    forge/fabric, 1.21.1 fabric/neoforge).
+  - Regression coverage:
+    `core/src/test/java/network/vonix/guardian/core/perms/PermissionNodeChildTest.java`
+    (10 tests — uniqueness, opLevel bounds, family/category dispatch,
+    fall-open, null rejection) and
+    `LookupPermissionFilterTest.java` (6 tests — console bypass,
+    grant-all, deny-all, rollback fall-open on messages, empty in/out,
+    null-arg rejection).
+
 ### Fixed
 
 - **`/vg reload` now actually reloads** (Wave-3 B1). Previously the command
