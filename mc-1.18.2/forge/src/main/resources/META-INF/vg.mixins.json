@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "network.vonix.guardian.mc.v1_18_2.forge.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "vg.refmap.json",
+  "mixins": [],
+  "server": [],
+  "client": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
