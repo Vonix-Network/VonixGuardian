@@ -50,6 +50,7 @@ neoForge {
 repositories {
     mavenCentral()
     maven { url 'https://maven.parchmentmc.org/' }
+    maven { url 'https://repo.spongepowered.org/repository/maven-public/' }
 }
 
 configurations {
@@ -58,6 +59,9 @@ configurations {
 }
 
 dependencies {
+    // Mixin API provided by the NeoForge loader at runtime; compileOnly is enough.
+    compileOnly 'org.spongepowered:mixin:0.8.5'
+
     // Shade pure-Java libs (gson, hikaricp) — safe to relocate.
     // sqlite-jdbc has JNI native code; relocating Java classes breaks JNI symbol lookup.
     // Ship it as a JarInJar nested jar (NeoForge's official multi-mod-conflict resolution).

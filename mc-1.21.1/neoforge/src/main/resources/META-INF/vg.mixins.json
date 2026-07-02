@@ -6,7 +6,12 @@
   "refmap": "vg.refmap.json",
   "mixins": [
     "BucketItemMixin",
-    "MilkBucketItemMixin"
+    "MilkBucketItemMixin",
+    "FireBlockMixin",
+    "IceBlockMixin",
+    "SpreadingSnowyDirtBlockMixin",
+    "LeavesBlockMixin",
+    "DispenserBlockMixin"
   ],
   "server": [],
   "client": [],
