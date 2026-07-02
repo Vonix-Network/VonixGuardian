@@ -120,7 +120,7 @@ class VonixGuardianAPITest {
     void apiVersion_and_testAPI_are_stable() {
         VonixGuardianAPI api = guardian.api();
         assertThat(api.apiVersion()).isEqualTo(1);
-        assertThat(api.pluginVersion()).isEqualTo("1.2.1");
+        assertThat(api.pluginVersion()).isEqualTo("1.2.2");
         assertThat(api.testAPI()).isTrue();
         // Latching: repeat should return same instance.
         assertThat(guardian.api()).isSameAs(api);
