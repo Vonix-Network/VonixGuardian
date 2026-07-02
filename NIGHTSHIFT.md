@@ -1,158 +1,55 @@
-# NIGHTSHIFT — VonixGuardian CoreProtect 1:1 Port + Fixes
+# v1.2.0 One-Big-Wave Plan
 
-Authorized 2026-07-01 by WeedMeister via `$ultracode`: "fan out subagents to rebuild sections with industry grade best practices to match coreprotect as a 1:1 port or better considering its for modded."
+**Baseline:** `ac78644` (v1.1.8 tip)
+**Target:** `v1.2.0` — production-ready CoreProtect parity
+**Style:** ONE fan-out wave (WeedMeister standing preference).
 
-**Baseline**: `v1.1.5-entity-filter` @ `d47b6c1` (has the CP-comparison + audit docs from wave-1).
+## What subagents own (disjoint file trees, ZERO shared write surface)
 
-**Target**: `v1.2.0` (`main` branch), consuming intermediate `v1.1.6` for the surgical fixes.
+Every subagent writes ONLY to files in their `FILES YOU OWN` list. Cross-cutting concerns (schema bumps, `EventGate` wiring) are pre-wired on main-thread BEFORE dispatch.
 
----
+### Wave A — 15 parallel subagents
 
-## Total gap inventory (from 7 wave-1 subagents + 1 wiring auditor)
+| ID | Task | Files owned |
+|----|------|-------------|
+| **W4-01** | Comparison doc refresh (v1.1.5 → v1.1.8 state) | `docs/comparison/00-summary.md`, `docs/comparison/01-commands.md`, `docs/comparison/02-actions.md`, `docs/comparison/03-storage.md`, `docs/comparison/04-config.md`, `docs/comparison/05-perms.md`, `docs/comparison/06-api.md`, `docs/comparison/07-modded.md`, `docs/comparison/08-attribution.md`, `docs/comparison/09-loader.md`, `docs/comparison/10-interop.md` — ONE agent writes all fragments |
+| **W4-02** | Command wiring audit — trace every `/vg` subcommand from `Commands.literal` through handler to core → assert wired | `docs/COMMAND-AUDIT-1.2.0.md` (docs-only report; MAY file follow-up bugs, MUST NOT edit source) |
+| **W4-03** | Fabric event wiring parity (BLOCK_BREAK using pre-existing `PlayerBlockBreakEvents`, LivingDamageEvents, item toss via Fabric API where possible — NO mixins yet) | `mc-1.18.2/fabric/…/FabricEvents.java`, `mc-1.19.2/fabric/…/FabricEvents.java`, `mc-1.20.1/fabric/…/FabricEvents.java`, `mc-1.21.1/fabric/…/FabricEvents.java` |
+| **W4-04** | Fabric mixin infrastructure — `vg.mixins.json` per cell + Mixin plugin gradle wiring + shared `AbstractBlockPlaceMixin` in `mc-XXX/fabric/src/main/java/…/mixin/` | `mc-*/fabric/src/main/resources/vg.mixins.json` (4 files), `mc-*/fabric/build.gradle` (4 files), `mc-*/fabric/src/main/java/…/mixin/*.java` (new package) |
+| **W4-05** | Forge/NeoForge mixin infrastructure — parallel to W4-04 for world-events + NeoForge 1.21.1 bucket | `mc-*/forge/src/main/resources/META-INF/vg.mixins.json` (3 files), `mc-1.21.1/neoforge/src/main/resources/META-INF/vg.mixins.json`, `mc-*/forge/build.gradle` (3 files), `mc-1.21.1/neoforge/build.gradle`, `mc-*/{forge,neoforge}/src/main/java/…/mixin/*.java` |
+| **W4-06** | World-events mixins (Forge/NeoForge cells): `FireBlock#tick`, `IceBlock#tick`, `SpreadingSnowyDirtBlock#tick`, `LeavesBlock#randomTick`, `DispenserBlock#dispenseFrom` — inject `submitBurn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay` calls | `mc-*/forge/src/main/java/.../mixin/FireBlockMixin.java` etc. (owned by this task, not W4-05); W4-05 makes mixin plugin available |
+| **W4-07** | NeoForge 1.21.1 bucket mixin — `BucketItem#use` + `MilkBucketItem#finishUsingItem` | `mc-1.21.1/neoforge/src/main/java/.../mixin/BucketItemMixin.java`, `mc-1.21.1/neoforge/src/main/java/.../mixin/MilkBucketItemMixin.java` |
+| **W4-08** | WorldEdit-modded soft-dep bridge (`r:#worldedit`) — `WorldEditBridge.java` core + `WorldEditSelectionRequest` marker on `QueryFilter` + lookup executor resolves at query time. Reflection-only; NO import of `com.sk89q.*`. | `core/src/main/java/network/vonix/guardian/core/worldedit/WorldEditBridge.java`, `core/src/main/java/network/vonix/guardian/core/query/QueryFilter.java` (marker field), `core/src/test/java/…/worldedit/WorldEditBridgeTest.java` |
+| **W4-09** | PreLogEvent native bus adapters — Forge/NeoForge/Fabric cell-side wrappers that fire a native cancellable event on top of `PreLogDispatcher.setNative(...)` | `mc-*/forge/src/main/java/…/bridge/ForgePreLogBridge.java` (3 files), `mc-1.21.1/neoforge/src/main/java/…/bridge/NeoForgePreLogBridge.java`, `mc-*/fabric/src/main/java/…/bridge/FabricPreLogBridge.java` (4 files) — one per cell |
+| **W4-10** | `/vg teleport` — teleport to any lookup result row (permission `vonixguardian.command.teleport`, opLevel 3) | `core/…/rollback/TeleportRequest.java`, `mc-*/*/…/GuardianCommands.java` `Teleport.run` block (8 cells; text-replicate) |
+| **W4-11** | `/vg give` — reissue an item from a lookup result (permission gated, default deny) — Note: modded-safe implementation, use registry-based item lookup | `core/…/api/GiveRequest.java`, 8 cells' `GuardianCommands.java` `Give.run` |
+| **W4-12** | i18n stub — English-only extraction into `core/…/i18n/Messages.java` + `en_us.properties` in resources. Every hardcoded chat/log line uses `Messages.get("key")` fallback pattern. | `core/…/i18n/Messages.java`, `core/src/main/resources/lang/en_us.properties`, `core/src/main/resources/lang/README.md` (translator instructions) — cells NOT touched this wave |
+| **W4-13** | `/vg config` inspector — `/vg config get <key>` / `/vg config set <key> <value>` for hot-swap-safe fields (matches CP's runtime config surface) | `core/…/config/ConfigCommandHandler.java`, 8 cells' `GuardianCommands.java` `Config.get/set` blocks |
+| **W4-14** | Ecosystem plugin discoverability — `docs/PLUGINS.md` (how to build a soft-dep against VG's API v1) + Maven Central publish config (extends W3-B14's GH Packages) | `docs/PLUGINS.md`, `core/build.gradle` (publishing block extension), NEW: `docs/API.md` update |
+| **W4-15** | Final verify + release scaffolding — dry-run `:core:build` on integration branch, produce a `docs/history/NIGHTSHIFT-v1.2.0.md` from current `NIGHTSHIFT.md`, prep an empty `NIGHTSHIFT.md` for v1.3.0 | `docs/history/NIGHTSHIFT-v1.2.0.md`, `NIGHTSHIFT.md` (rewrite) |
 
-### A. Surgical bugs — ship as v1.1.6 (parallel-safe, small)
+## Pre-wire (main thread, before dispatch)
 
-| # | Bug | Severity | File |
-|---|-----|----------|------|
-| A1 | `RollbackPlan.isRollbackable` silent default swallows 14 handlers | 🚨 CRITICAL | `RollbackPlan.java:96-108` |
-| A2 | Twin `RollbackEngine.isRollbackable` same bug (unused, drift-prone) | HIGH | `RollbackEngine.java:477-488` |
-| A3 | `stripMobPrefix` duplicated verbatim in 4 sister cells | HIGH | 4 cells' events |
-| A4 | Coalescer/whitelist ordering by convention not enforcement | HIGH | `Guardian.java:410-429` |
-| A5 | `wind_charge`/`breeze_wind_charge` are `Projectile`, never match `LivingEntity` | MEDIUM | `VanillaGrieferSet.java:47-48` |
-| A6 | Hot-path `EntitySentinel.of()` + `stripMobPrefix` allocations | MEDIUM | 4 cells' events |
-| A7 | `GuardianSuggestions.ACTIONS` advertises 12 tokens the parser rejects → parse error on tab | HIGH | `GuardianSuggestions.java:62-75` |
-| A8 | `EventSubmitter.submitBurn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay` — zero handlers wired | HIGH | 4 cells' events |
-| A9 | NeoForge 1.21.1 `BUCKET_EMPTY`/`FILL` unwired (upstream removed `FillBucketEvent`) | HIGH | `NeoForgeEvents.java:636` |
-| A10 | `HANGING_PLACE`/`HANGING_BREAK` refuse-rollback wired but no submit path | HIGH | 4 cells' events |
-| A11 | `target VARCHAR(192) NOT NULL` truncated by chat/command/sign/explosion submits (CP-Berk field report 2026-07-01 08:05) | 🚨 CRITICAL | `Schema.java:180`, `Guardian.java:296-310`, `ActionBuilder.java:170` |
+Nothing shared surfaces to pre-wire that doesn't already exist — v1.1.7 pre-wire (`EventHook`, `PreLogEvent`, `PermissionNode`) covers everything. But I DO need to:
 
-### B. Real feature gaps — ship as v1.2.0 (multi-wave)
+1. Bump `mod_version` to `1.2.0` in `gradle.properties` on the integration branch
+2. Bump `GuardianAPI.PLUGIN_VERSION = "1.2.0"`
+3. Create integration branch `integration/v1.2.0` from `v1.1.8`
+4. Push it so subagents can fork from a stable ref
 
-| # | Feature | Effort | Files |
-|---|---------|--------|-------|
-| B1 | `/vg reload` real handler (currently a stub) | S | `Reload.java` + `ConfigLoader` |
-| B2 | `/vg undo` real world-revert via inverse (currently just pops history) | M | `Undo.java` + `RollbackEngine` |
-| B3 | `/vg migrate-db` SQLite ↔ MySQL migration | L | new `MigrateDb.java` + DAO glue |
-| B4 | Auto-purge daemon (`auto-purge: 180d`, `auto-purge-time: 03:30`) | M | new `AutoPurgeScheduler.java` |
-| B5 | Per-world config overrides (`world_nether.json` shadow) | M | `ConfigLoader` extension |
-| B6 | `blacklist.txt` — users / commands / blocks / entities / `id@user` composites | M | new `BlacklistFile.java` + `EventGate` wire |
-| B7 | 12 child permission nodes (`vonixguardian.command.lookup.<category>`) | M | `CommandSpec` + `PermissionResolver` |
-| B8 | Op-level granular fallback (currently all-or-nothing when LP absent) | S | `PermissionResolver` |
-| B9 | `t:` decimal + range syntax (`t:2.5h`, `t:1h-2h`) | S | `QueryParser` |
-| B10 | `#optimize` — real MySQL `OPTIMIZE TABLE` (currently no-op) | S | `MysqlDao` |
-| B11 | `PreLogEvent` public cancellable — third-party mods can intercept | M | new event class + `EventSubmitter` gate |
-| B12 | `hasPlaced` / `hasRemoved` / `queueLookup` / `APIVersion()` / `testAPI()` API methods | S | `Guardian` + `GuardianDao` |
-| B13 | Per-family typed result classes (`BlockResult`, `ContainerResult`, …) | M | new `result/` package |
-| B14 | Maven publish config (`publishing {}` block never written) | S | `core/build.gradle` |
-| B15 | Sign v24 columns (front/back/dye/waxed) | M | `Schema` + `submitSign` sig + 4 cells |
-| B16 | `r:#worldedit` / `r:#we` — real WorldEdit selection integration (recon: does WE-forge/FAWE exist and how do we bridge without a hard dep?) | recon+M | `QueryParser` + soft-dep bridge |
+## Rules for EVERY subagent
 
-### C. Deferred to v1.2.1 (needs mixin wave; documented, not built now)
+- Own worktree `/tmp/vg-w4-<XX>-wt`
+- Base tag `integration/v1.2.0` (post-pre-wire SHA — I'll give the exact SHA in each context)
+- Build: `./gradlew -PbuildProfile=coreonly :core:build` MUST pass
+- For cells: `./gradlew -PbuildProfile=forgeonly :mc-1.20.1:forge:build -x test` MUST pass (or `:mc-1.21.1:neoforge:build` for NeoForge-touching tasks)
+- Fabric tasks: NO local aggregate build — CI will validate
+- CHANGELOG entries go to per-task file `changelog-fragments/W4-<XX>.md` (parent consolidates at integration time)
+- Push branch, no PR
 
-- C1: Fabric BLOCK_PLACE + LivingDestroyBlock + explosion + piston + item toss/pickup/craft + sign edit — all 4 Fabric cells need mixins. CHANGELOG v1.0.4 P0 backlog. Landing all 8 mod files with mixin conflicts is a whole engineering wave; safer to spec + design in v1.2.0 and ship in v1.2.1.
-- C2: Port `VanillaGrieferSet` gate to Fabric — depends on C1 landing.
-- C3: Language support (100+ ISO codes) — nice-to-have, not shipping v1.2.0.
+## Post-wave (main thread)
 
-### D. Out of scope forever
-
-- D1: Bukkit/Spigot/Paper build — CP owns that space. Deliberate.
-- D2: Networking API (`coreprotect.networking`) — out of scope for v1.x.
-- D3: Hytale — CP has a dedicated build. Not our target.
-- D4: Third-party integration ecosystem — external work, not code.
-
----
-
-## Waves
-
-Total: ~19 subagent tasks across 4 waves. Cap: 100 concurrent (Hermes config).
-
-### Wave 2 — v1.1.6 surgical patches (5 parallel subagents)
-
-Disjoint file ownership designed to avoid pitfall #7a (shared-registry writes):
-
-| Subagent | Task | FILES YOU OWN | DO NOT TOUCH |
-|---|---|---|---|
-| W2-01 | A1: Fix `RollbackPlan.isRollbackable` + regression test | `core/…/rollback/RollbackPlan.java`, new `core/…/rollback/RollbackPlanTest.java` | `RollbackEngine.java`, anything else |
-| W2-02 | A2 + LOW 2 doc: Delete twin `RollbackEngine.isRollbackable`, file GitHub issue reference for HANGING_PLACE TODO | `core/…/rollback/RollbackEngine.java` | `RollbackPlan.java` |
-| W2-03 | A3+A4+A5+A6: Centralize `stripMobPrefix` to `VanillaGrieferSet`, add `EntitySentinel.registryKeyOf()`, move whitelist check into `Guardian.submitEntityChangeBlock`, remove `wind_charge`/`breeze_wind_charge` dead entries | `core/…/filter/VanillaGrieferSet.java`, `core/…/common/EntitySentinel.java` (probably; verify), `core/…/Guardian.java` **submitEntityChangeBlock method only** | 4 cells' events — parent cleans up between waves |
-| W2-04 | A7: Fix `GuardianSuggestions.ACTIONS` → only advertise parser-accepted tokens; add regression test | 8 cells' `GuardianSuggestions.java`, new test | `QueryParser.java` |
-| W2-05 | A8+A9+A10: Wire missing burn/ignite/fade/form/spread/dispense/leaves_decay handlers + HANGING_PLACE/BREAK submit paths + investigate NeoForge 1.21.1 bucket alternative (mixin recommendation ok, we won't ship the mixin here) | `mc-1.18.2/forge/…/ForgeEvents.java`, `mc-1.19.2/forge/…/ForgeEvents.java`, `mc-1.20.1/forge/…/ForgeEvents.java`, `mc-1.21.1/neoforge/…/NeoForgeEvents.java` | Anything in `core/` |
-| W2-06 | A11: Widen `target` to `VARCHAR(4096)` via schema-version bump v1→v2 (`ALTER TABLE actions MODIFY target VARCHAR(4096) NOT NULL`), add regression test for a 512-char chat submit round-trip, AND audit `WriterQueue`/`JdbcWriter` retry-degradation policy for the "batch size=1 poison-row storm" WeedMeister flagged — recommend fix if amplification is real | `core/…/storage/Schema.java` (VERSION bump + column), new `core/…/storage/migration/V2WidenTarget.java` or equivalent, `core/…/storage/GuardianDao.java` (migration hook), new `core/…/storage/SchemaTargetWidthTest.java` | `Guardian.java`, cells' events, other `core/` subsystems |
-
-**Between-wave parent cleanup (main thread, sequential):**
-1. `git status --short` — rescue any uncommitted subagent work (pitfall #14)
-2. Remove now-redundant whitelist call + local `stripMobPrefix` helper from the 4 cells' `onLivingDestroyBlock` (uses new centralized API from W2-03). Python read/replace/write across 4 cells.
-3. `./gradlew :core:compileJava` (with correct JDK per pitfall #11)
-4. Bump `mod_version` 1.1.5 → 1.1.6 in `gradle.properties`
-5. Update `CHANGELOG.md` with v1.1.6 entry
-6. Tag `v1.1.6`, push to origin
-
-### Wave 3 — v1.2.0 additive features round A (7 parallel subagents)
-
-Purely additive, no schema-versioning conflict. Each owns disjoint files.
-
-| Subagent | Task | FILES YOU OWN |
-|---|---|---|
-| W3-01 | B1: `/vg reload` real handler | `Reload.java` in 8 cells (small), `ConfigLoader.reload()` |
-| W3-02 | B2: `/vg undo` real world-revert (calls inverse via `RollbackEngine.rollback`/`restore` on the popped `RollbackResult.plan`) | `Undo.java` in 8 cells, `UndoStack.java`, `RollbackResult.java` (may need to persist filter) |
-| W3-03 | B4: Auto-purge daemon | new `core/…/purge/AutoPurgeScheduler.java`, `Guardian.boot()` addition, `PurgeConfig` extension |
-| W3-04 | B5: Per-world config overrides | `ConfigLoader.java` extension, doc entry |
-| W3-05 | B6: `blacklist.txt` | new `core/…/blacklist/BlacklistFile.java` + `BlacklistMatcher.java`, `EventGate.java` wire |
-| W3-06 | B9: `t:` decimal + range syntax | `QueryParser.parseTime()`, new `TimeRange` record, tests |
-| W3-07 | B14: Maven publish config + B12 API methods (`hasPlaced`/`hasRemoved`/`queueLookup`/`APIVersion`/`testAPI`) | `core/build.gradle` (publishing block), `Guardian.java` (new methods), `GuardianDao.java` (new methods) |
-
-**Between-wave parent cleanup:**
-1. Rescue uncommitted work
-2. Compile check `:core`
-3. Commit each subagent's work with per-scope messages, push per commit (pitfall #5)
-
-### Wave 4 — v1.2.0 additive features round B (5 parallel subagents; needs Wave 3 done)
-
-Touches shared surfaces (permissions, event dispatch, schema).
-
-| Subagent | Task | FILES YOU OWN |
-|---|---|---|
-| W4-01 | B3: `/vg migrate-db` | new `core/…/storage/DbMigration.java`, `MigrateDb.java` in 8 cells |
-| W4-02 | B7+B8: 12 child perm nodes + granular op-level fallback | `CommandSpec.java`, `PermissionResolver.java`, 8 cells' `GuardianCommands.java` (permission-checks in lookup only) |
-| W4-03 | B10: `#optimize` real MySQL `OPTIMIZE TABLE` | `MysqlDao.java`, `PurgeEngine.java` |
-| W4-04 | B11: `PreLogEvent` public cancellable + soft-dep bridge doc | new `core/…/event/GuardianPreLogEvent.java`, `EventSubmitter.java` (add gate call), `docs/API.md` |
-| W4-05 | B13: Per-family typed result classes | new `core/…/api/result/` package (`BlockResult`, `ContainerResult`, `InventoryResult`, `ItemResult`, `MessageResult`, `SessionResult`, `SignResult`, `UsernameResult`), `GuardianDao.java` typed lookup methods |
-
-**Between-wave parent cleanup:**
-1. Rescue + compile + commit + push
-2. Land B15 (Sign v24 columns) on main thread — needs schema-version bump v2→v3 which is a single sequenced write (Schema.java + Migration + 4 cells' onSignChange)
-3. Land B16 (WorldEdit recon) if `$ultracode` includes it — single main-thread investigation
-
-### Wave 5 — release prep + docs (2 parallel subagents)
-
-| Subagent | Task |
-|---|---|
-| W5-01 | Update `docs/USAGE.md`, `docs/CONFIG.md`, `docs/PERMISSIONS.md`, `docs/API.md`, `docs/FAQ.md`, `docs/COREPROTECT-COMPARISON.md` to reflect the new surface |
-| W5-02 | Update `CHANGELOG.md` with v1.2.0 entry; bump version; update `README.md` version matrix |
-
-**Final main-thread step:** merge `v1.1.5-entity-filter` → `main`, tag `v1.2.0`, push.
-
----
-
-## Timeline expectation
-
-Wave 2: ~10 min real time (5 subagents in parallel, each ~5-8 min)
-Wave 3: ~15 min (7 subagents, some heavier)
-Wave 4: ~15 min (5 subagents, some heavier)
-Wave 5: ~5 min
-
-Plus ~5 min per wave for main-thread verify + commit + push.
-
-**Total: ~1 hour real time** for the whole build. Nightshift-appropriate.
-
----
-
-## Discipline rules (from `delegating-parallel-builds` skill)
-
-- Every subagent's `context` MUST include `FILES YOU OWN:` + `DO NOT TOUCH:` explicit blocks
-- Every subagent MUST cite the CP-comparison doc + wiring-audit doc as authoritative context
-- Every subagent's summary MUST be written to `/tmp/vg-vs-cp/waveN-XX-report.md` to keep parent context clean
-- Subagent verification claims are HINTS, not truth — parent re-runs `./gradlew :core:compileJava` before every commit
-- `git status --short` before every "wave complete" declaration — rescue any uncommitted deliverables
-- Push after every commit (never batch pushes)
-- If Fabric-loom classloader (pitfall #11) blocks a compile check, note it and continue — the code is what matters
+1. Merge all 15 branches into `integration/v1.2.0` in order: `01, 04, 05` (infra first) → `02, 06, 07, 08, 09, 10, 11, 12, 13, 14` (features) → `15` (release scaffolding)
+2. Full `:core:build` + all 4 `-PbuildProfile=forgeonly` cell builds green
+3. Push tag `v1.2.0` — CI will publish jars
+4. `gh release download v1.2.0` for fleet deploy
