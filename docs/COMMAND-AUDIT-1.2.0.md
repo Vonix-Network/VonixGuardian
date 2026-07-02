@@ -4,7 +4,7 @@ Snapshot: `integration/v1.2.0` at `073a233` after the first v1.2.0 integration w
 
 Scope: `/vg` commands registered in the eight per-cell `GuardianCommands.java` files. These files are structurally mirrored; line references use `mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/common/GuardianCommands.java` as the representative.
 
-Status counts: **15 wired**, **0 stub**, **3 missing CoreProtect command surfaces**.
+Status counts: **16 wired**, **0 stub**, **2 missing CoreProtect command surfaces**.
 
 | Subcommand | Registration line(s) | Permission node | Handler | Core path | Status |
 |---|---:|---|---|---|---|
@@ -20,12 +20,12 @@ Status counts: **15 wired**, **0 stub**, **3 missing CoreProtect command surface
 | `status` | 140-142 | `vonixguardian.command.status` | `Status.run` | `GuardianStatus.render(g)` | **WIRED** |
 | `reload` | 144-146 | `vonixguardian.command.reload` | `Reload.run` | `guardian.reloadConfig(configPath)` → hotSwapped/requiresRestart/errors | **WIRED** |
 | `migrate-db` | 148-153 | `vonixguardian.command.migrate-db` | `MigrateDb.run` | `MigrateDbCommand.run(g,target,confirmed,lineSink)`; console-only; CONFIRM guard | **WIRED** |
+| `config get/set` | before `migrate-db` in v1.2.0 current | `vonixguardian.command.config` | `Config.get` / `Config.set` | reads/writes hot-swap-safe keys, persists via `ConfigLoader.save`, then applies through `Guardian.reloadConfig` | **WIRED** |
 | `help` | 155 | root only | `Help.run` | static help text | **WIRED** |
 | `co` alias | 159 | inherits `/vg` root | redirect | Brigadier redirect to `/vg` | **WIRED** |
 | `guardian` alias | 160 | inherits `/vg` root | redirect | Brigadier redirect to `/vg` | **WIRED** |
 | `teleport` / `tp` | not registered | missing: `vonixguardian.command.teleport` | missing | no per-player numbered lookup-result cache yet | **MISSING** |
 | `give` | not registered | missing: `vonixguardian.command.give` | missing | no result cache or loader-specific item reconstruction/give facade yet | **MISSING** |
-| `config get/set` | not registered | missing/split node | missing | `/vg reload` exists, but no key-level runtime config surface | **MISSING** |
 
 ## Findings
 
@@ -44,7 +44,7 @@ The remaining user-visible command gaps against CoreProtect are:
 
 1. `/vg teleport <resultId>` / `/vg tp <resultId>` — not registered. The current lookup pipeline renders rows to chat but does not persist a per-player numbered result cache that teleport can target.
 2. `/vg give <resultId>` — not registered. This needs a result cache plus an 8-cell item materialization/give facade because item registries/NBT are Minecraft-version-specific.
-3. `/vg config get/set` — not registered. `/vg reload` exists, but there is no key-level runtime config surface yet.
+3. `/vg config get/set` is now wired for hot-swap-safe keys only. Restart-required keys remain intentionally read-only through this command surface.
 
 ### Permission-node drift
 

@@ -30,17 +30,16 @@ This section supersedes stale v1.1.5 findings below when they conflict. The olde
 
 1. ❌ `/vg teleport` / `/vg tp` — not registered. Needs a per-player numbered lookup-result cache.
 2. ❌ `/vg give` — not registered. Needs lookup-result cache plus loader-specific item reconstruction/give facade.
-3. ❌ `/vg config get/set` — not registered. `/vg reload` exists, but no key-level hot-swap surface.
-4. 🟡 Fabric still lacks true native coverage for several event families that Fabric API does not expose directly: real block place, mob block change, explosion detonate, piston pre, container open/close, bucket fill/empty, item drop/pickup/craft, sign edit, fire/ice/spread/dispense/leaves. The v1.2.0 Fabric mixin infrastructure is wired, but implementation mixins are not present yet.
-5. 🟡 Forge/NeoForge world-event mixin infrastructure is wired, but no actual FireBlock/IceBlock/SpreadingSnowyDirtBlock/LeavesBlock/DispenserBlock mixin classes are present yet.
-6. 🟡 NeoForge 1.21.1 bucket mixin infrastructure is wired, but BucketItem/MilkBucketItem mixin implementation is not present yet.
-7. ❌ `r:#worldedit` still has no actual WorldEdit selection bridge.
-8. 🟡 Language support is English-only; CP has broad translated bundles.
-9. 🟡 Third-party ecosystem is documented but still nascent; CP has mature external integrations.
+3. 🟡 Fabric still lacks true native coverage for several event families that Fabric API does not expose directly: real block place, mob block change, explosion detonate, piston pre, container open/close, bucket fill/empty, item drop/pickup/craft, sign edit, fire/ice/spread/dispense/leaves. The v1.2.0 Fabric mixin infrastructure is wired, but implementation mixins are not present yet.
+4. 🟡 Forge/NeoForge world-event mixin infrastructure is wired, but no actual FireBlock/IceBlock/SpreadingSnowyDirtBlock/LeavesBlock/DispenserBlock mixin classes are present yet.
+5. 🟡 NeoForge 1.21.1 bucket mixin infrastructure is wired, but BucketItem/MilkBucketItem mixin implementation is not present yet.
+6. ❌ `r:#worldedit` still has no actual WorldEdit selection bridge.
+7. 🟡 Language support is English-only; CP has broad translated bundles.
+8. 🟡 Third-party ecosystem is documented but still nascent; CP has mature external integrations.
 
 ### Command audit pointer
 
-See [`COMMAND-AUDIT-1.2.0.md`](./COMMAND-AUDIT-1.2.0.md) for the current `/vg` registration table: 15 wired command/alias entries, 0 stubs, 3 missing CoreProtect command surfaces.
+See [`COMMAND-AUDIT-1.2.0.md`](./COMMAND-AUDIT-1.2.0.md) for the current `/vg` registration table: 16 wired command/alias entries, 0 stubs, 2 missing CoreProtect command surfaces.
 
 ---
 

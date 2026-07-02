@@ -15,6 +15,8 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.config.ConfigLoader;
+import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.perms.LookupPermissionFilter;
 import network.vonix.guardian.core.perms.PermissionNode;
@@ -144,6 +146,16 @@ public final class GuardianCommands {
                 .then(Commands.literal("reload")
                         .requires(s -> hasPerm(s, "vonixguardian.command.reload", g))
                         .executes(ctx -> Reload.run(ctx, g)))
+                // config get/set (hot-swap-safe keys only)
+                .then(Commands.literal("config")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.config", g))
+                        .then(Commands.literal("get")
+                                .then(Commands.argument("key", StringArgumentType.word())
+                                        .executes(ctx -> Config.get(ctx, g))))
+                        .then(Commands.literal("set")
+                                .then(Commands.argument("key", StringArgumentType.word())
+                                        .then(Commands.argument("value", StringArgumentType.greedyString())
+                                                .executes(ctx -> Config.set(ctx, g))))))
                 // migrate-db <target-type> [CONFIRM] (console-only)
                 .then(Commands.literal("migrate-db")
                         .requires(s -> hasPerm(s, "vonixguardian.command.migrate-db", g))
@@ -605,6 +617,156 @@ public final class GuardianCommands {
         }
     }
 
+
+    // ====================================================================== Config
+
+    /** {@code /vg config get|set} — hot-swap-safe config keys. */
+    public static final class Config {
+        private Config() {}
+
+        public static int get(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            String key = StringArgumentType.getString(ctx, "key");
+            String value = readValue(g.config(), key);
+            if (value == null) {
+                send(ctx.getSource(), ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown or read-only config key: " + key));
+                return 0;
+            }
+            send(ctx.getSource(), ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] " + key + " = " + value));
+            return 1;
+        }
+
+        public static int set(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            String key = StringArgumentType.getString(ctx, "key");
+            String value = StringArgumentType.getString(ctx, "value").trim();
+            java.nio.file.Path path = g.configPath();
+            if (path == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Cannot persist config: no config path is known."));
+                return 0;
+            }
+            final GuardianConfig next;
+            try {
+                next = withValue(g.config(), key, value);
+            } catch (IllegalArgumentException e) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] " + e.getMessage()));
+                return 0;
+            }
+            if (next == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown or read-only config key: " + key));
+                return 0;
+            }
+            try {
+                next.validate();
+                ConfigLoader.save(path, next);
+                Guardian.ReloadResult r = g.reloadConfig(path);
+                if (!r.errors().isEmpty()) {
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Config saved but reload failed: " + String.join(", ", r.errors())));
+                    return 0;
+                }
+                send(src, ChatRenderer.success(g.theme(),
+                        "[VonixGuardian] Updated " + key + " = " + readValue(g.config(), key)
+                                + " (hot-swapped: " + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
+                return 1;
+            } catch (Exception e) {
+                LOG.warn(Guardian.MARKER, "Config set failed", e);
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Config update failed: " + e.getMessage()));
+                return 0;
+            }
+        }
+
+        private static String readValue(GuardianConfig c, String key) {
+            return switch (key) {
+                case "theme" -> c.theme();
+                case "logFile.enabled" -> Boolean.toString(c.logFile().enabled());
+                case "lookup.defaultPageSize" -> Integer.toString(c.lookup().defaultPageSize());
+                case "lookup.maxRadius" -> Integer.toString(c.lookup().maxRadius());
+                case "lookup.maxResultRows" -> Integer.toString(c.lookup().maxResultRows());
+                case "privacy.hashIps" -> Boolean.toString(c.privacy().hashIps());
+                case "purge.minAgeSecondsConsole" -> Long.toString(c.purge().minAgeSecondsConsole());
+                case "purge.minAgeSecondsInGame" -> Long.toString(c.purge().minAgeSecondsInGame());
+                case "purge.autoPurgeSeconds" -> Long.toString(c.purge().autoPurgeSeconds());
+                case "purge.autoPurgeTime" -> c.purge().autoPurgeTime();
+                case "actions.logBlocks" -> Boolean.toString(c.actions().logBlocks());
+                case "actions.logContainers" -> Boolean.toString(c.actions().logContainers());
+                case "actions.logItems" -> Boolean.toString(c.actions().logItems());
+                case "actions.logEntities" -> Boolean.toString(c.actions().logEntities());
+                case "actions.logExplosions" -> Boolean.toString(c.actions().logExplosions());
+                case "actions.logChat" -> Boolean.toString(c.actions().logChat());
+                case "actions.logCommands" -> Boolean.toString(c.actions().logCommands());
+                case "actions.logSessions" -> Boolean.toString(c.actions().logSessions());
+                case "actions.logSigns" -> Boolean.toString(c.actions().logSigns());
+                case "actions.logInteractions" -> Boolean.toString(c.actions().logInteractions());
+                case "actions.logWorldEvents" -> Boolean.toString(c.actions().logWorldEvents());
+                case "actions.entityBlockChangeCoalesceWindowMs" -> Long.toString(c.actions().entityBlockChangeCoalesceWindowMs());
+                case "actions.entityBlockChangeMaxTracked" -> Integer.toString(c.actions().entityBlockChangeMaxTracked());
+                case "actions.entityChangeLogAllEntities" -> Boolean.toString(c.actions().entityChangeLogAllEntities());
+                default -> null;
+            };
+        }
+
+        private static GuardianConfig withValue(GuardianConfig c, String key, String value) {
+            GuardianConfig.Actions a = c.actions();
+            GuardianConfig.LogFile lf = c.logFile();
+            GuardianConfig.Lookup l = c.lookup();
+            GuardianConfig.Privacy pr = c.privacy();
+            GuardianConfig.Purge pu = c.purge();
+            return switch (key) {
+                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, value);
+                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays()), a, c.permissions(), l, pr, pu, c.theme());
+                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.theme());
+                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.theme());
+                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.theme());
+                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.theme());
+                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.theme());
+                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.theme());
+                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.theme());
+                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.theme());
+                case "actions.logBlocks" -> withActions(c, new GuardianConfig.Actions(parseBool(value, key), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logContainers" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), parseBool(value, key), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logItems" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), parseBool(value, key), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), parseBool(value, key), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logExplosions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), parseBool(value, key), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logChat" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), parseBool(value, key), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logCommands" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), parseBool(value, key), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logSessions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), parseBool(value, key), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logSigns" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), parseBool(value, key), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logInteractions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), parseBool(value, key), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.logWorldEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), parseBool(value, key), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.entityBlockChangeCoalesceWindowMs" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), parseLong(value, key), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
+                case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key)));
+                default -> null;
+            };
+        }
+
+        private static GuardianConfig withActions(GuardianConfig c, GuardianConfig.Actions a) {
+            return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.theme());
+        }
+
+        private static boolean parseBool(String value, String key) {
+            if ("true".equalsIgnoreCase(value)) return true;
+            if ("false".equalsIgnoreCase(value)) return false;
+            throw new IllegalArgumentException(key + " must be true or false");
+        }
+
+        private static int parseInt(String value, String key) {
+            try { return Integer.parseInt(value); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
+        }
+
+        private static long parseLong(String value, String key) {
+            try { return Long.parseLong(value); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
+        }
+    }
+
     // ====================================================================== MigrateDb
 
     /** {@code /vg migrate-db <target-type> [CONFIRM]} — console-only backend copy. */
@@ -661,6 +823,8 @@ public final class GuardianCommands {
                     "/vg consumer pause|resume|toggle        — pause the writer queue",
                     "/vg status                              — queue / submission counters",
                     "/vg reload                              — re-read config.json + hot-swap safe knobs",
+                    "/vg config get <key>                 — show a hot-swap-safe config value",
+                    "/vg config set <key> <value>         — persist + hot-swap a safe config value",
                     "/vg migrate-db <sqlite|mysql|postgresql> CONFIRM  — console-only backend copy",
                     "",
                     "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
