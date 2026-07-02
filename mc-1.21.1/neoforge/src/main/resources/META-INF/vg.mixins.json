@@ -4,7 +4,10 @@
   "package": "network.vonix.guardian.mc.v1_21_1.neoforge.mixin",
   "compatibilityLevel": "JAVA_21",
   "refmap": "vg.refmap.json",
-  "mixins": [],
+  "mixins": [
+    "BucketItemMixin",
+    "MilkBucketItemMixin"
+  ],
   "server": [],
   "client": [],
   "injectors": {
