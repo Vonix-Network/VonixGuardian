@@ -172,6 +172,34 @@ public record GuardianConfig(
      *                                            record every {@code LivingDestroyBlockEvent}. This
      *                                            restores pre-1.1.5 behavior and will re-drown modded
      *                                            packs; do not enable unless you know what you're doing.
+     * @param logNaturalBreaks       CP-parity: log natural block breaks (crops trampled, tall grass
+     *                               broken by mob, etc.). Default {@code true}. Added W5-07.
+     * @param logTreeGrowth          CP-parity: log tree-growth block placements (sapling &rarr; tree).
+     *                               Default {@code true}. Added W5-07.
+     * @param logMushroomGrowth      CP-parity: log huge-mushroom growth block placements. Default
+     *                               {@code true}. Added W5-07.
+     * @param logVineGrowth          CP-parity: log vine / kelp / cave-vine growth. Default
+     *                               {@code true}. Added W5-07.
+     * @param logSculkSpread         CP-parity: log sculk-catalyst spread events. Default
+     *                               {@code true}. Added W5-07.
+     * @param logPortals             CP-parity: log nether-portal / end-portal frame formations.
+     *                               Default {@code true}. Added W5-07.
+     * @param logWaterFlow           CP-parity: log water-flow block changes. <b>Default
+     *                               {@code false} &mdash; expensive.</b> Added W5-07.
+     * @param logLavaFlow            CP-parity: log lava-flow block changes. <b>Default
+     *                               {@code false} &mdash; expensive.</b> Added W5-07.
+     * @param logFireExtinguish      CP-parity: log fire extinguishing (rain, water, player).
+     *                               Default {@code true}. Added W5-07.
+     * @param logCampfireStart       CP-parity: log campfire lighting (flint&amp;steel, fire charge).
+     *                               Default {@code true}. Added W5-07.
+     * @param logHopperMetaFilter    CP-parity: enable hopper meta-aware dedup (skip repeats within
+     *                               a hopper cycle that carry identical NBT). Default {@code false}.
+     *                               Added W5-07.
+     * @param logDuplicateSuppression CP-parity: collapse identical consecutive rows (same actor,
+     *                               same coord, same target, within 1 tick) into a single audit.
+     *                               Default {@code true}. Added W5-07.
+     * @param logCancelledChat       CP-parity: record chat events even when a listener cancels them
+     *                               (e.g. spam-filter plugins). Default {@code false}. Added W5-07.
      */
     public record Actions(
         boolean logBlocks,
@@ -191,8 +219,79 @@ public record GuardianConfig(
         long entityBlockChangeCoalesceWindowMs,
         int entityBlockChangeMaxTracked,
         List<String> entityChangeAllowlist,
-        boolean entityChangeLogAllEntities
-    ) {}
+        boolean entityChangeLogAllEntities,
+        // ---- W5-07: 13 additional per-event toggles matching CoreProtect Config.java ----
+        boolean logNaturalBreaks,
+        boolean logTreeGrowth,
+        boolean logMushroomGrowth,
+        boolean logVineGrowth,
+        boolean logSculkSpread,
+        boolean logPortals,
+        boolean logWaterFlow,
+        boolean logLavaFlow,
+        boolean logFireExtinguish,
+        boolean logCampfireStart,
+        boolean logHopperMetaFilter,
+        boolean logDuplicateSuppression,
+        boolean logCancelledChat
+    ) {
+        /**
+         * Backward-compat constructor for callers/tests written before the W5-07 CP-parity toggles
+         * existed. Delegates to the canonical constructor, defaulting each new field to the value
+         * documented on the record: safe/expensive events off ({@code logWaterFlow},
+         * {@code logLavaFlow}, {@code logHopperMetaFilter}, {@code logCancelledChat}); everything
+         * else on. This mirrors the CoreProtect Config.java shipped defaults.
+         *
+         * @deprecated Prefer the canonical 31-arg constructor. This shim exists solely so the five
+         *     sister loader trees (fabric/forge/neoforge for four MC versions) and the JSON
+         *     forward-compat path in {@link ConfigLoader} keep compiling without an atomic
+         *     31-arg-signature migration across the monorepo. To be removed once every producer
+         *     site is updated (tracked as a v1.3.0 cleanup).
+         */
+        @Deprecated
+        public Actions(
+            boolean logBlocks,
+            boolean logContainers,
+            boolean logItems,
+            boolean logEntities,
+            boolean logExplosions,
+            boolean logChat,
+            boolean logCommands,
+            boolean logSessions,
+            boolean logSigns,
+            boolean logInteractions,
+            boolean logWorldEvents,
+            List<String> worldBlacklist,
+            List<String> blockBlacklist,
+            List<String> sourceBlacklist,
+            long entityBlockChangeCoalesceWindowMs,
+            int entityBlockChangeMaxTracked,
+            List<String> entityChangeAllowlist,
+            boolean entityChangeLogAllEntities
+        ) {
+            this(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
+                // W5-07 CP-parity defaults (matches CoreProtect Config.java):
+                true,  // logNaturalBreaks
+                true,  // logTreeGrowth
+                true,  // logMushroomGrowth
+                true,  // logVineGrowth
+                true,  // logSculkSpread
+                true,  // logPortals
+                false, // logWaterFlow  — CP defaults off (expensive)
+                false, // logLavaFlow   — CP defaults off (expensive)
+                true,  // logFireExtinguish
+                true,  // logCampfireStart
+                false, // logHopperMetaFilter — opt-in dedup
+                true,  // logDuplicateSuppression
+                false  // logCancelledChat    — opt-in
+            );
+        }
+    }
 
     /**
      * Permission resolution settings.
@@ -288,7 +387,21 @@ public record GuardianConfig(
                 worldBlacklist, blockBlacklist, sourceBlacklist,
                 500L, 8192,             // entityBlockChange coalescer defaults
                 entityChangeAllowlist,  // entityChangeAllowlist: empty = vanilla-only
-                false                    // entityChangeLogAllEntities: DO NOT flip this
+                false,                   // entityChangeLogAllEntities: DO NOT flip this
+                // ---- W5-07: 13 CP-parity per-event toggles ----
+                true,   // logNaturalBreaks           — CP defaults ON
+                true,   // logTreeGrowth              — CP defaults ON
+                true,   // logMushroomGrowth          — CP defaults ON
+                true,   // logVineGrowth              — CP defaults ON
+                true,   // logSculkSpread             — CP defaults ON
+                true,   // logPortals                 — CP defaults ON
+                false,  // logWaterFlow               — CP defaults OFF (per-tick block change, expensive)
+                false,  // logLavaFlow                — CP defaults OFF (per-tick block change, expensive)
+                true,   // logFireExtinguish          — CP defaults ON
+                true,   // logCampfireStart           — CP defaults ON
+                false,  // logHopperMetaFilter        — opt-in NBT-aware dedup; costs an NBT compare per hopper tick
+                true,   // logDuplicateSuppression    — CP defaults ON (collapse dupe rows)
+                false   // logCancelledChat           — opt-in; log even chat cancelled by other plugins
             ),
             new Permissions(true, 3, java.util.Map.of()),
             new Lookup(7, 10_000, 100_000, 4),
