@@ -2,6 +2,7 @@ package network.vonix.guardian.core.storage;
 
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
+import network.vonix.guardian.core.query.WorldEditRegionResolver;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -126,6 +127,31 @@ public final class QueryCompiler {
                 clauses.add("a.y BETWEEN ? AND ?");
                 binds.add(f.centerY() - r);
                 binds.add(f.centerY() + r);
+            }
+        }
+
+        // WorldEdit selection AABB (r:#we / r:#worldedit). Resolved on-demand
+        // at compile time via reflection; if WE is not installed or the player
+        // has no active selection, we emit an impossible predicate so the
+        // query matches zero rows. The upper layer may use
+        // {@link WorldEditRegionResolver#resolveSelection(java.util.UUID)}
+        // itself to surface a user-facing message
+        // ({@code query.error.worldedit_not_installed} / {@code
+        // query.error.worldedit_no_selection}) before invoking the DAO.
+        if (f.worldEditPlayer() != null) {
+            java.util.Optional<WorldEditRegionResolver.Box> box =
+                WorldEditRegionResolver.resolveSelection(f.worldEditPlayer());
+            if (box.isPresent()) {
+                WorldEditRegionResolver.Box b = box.get();
+                clauses.add("a.x BETWEEN ? AND ?");
+                binds.add(b.minX()); binds.add(b.maxX());
+                clauses.add("a.y BETWEEN ? AND ?");
+                binds.add(b.minY()); binds.add(b.maxY());
+                clauses.add("a.z BETWEEN ? AND ?");
+                binds.add(b.minZ()); binds.add(b.maxZ());
+            } else {
+                // No selection / WE missing — match zero rows.
+                clauses.add("1 = 0");
             }
         }
 
