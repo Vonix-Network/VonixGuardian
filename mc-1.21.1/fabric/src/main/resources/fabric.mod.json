@@ -15,6 +15,7 @@
   "entrypoints": {
     "server": [ "network.vonix.guardian.mc.v1_21_1.fabric.VonixGuardianFabric" ]
   },
+  "mixins": [ "vg.mixins.json" ],
   "depends": {
     "fabricloader": ">=0.16",
     "fabric-api": "*",
