@@ -61,10 +61,14 @@ class VanillaGrieferSetTest {
     }
 
     @Test
-    void shouldRecord_still_accepts_canonical_vanilla_griefers() {
-        assertTrue(VanillaGrieferSet.shouldRecord("minecraft:enderman", null, false));
-        assertTrue(VanillaGrieferSet.shouldRecord("minecraft:ravager", null, false));
-        assertTrue(VanillaGrieferSet.shouldRecord("minecraft:ender_dragon", null, false));
+    void shouldRecord_rejects_canonical_vanilla_griefers_by_default_on_forge_event() {
+        // Bukkit/CoreProtect listens to real EntityChangeBlockEvent. Forge's
+        // LivingDestroyBlockEvent is only a prospective permission check and can
+        // fire millions of times on modded packs (Berk/HTTYD). Fail closed unless
+        // the operator explicitly opts an entity in.
+        assertFalse(VanillaGrieferSet.shouldRecord("minecraft:enderman", null, false));
+        assertFalse(VanillaGrieferSet.shouldRecord("minecraft:ravager", null, false));
+        assertFalse(VanillaGrieferSet.shouldRecord("minecraft:ender_dragon", null, false));
     }
 
     @Test

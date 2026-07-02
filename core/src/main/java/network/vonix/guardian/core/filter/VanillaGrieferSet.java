@@ -17,9 +17,11 @@ import java.util.Set;
  * <p>CoreProtect solves the same problem in Bukkit by only listening to
  * {@code EntityChangeBlockEvent} (which fires on genuine state changes, not
  * per-tick queries) AND restricting the handler to a hardcoded list of ~10
- * vanilla mob classes. Guardian ports the second half of that: any modded
- * LivingEntity fails the whitelist and the handler exits without touching
- * the write queue.
+ * vanilla mob classes. Guardian cannot safely port the first half on
+ * Forge/NeoForge because {@code LivingDestroyBlockEvent} is prospective and
+ * can flood even for nominally vanilla-style entity types on modded packs.
+ * Therefore the default runtime policy is stricter than this constant: fail
+ * closed unless the operator explicitly adds entity keys to config.
  *
  * <p>Matches the CoreProtect {@code EntityChangeBlockListener} whitelist as of
  * CP-23.2 (2025). Admins who want to audit modded mob griefing can extend the
@@ -94,7 +96,11 @@ public final class VanillaGrieferSet {
         if (logAllEntities) return true;
         if (entityRegistryKey == null || entityRegistryKey.isEmpty()) return false;
 
-        if (DEFAULT_ALLOWLIST.contains(entityRegistryKey)) return true;
+        // Forge/NeoForge LivingDestroyBlockEvent is a prospective permission-check event,
+        // not a guaranteed block-state-change event like Bukkit's EntityChangeBlockEvent.
+        // Even vanilla mob types can fire it at extreme rates on modded packs (Berk/HTTYD
+        // proved 5M+ queued ENTITY_CHANGE_BLOCK actions in minutes). Therefore this path
+        // must be fail-closed by default: record only explicit operator opt-ins.
         if (configAllowlist != null && configAllowlist.contains(entityRegistryKey)) return true;
 
         return false;

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-07-02
+
+### Fixed
+
+- **Berk/HTTYD ENTITY_CHANGE_BLOCK flood** — Forge/NeoForge `LivingDestroyBlockEvent` is a prospective permission-check event, not Bukkit/CoreProtect's real `EntityChangeBlockEvent`. v1.2.1 recorded the default vanilla griefer allowlist and on Isle of Berk produced 5.4M queued `ENTITY_CHANGE_BLOCK` actions with 4.1M drops before shutdown. Runtime policy is now fail-closed by default: this event records only entities explicitly listed in `actions.entityChangeAllowlist` or when `actions.entityChangeLogAllEntities=true`. This preserves server performance and stops missed writes caused by queue saturation.
+
 ## [1.2.2] - 2026-07-02
 
 ### Fixed
