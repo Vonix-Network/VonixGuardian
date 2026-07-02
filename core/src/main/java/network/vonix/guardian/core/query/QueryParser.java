@@ -1,6 +1,7 @@
 package network.vonix.guardian.core.query;
 
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.i18n.Messages;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -116,7 +117,7 @@ public final class QueryParser {
 
         int colon = tok.indexOf(':');
         if (colon <= 0 || colon == tok.length() - 1) {
-            throw bad(tok, "expected '<prefix>:<value>' (u:, t:, r:, a:, i:, e:) or #flag");
+            throw bad(tok, Messages.get("query.error.expected_prefix"));
         }
         String prefix = tok.substring(0, colon).toLowerCase(Locale.ROOT);
         String value  = tok.substring(colon + 1);
@@ -127,8 +128,7 @@ public final class QueryParser {
             case "a" -> parseActionTok(tok, value, b);
             case "i" -> parseIdentList(tok, value, b, /*include*/ true);
             case "e" -> parseIdentList(tok, value, b, /*include*/ false);
-            default  -> throw bad(tok,
-                "unknown prefix '" + prefix + ":' — expected one of u: t: r: a: i: e:");
+            default  -> throw bad(tok, Messages.get("query.error.unknown_prefix", prefix));
         }
     }
 
@@ -137,20 +137,19 @@ public final class QueryParser {
     private void parseUserTok(String tok, String value, QueryFilter.Builder b) {
         String[] parts = splitComma(value);
         if (parts.length == 0) {
-            throw bad(tok, "u: requires at least one player name or #sentinel");
+            throw bad(tok, Messages.get("query.error.user_empty"));
         }
         for (String raw : parts) {
             String p = raw.trim();
             if (p.isEmpty()) {
-                throw bad(tok, "u: contains an empty entry — remove the stray comma");
+                throw bad(tok, Messages.get("query.error.user_empty_entry"));
             }
             if (p.charAt(0) == '#') {
                 String sentinel = p.toLowerCase(Locale.ROOT);
                 b.addUser(new QueryFilter.UserSel(null, sentinel, true));
             } else {
                 if (!isValidPlayerName(p)) {
-                    throw bad(tok, "'" + p + "' is not a valid player name "
-                        + "(letters, digits, underscore; max 16) — did you mean a #sentinel?");
+                    throw bad(tok, Messages.get("query.error.user_invalid_name", p));
                 }
                 b.addUser(new QueryFilter.UserSel(null, p, false));
             }
@@ -174,7 +173,7 @@ public final class QueryParser {
 
     private void parseTimeTok(String tok, String value, QueryFilter.Builder b) {
         if (value.isEmpty()) {
-            throw bad(tok, "t: requires a duration like 1h, 2w5d, or 1h-2h");
+            throw bad(tok, Messages.get("query.error.time_required"));
         }
         int dash = findRangeDash(value);
         long now = System.currentTimeMillis();
@@ -183,7 +182,7 @@ public final class QueryParser {
             b.sinceMillis(now - ms);
         } else {
             if (dash == 0 || dash == value.length() - 1) {
-                throw bad(tok, "t: range requires durations on both sides of '-' (e.g. 1h-2h)");
+                throw bad(tok, Messages.get("query.error.time_range_both_sides"));
             }
             String left  = value.substring(0, dash);
             String right = value.substring(dash + 1);
@@ -223,18 +222,17 @@ public final class QueryParser {
                 while (i < n && (s.charAt(i) >= '0' && s.charAt(i) <= '9')) i++;
             }
             if (i == numStart) {
-                throw bad(tok, "duration component must start with a number: '" + s + "'");
+                throw bad(tok, Messages.get("query.error.duration_no_number", s));
             }
             if (i >= n) {
-                throw bad(tok, "duration '" + s + "' is missing a unit "
-                    + "(use one of s, m, h, d, w)");
+                throw bad(tok, Messages.get("query.error.duration_missing_unit", s));
             }
             String numStr = s.substring(numStart, i);
             double num;
             try {
                 num = Double.parseDouble(numStr);
             } catch (NumberFormatException e) {
-                throw bad(tok, "duration '" + s + "' has invalid number '" + numStr + "'");
+                throw bad(tok, Messages.get("query.error.duration_bad_number", s, numStr));
             }
             char unit = Character.toLowerCase(s.charAt(i));
             i++;
@@ -245,13 +243,13 @@ public final class QueryParser {
                 case 'd' -> 86_400_000L;
                 case 'w' -> 604_800_000L;
                 default  -> throw bad(tok,
-                    "unknown duration unit '" + unit + "' in '" + s + "' — use s, m, h, d, or w");
+                    Messages.get("query.error.duration_unknown_unit", unit, s));
             };
             total += (long) (num * unitMs);
             anyComponent = true;
         }
         if (!anyComponent) {
-            throw bad(tok, "empty duration");
+            throw bad(tok, Messages.get("query.error.duration_empty"));
         }
         // Clamp: a caller-typed duration that rounds down to less than 1 second
         // (e.g. `t:0.001s`) is almost certainly a mistake but should not silently
@@ -266,7 +264,7 @@ public final class QueryParser {
 
     private void parseRadiusTok(String tok, String value, QueryFilter.Builder b, QueryParseContext ctx) {
         if (value.isEmpty()) {
-            throw bad(tok, "r: requires a radius (e.g. r:10, r:#global, r:#world_nether)");
+            throw bad(tok, Messages.get("query.error.radius_required"));
         }
         String lower = value.toLowerCase(Locale.ROOT);
         if (lower.charAt(0) == '#') {
@@ -310,14 +308,13 @@ public final class QueryParser {
         try {
             r = Integer.parseInt(value);
         } catch (NumberFormatException e) {
-            throw bad(tok, "radius must be a non-negative integer or a #keyword, got '" + value + "'");
+            throw bad(tok, Messages.get("query.error.radius_not_integer", value));
         }
         if (r < 0) {
-            throw bad(tok, "radius must be >= 0 (got " + r + ") — use r:#global for unbounded");
+            throw bad(tok, Messages.get("query.error.radius_negative", r));
         }
         if (ctx == null) {
-            throw bad(tok, "r:<n> requires a player position; console must use r:#global "
-                + "or r:#world_<key>");
+            throw bad(tok, Messages.get("query.error.radius_no_position"));
         }
         b.radius(r);
         b.center(ctx.x(), ctx.y(), ctx.z());
@@ -327,7 +324,7 @@ public final class QueryParser {
 
     private void parseActionTok(String tok, String value, QueryFilter.Builder b) {
         if (value.isEmpty()) {
-            throw bad(tok, "a: requires an action name — " + actionSuggestion());
+            throw bad(tok, Messages.get("query.error.action_required", actionSuggestion()));
         }
         String lower = value.toLowerCase(Locale.ROOT);
         // 0a) CoreProtect-parity multi-target alias (e.g. a:inventory expands to
@@ -369,7 +366,7 @@ public final class QueryParser {
                 return;
             }
         }
-        throw bad(tok, "unknown action '" + value + "' — " + actionSuggestion());
+        throw bad(tok, Messages.get("query.error.action_unknown", value, actionSuggestion()));
     }
 
     private static String actionSuggestion() {
@@ -386,14 +383,14 @@ public final class QueryParser {
 
     private void parseIdentList(String tok, String value, QueryFilter.Builder b, boolean include) {
         String[] parts = splitComma(value);
+        String prefix = include ? "i:" : "e:";
         if (parts.length == 0) {
-            throw bad(tok, (include ? "i:" : "e:") + " requires at least one identifier");
+            throw bad(tok, Messages.get("query.error.ident_empty", prefix));
         }
         for (String raw : parts) {
             String p = raw.trim();
             if (p.isEmpty()) {
-                throw bad(tok, (include ? "i:" : "e:")
-                    + " contains an empty entry — remove the stray comma");
+                throw bad(tok, Messages.get("query.error.ident_empty_entry", prefix));
             }
             String id = qualifyId(tok, p);
             if (include) b.addInclude(id); else b.addExclude(id);
@@ -413,10 +410,10 @@ public final class QueryParser {
             path = p.substring(colon + 1);
         }
         if (namespace.isEmpty() || !isValidIdComponent(namespace)) {
-            throw bad(tok, "invalid namespace '" + namespace + "' in identifier '" + p + "'");
+            throw bad(tok, Messages.get("query.error.ident_bad_namespace", namespace, p));
         }
         if (path.isEmpty() || !isValidIdComponent(path)) {
-            throw bad(tok, "invalid identifier path '" + path + "' in '" + p + "'");
+            throw bad(tok, Messages.get("query.error.ident_bad_path", path, p));
         }
         return (namespace + ":" + path).toLowerCase(Locale.ROOT);
     }
@@ -443,8 +440,7 @@ public final class QueryParser {
             case "verbose" -> b.verbose(true);
             case "silent"  -> b.silent(true);
             case "optimize" -> b.optimize(true);
-            default -> throw bad(tok,
-                "unknown flag '" + tok + "' — valid flags: #preview, #count, #verbose, #silent, #optimize");
+            default -> throw bad(tok, Messages.get("query.error.flag_unknown", tok));
         }
     }
 
@@ -465,6 +461,6 @@ public final class QueryParser {
     }
 
     private static QueryParseException bad(String tok, String msg) {
-        return new QueryParseException(tok, "bad token '" + tok + "': " + msg);
+        return new QueryParseException(tok, Messages.get("query.error.bad_token_wrap", tok, msg));
     }
 }
