@@ -102,6 +102,12 @@ public final class ConfigLoader {
      *   <li>{@code actions.entityBlockChangeCoalesceWindowMs == 0} → 500ms (added 1.1.4)</li>
      *   <li>{@code actions.entityBlockChangeMaxTracked == 0} → 8192 (added 1.1.4)</li>
      *   <li>{@code actions.entityChangeAllowlist == null} → empty list (added 1.1.5)</li>
+     *   <li>All 13 W5-07 CP-parity toggles absent (all deserialize to {@code false}) →
+     *       rewrite to their CP-parity defaults. Absent bool fields deserialize to
+     *       {@code false} unconditionally, so we can only distinguish "operator wrote
+     *       every one of them false on purpose" from "pre-W5-07 config missing all 13"
+     *       by heuristic. Requiring <em>all thirteen</em> to be false to trigger the
+     *       backfill makes a false-positive rewrite vanishingly unlikely.</li>
      * </ul>
      *
      * <p>An operator who explicitly wants to <em>disable</em> the coalescer must
@@ -152,7 +158,17 @@ public final class ConfigLoader {
                 (a.entityBlockChangeCoalesceWindowMs() == 0L) ||
                 (a.entityBlockChangeMaxTracked() == 0) ||
                 (a.entityChangeAllowlist() == null);
-        if (!needsRewrite) return work;
+        // W5-07 CP-parity toggles: if ALL 13 came back false, treat as pre-W5-07 config
+        // and rewrite to CP defaults. Any explicit true means the operator has already
+        // opted in and we should NOT touch anything (they may have deliberately turned
+        // some off). See javadoc for the false-positive reasoning.
+        boolean w5_07AllFalse =
+                !a.logNaturalBreaks() && !a.logTreeGrowth() && !a.logMushroomGrowth()
+                && !a.logVineGrowth() && !a.logSculkSpread() && !a.logPortals()
+                && !a.logWaterFlow() && !a.logLavaFlow() && !a.logFireExtinguish()
+                && !a.logCampfireStart() && !a.logHopperMetaFilter()
+                && !a.logDuplicateSuppression() && !a.logCancelledChat();
+        if (!needsRewrite && !w5_07AllFalse) return work;
 
         long window = a.entityBlockChangeCoalesceWindowMs() == 0L
                 ? 500L
@@ -168,13 +184,38 @@ public final class ConfigLoader {
                  "modded mob-griefing recording remains OFF by default — add mod entity keys " +
                  "to entityChangeAllowlist to opt in.",
                  window, maxTracked, allowlist.size());
+        if (w5_07AllFalse) {
+            LOG.info("Backfilling W5-07 CP-parity toggles from pre-W5-07 config " +
+                     "(logNaturalBreaks/TreeGrowth/MushroomGrowth/VineGrowth/SculkSpread/" +
+                     "Portals/FireExtinguish/CampfireStart/DuplicateSuppression=true; " +
+                     "WaterFlow/LavaFlow/HopperMetaFilter/CancelledChat=false).");
+        }
+        // Choose CP-parity defaults for W5-07 fields when the config predates them,
+        // else preserve the operator's explicit values.
+        boolean vNaturalBreaks       = w5_07AllFalse ? true  : a.logNaturalBreaks();
+        boolean vTreeGrowth          = w5_07AllFalse ? true  : a.logTreeGrowth();
+        boolean vMushroomGrowth      = w5_07AllFalse ? true  : a.logMushroomGrowth();
+        boolean vVineGrowth          = w5_07AllFalse ? true  : a.logVineGrowth();
+        boolean vSculkSpread         = w5_07AllFalse ? true  : a.logSculkSpread();
+        boolean vPortals             = w5_07AllFalse ? true  : a.logPortals();
+        boolean vWaterFlow           = w5_07AllFalse ? false : a.logWaterFlow();
+        boolean vLavaFlow            = w5_07AllFalse ? false : a.logLavaFlow();
+        boolean vFireExtinguish      = w5_07AllFalse ? true  : a.logFireExtinguish();
+        boolean vCampfireStart       = w5_07AllFalse ? true  : a.logCampfireStart();
+        boolean vHopperMetaFilter    = w5_07AllFalse ? false : a.logHopperMetaFilter();
+        boolean vDuplicateSuppression= w5_07AllFalse ? true  : a.logDuplicateSuppression();
+        boolean vCancelledChat       = w5_07AllFalse ? false : a.logCancelledChat();
         var newActions = new GuardianConfig.Actions(
                 a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(),
                 a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(),
                 a.logSigns(), a.logInteractions(), a.logWorldEvents(),
                 a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(),
                 window, maxTracked,
-                allowlist, a.entityChangeLogAllEntities()
+                allowlist, a.entityChangeLogAllEntities(),
+                vNaturalBreaks, vTreeGrowth, vMushroomGrowth, vVineGrowth,
+                vSculkSpread, vPortals, vWaterFlow, vLavaFlow,
+                vFireExtinguish, vCampfireStart, vHopperMetaFilter,
+                vDuplicateSuppression, vCancelledChat
         );
         return new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), newActions,
