@@ -114,10 +114,14 @@ class CoreProtectFidelityTest {
 
     @Test
     void cp_t15m_rWorldedit() {
-        QueryFilter f = parseOk("t:15m r:#worldedit");
-        // WE token is accepted but does not set radius/world.
+        // WE token now requires a UUID-bearing parse context. Provide one and
+        // verify the marker is set (radius/world still null).
+        java.util.UUID uid = java.util.UUID.randomUUID();
+        QueryFilter f = parser.parse("t:15m r:#worldedit",
+            new QueryParser.QueryParseContext(0, 64, 0, uid));
         assertThat(f.radius()).isNull();
         assertThat(f.worldSel()).isNull();
+        assertThat(f.worldEditPlayer()).isEqualTo(uid);
     }
 
     @Test

@@ -249,11 +249,21 @@ class QueryParserTest {
 
     @Test
     void parsesWorldEditAliases() {
-        // These are accepted but don't populate the contract record's fields.
-        QueryFilter we = parser.parse("r:#we", CTX);
-        QueryFilter wed = parser.parse("r:#worldedit", CTX);
+        // r:#we / r:#worldedit now bind the caller's UUID for later WE-selection
+        // resolution (see WorldEditRegionResolver). Without a UUID in the parse
+        // context (console-issued) they must be rejected.
+        java.util.UUID uid = java.util.UUID.randomUUID();
+        QueryParser.QueryParseContext ctx = new QueryParser.QueryParseContext(100, 64, -200, uid);
+        QueryFilter we = parser.parse("r:#we", ctx);
+        QueryFilter wed = parser.parse("r:#worldedit", ctx);
         assertThat(we.radius()).isNull();
         assertThat(wed.radius()).isNull();
+        assertThat(we.worldEditPlayer()).isEqualTo(uid);
+        assertThat(wed.worldEditPlayer()).isEqualTo(uid);
+
+        // Console (no UUID) must be rejected.
+        assertThatThrownBy(() -> parser.parse("r:#we", CTX))
+            .isInstanceOf(QueryParseException.class);
     }
 
     @Test

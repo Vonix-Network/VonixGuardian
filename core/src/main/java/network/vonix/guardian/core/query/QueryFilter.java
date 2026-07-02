@@ -45,6 +45,11 @@ import java.util.UUID;
  * @param silent       {@code #silent} flag
  * @param optimize     {@code #optimize} flag (CoreProtect-parity; instructs the
  *                     purge path to compact the DB after a delete)
+ * @param worldEditPlayer  when non-{@code null}, the executor MUST resolve the
+ *                     player's current WorldEdit selection at query time and
+ *                     apply it as an x/y/z AABB predicate (via
+ *                     {@link WorldEditRegionResolver}). Set by the
+ *                     {@code r:#we} / {@code r:#worldedit} tokens.
  */
 public record QueryFilter(
     List<UserSel> users,
@@ -61,7 +66,8 @@ public record QueryFilter(
     boolean preview,
     boolean verbose,
     boolean silent,
-    boolean optimize
+    boolean optimize,
+    UUID worldEditPlayer
 ) {
 
     /** Compact-canonical constructor: defensively copies lists and replaces nulls with empty. */
@@ -70,6 +76,36 @@ public record QueryFilter(
         actions = actions == null ? List.of() : List.copyOf(actions);
         include = include == null ? List.of() : List.copyOf(include);
         exclude = exclude == null ? List.of() : List.copyOf(exclude);
+    }
+
+    /**
+     * Legacy constructor without {@code worldEditPlayer}. Existing platform
+     * code (mc-1.18.2 … mc-1.21.1) and unit tests instantiate the record by
+     * positional args; this overload preserves that call shape so they need
+     * no changes when the field is added.
+     */
+    public QueryFilter(
+        List<UserSel> users,
+        Long sinceMillis,
+        Long untilMillis,
+        Integer radius,
+        WorldSel worldSel,
+        Integer centerX, Integer centerY, Integer centerZ,
+        List<ActionSelect> actions,
+        List<String> include,
+        List<String> exclude,
+        Boolean rolledBack,
+        boolean countOnly,
+        boolean preview,
+        boolean verbose,
+        boolean silent,
+        boolean optimize
+    ) {
+        this(users, sinceMillis, untilMillis, radius, worldSel,
+             centerX, centerY, centerZ,
+             actions, include, exclude,
+             rolledBack, countOnly, preview, verbose, silent, optimize,
+             null);
     }
 
     /**
@@ -82,7 +118,8 @@ public record QueryFilter(
             null, null, null,
             List.of(), List.of(), List.of(),
             null,
-            false, false, false, false, false
+            false, false, false, false, false,
+            null
         );
     }
 
@@ -109,7 +146,8 @@ public record QueryFilter(
             new WorldSel(worldId, false),
             centerX, centerY, centerZ,
             actions, include, exclude,
-            rolledBack, countOnly, preview, verbose, silent, optimize
+            rolledBack, countOnly, preview, verbose, silent, optimize,
+            worldEditPlayer
         );
     }
 
@@ -172,6 +210,7 @@ public record QueryFilter(
         private boolean verbose;
         private boolean silent;
         private boolean optimize;
+        private UUID worldEditPlayer;
 
         private Builder() {}
 
@@ -192,6 +231,7 @@ public record QueryFilter(
         public Builder verbose(boolean v)   { this.verbose   = v; return this; }
         public Builder silent(boolean v)    { this.silent    = v; return this; }
         public Builder optimize(boolean v)  { this.optimize  = v; return this; }
+        public Builder worldEditPlayer(UUID v) { this.worldEditPlayer = v; return this; }
 
         public List<UserSel>    users()   { return Collections.unmodifiableList(users); }
         public List<ActionSelect> actions() { return Collections.unmodifiableList(actions); }
@@ -210,6 +250,7 @@ public record QueryFilter(
         public boolean          verbose()   { return verbose; }
         public boolean          silent()    { return silent; }
         public boolean          optimize()  { return optimize; }
+        public UUID             worldEditPlayer() { return worldEditPlayer; }
 
         /** @return the immutable {@link QueryFilter}. */
         public QueryFilter build() {
@@ -218,7 +259,8 @@ public record QueryFilter(
                 centerX, centerY, centerZ,
                 actions, include, exclude,
                 rolledBack,
-                countOnly, preview, verbose, silent, optimize
+                countOnly, preview, verbose, silent, optimize,
+                worldEditPlayer
             );
         }
     }

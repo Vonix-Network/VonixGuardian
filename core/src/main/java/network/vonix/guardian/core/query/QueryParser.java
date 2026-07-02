@@ -62,11 +62,18 @@ public final class QueryParser {
      * console — in that case any {@code r:<n>} token raises {@link
      * QueryParseException}.
      *
-     * @param x  player block X
-     * @param y  player block Y
-     * @param z  player block Z
+     * @param x           player block X
+     * @param y           player block Y
+     * @param z           player block Z
+     * @param playerUuid  the issuing player's UUID (used by {@code r:#we} /
+     *                    {@code r:#worldedit} to resolve their WorldEdit
+     *                    selection at query time); may be {@code null} for
+     *                    console
      */
-    public record QueryParseContext(int x, int y, int z) {}
+    public record QueryParseContext(int x, int y, int z, java.util.UUID playerUuid) {
+        /** Legacy 3-arg constructor for callers that don't need WorldEdit binding. */
+        public QueryParseContext(int x, int y, int z) { this(x, y, z, null); }
+    }
 
     /** Parses a raw filter expression.
      *
@@ -274,11 +281,17 @@ public final class QueryParser {
                     b.worldSel(new QueryFilter.WorldSel(null, true));
                 }
                 case "#we", "#worldedit" -> {
-                    // The contract record has no WorldEdit-selection slot yet; we accept
-                    // the token but leave radius/world unset. See package summary for
-                    // the open contract concern. The lookup engine is expected to read
-                    // the player's WorldEdit region directly when neither r: nor a
-                    // world selector is present and a WE selection exists.
+                    // Mark the filter for post-parse WorldEdit selection resolution.
+                    // The executor (GuardianDao#query / QueryCompiler) will look up
+                    // the player's current WE selection at query time and apply it
+                    // as an x/y/z AABB predicate. If WE isn't installed or there is
+                    // no selection, the executor surfaces
+                    // query.error.worldedit_not_installed /
+                    // query.error.worldedit_no_selection.
+                    if (ctx == null || ctx.playerUuid() == null) {
+                        throw bad(tok, Messages.get("query.error.radius_no_position"));
+                    }
+                    b.worldEditPlayer(ctx.playerUuid());
                 }
                 // CoreProtect-parity dimension shorthands. Map to vanilla
                 // canonical world keys so DAO row matches (rows are stored with
