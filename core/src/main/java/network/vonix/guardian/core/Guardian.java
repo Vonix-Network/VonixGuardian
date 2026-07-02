@@ -206,6 +206,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         }
         UndoStack undo = new UndoStack(20);
         Theme theme = ThemeRegistry.get(config.theme());
+        network.vonix.guardian.core.i18n.Messages.setLanguage(config.language());
 
         // Coalescer: window > 0 enables, negative/zero disables. Backward-compat
         // fills 0→500 in ConfigLoader; negative is an explicit operator opt-out.
@@ -468,6 +469,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.config = merged;
         this.gate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
+        network.vonix.guardian.core.i18n.Messages.setLanguage(merged.language());
 
         // W3-B5: per-world overrides. Point the store at the new root, re-scan the
         // worlds/ dir (files may have been added/removed), and re-register the hook
