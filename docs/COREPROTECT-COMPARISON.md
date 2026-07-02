@@ -1,11 +1,46 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-Snapshot: **VG @ `5508b7c`** on branch `v1.1.5-entity-filter` (2026-07-01) — includes the v1.1.5 `VanillaGrieferSet` vanilla-griefer allowlist.
+Snapshot: **VG @ `073a233`** on branch `integration/v1.2.0` (2026-07-02) — includes v1.1.6 through the first v1.2.0 integration wave.
 CP reference: `docs.coreprotect.net` v23.x stable + v24 Patreon (auto-purge, migrate-db, CP-Fabric-Edition Patreon preview MC 26.1.2).
 
-**Method.** This document was produced by 7 parallel subagent audits — 6 dimension-owners (command surface, action taxonomy, storage/perf, config/perms, API/ecosystem, modded-runtime) plus 1 adversarial wiring auditor. Every claim about VG cites `file:line`; every claim about CP cites the frozen doc snapshot section. Findings that turned into bugs live in the sibling doc [`WAVE-AUDIT-1.1.5.md`](./WAVE-AUDIT-1.1.5.md).
-
 Legend: ✅ full parity · 🟡 partial · 🟥 stub / broken / dead / advertised-but-unwired · ❌ missing · ❓ unverifiable
+
+---
+
+## v1.2.0 refresh summary
+
+This section supersedes stale v1.1.5 findings below when they conflict. The older matrix remains as detailed historical context until the whole file is regenerated row-by-row.
+
+### Claims that flipped from missing/broken to implemented
+
+- ✅ `/vg reload` now calls `Guardian.reloadConfig(...)` and reports hot-swapped/restart-required/error lists.
+- ✅ `/vg undo` now executes the inverse rollback/restore plan for non-legacy entries instead of only popping history.
+- ✅ `/vg migrate-db <sqlite|mysql|postgresql> CONFIRM` exists and routes through `MigrateDbCommand`; console-only guard is enforced.
+- ✅ Auto-purge support landed in core in the v1.1.7 wave.
+- ✅ Per-world overrides, `blacklist.txt`, granular child permissions, per-node op fallback, decimal/range time parsing, PreLogDispatcher, and sign schema v3→v4 all landed in v1.1.7.
+- ✅ `target` width/schema migration issue was addressed after the v1.1.5 audit.
+- ✅ `GuardianSuggestions.ACTIONS` now uses canonical `ActionTokens.ALL`, removing the parser/suggestion mismatch.
+- ✅ Hanging place/break submit paths now exist on Forge/NeoForge and Fabric native paths.
+- ✅ Fabric native event parity improved in v1.2.0: hanging place/break and async inspector left-click path were added to all four Fabric cells.
+- ✅ PreLogEvent native bridges now exist on all 8 loader cells (Forge event bus, NeoForge cancellable event, Fabric array-backed event).
+- ✅ Maven/publishing ecosystem work exists: `docs/PLUGINS.md`, `docs/API.md` Javadoc/index extension, and Maven Central publishing config in `core/build.gradle`.
+- ✅ English i18n foundation exists: `Messages`, `lang/en_us.properties`, translator README, and QueryParser error extraction.
+
+### Remaining CoreProtect gaps as of this snapshot
+
+1. ❌ `/vg teleport` / `/vg tp` — not registered. Needs a per-player numbered lookup-result cache.
+2. ❌ `/vg give` — not registered. Needs lookup-result cache plus loader-specific item reconstruction/give facade.
+3. ❌ `/vg config get/set` — not registered. `/vg reload` exists, but no key-level hot-swap surface.
+4. 🟡 Fabric still lacks true native coverage for several event families that Fabric API does not expose directly: real block place, mob block change, explosion detonate, piston pre, container open/close, bucket fill/empty, item drop/pickup/craft, sign edit, fire/ice/spread/dispense/leaves. The v1.2.0 Fabric mixin infrastructure is wired, but implementation mixins are not present yet.
+5. 🟡 Forge/NeoForge world-event mixin infrastructure is wired, but no actual FireBlock/IceBlock/SpreadingSnowyDirtBlock/LeavesBlock/DispenserBlock mixin classes are present yet.
+6. 🟡 NeoForge 1.21.1 bucket mixin infrastructure is wired, but BucketItem/MilkBucketItem mixin implementation is not present yet.
+7. ❌ `r:#worldedit` still has no actual WorldEdit selection bridge.
+8. 🟡 Language support is English-only; CP has broad translated bundles.
+9. 🟡 Third-party ecosystem is documented but still nascent; CP has mature external integrations.
+
+### Command audit pointer
+
+See [`COMMAND-AUDIT-1.2.0.md`](./COMMAND-AUDIT-1.2.0.md) for the current `/vg` registration table: 15 wired command/alias entries, 0 stubs, 3 missing CoreProtect command surfaces.
 
 ---
 
