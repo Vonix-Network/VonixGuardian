@@ -49,8 +49,15 @@ public final class PurgeEngine {
     }
 
     /**
-     * Delete actions matching {@code filter} provided the filter's
-     * {@code sinceMillis} is at least {@code minAgeSeconds} in the past.
+     * Delete actions matching {@code filter} that are older than the requested
+     * {@code t:<age>} bound, provided that bound satisfies the configured
+     * minimum age floor.
+     *
+     * <p>CoreProtect purge semantics are age-retention semantics: {@code t:30d}
+     * deletes rows older than 30 days, not rows newer than 30 days. The regular
+     * lookup parser represents {@code t:30d} as {@link QueryFilter#sinceMillis()},
+     * so this method validates that lower lookup bound and then converts it into
+     * a purge-only upper bound before calling the DAO.</p>
      *
      * <p>If {@link QueryFilter#optimize()} is {@code true}, a best-effort
      * {@code OPTIMIZE TABLE} / {@code VACUUM ANALYZE} / {@code VACUUM} runs
@@ -77,11 +84,12 @@ public final class PurgeEngine {
             throw new IllegalArgumentException(
                 "purge requires a time filter at least " + minAgeSeconds + "s old");
         }
+        QueryFilter purgeFilter = olderThan(filter, since);
         mutex.lock();
         try {
-            LOG.info("PurgeEngine: executing purge sinceMillis={} minAgeSeconds={} optimize={}",
+            LOG.info("PurgeEngine: executing purge olderThanMillis={} minAgeSeconds={} optimize={}",
                 since, minAgeSeconds, filter.optimize());
-            long deleted = dao.purge(filter);
+            long deleted = dao.purge(purgeFilter);
 
             GuardianDao.OptimizeResult opt = null;
             if (filter.optimize()) {
@@ -106,6 +114,16 @@ public final class PurgeEngine {
         } finally {
             mutex.unlock();
         }
+    }
+
+    private static QueryFilter olderThan(QueryFilter base, long olderThanMillis) {
+        return new QueryFilter(
+            base.users(), null, olderThanMillis, base.radius(), base.worldSel(),
+            base.centerX(), base.centerY(), base.centerZ(),
+            base.actions(), base.include(), base.exclude(),
+            base.rolledBack(), base.countOnly(), base.preview(), base.verbose(),
+            base.silent(), base.optimize(), base.worldEditPlayer()
+        );
     }
 
     /** DAO handle (package-visibility for {@code AutoPurgeScheduler}). */

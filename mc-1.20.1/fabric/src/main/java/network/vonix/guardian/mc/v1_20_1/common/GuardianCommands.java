@@ -341,13 +341,15 @@ public final class GuardianCommands {
             WORKER.submit(() -> {
                 try {
                     long total = g.dao().count(filter);
-                    int offset = (pageF - 1) * perPageF;
+                    int pages = (int) Math.max(1L, (total + perPageF - 1) / Math.max(1, perPageF));
+                    int pageActual = Math.min(Math.max(1, pageF), pages);
+                    int offset = (pageActual - 1) * perPageF;
                     List<Action> rows = g.dao().query(filter, offset, perPageF);
                     // W3-B7: filter rows by CoreProtect-style child perms (e.g. lookup.chat)
                     UUID viewer = actorUuid(src);
                     rows = LookupPermissionFilter.filter(g.perms(), viewer, PermissionNode.LOOKUP, rows);
                     long now = System.currentTimeMillis();
-                    List<Component> pageOut = LookupFormatter.page(g.theme(), rows, total, pageF, perPageF, now);
+                    List<Component> pageOut = LookupFormatter.page(g.theme(), rows, total, pageActual, perPageF, now);
                     server.execute(() -> {
                         for (Component c : pageOut) {
                             send(src, c);

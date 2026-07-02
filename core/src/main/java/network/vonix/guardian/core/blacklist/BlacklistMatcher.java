@@ -71,13 +71,14 @@ public final class BlacklistMatcher {
     public boolean matches(Action a) {
         Objects.requireNonNull(a, "action");
 
-        String actorLower = a.actorName() == null ? null
-                : a.actorName().toLowerCase(Locale.ROOT);
-
-        if (actorLower != null && userNames.contains(actorLower)) return true;
-        if (a.actorUuid() != null && userUuids.contains(a.actorUuid())) return true;
-
         ActionType t = a.type();
+        String actorLower = null;
+
+        if (!userNames.isEmpty() && a.actorName() != null) {
+            actorLower = a.actorName().toLowerCase(Locale.ROOT);
+            if (userNames.contains(actorLower)) return true;
+        }
+        if (a.actorUuid() != null && userUuids.contains(a.actorUuid())) return true;
 
         // command:<name>  — matches COMMAND actions whose message starts with "/<name>"
         if (t == ActionType.COMMAND && !commandPrefixes.isEmpty() && a.targetId() != null) {
@@ -89,23 +90,26 @@ public final class BlacklistMatcher {
             if (commandPrefixes.contains(head)) return true;
         }
 
-        String tgtLower = a.targetId() == null ? null
-                : a.targetId().toLowerCase(Locale.ROOT);
+        String tgtLower = null;
 
         // block:<id> — BLOCK_PLACE / BLOCK_BREAK only
-        if (tgtLower != null && (t == ActionType.BLOCK_PLACE || t == ActionType.BLOCK_BREAK)
-                && blockIds.contains(tgtLower)) {
-            return true;
+        if (!blockIds.isEmpty() && (t == ActionType.BLOCK_PLACE || t == ActionType.BLOCK_BREAK)
+                && a.targetId() != null) {
+            tgtLower = a.targetId().toLowerCase(Locale.ROOT);
+            if (blockIds.contains(tgtLower)) return true;
         }
 
         // entity:<id> — ENTITY_KILL / ENTITY_SPAWN
-        if (tgtLower != null && (t == ActionType.ENTITY_KILL || t == ActionType.ENTITY_SPAWN)
-                && entityIds.contains(tgtLower)) {
-            return true;
+        if (!entityIds.isEmpty() && (t == ActionType.ENTITY_KILL || t == ActionType.ENTITY_SPAWN)
+                && a.targetId() != null) {
+            if (tgtLower == null) tgtLower = a.targetId().toLowerCase(Locale.ROOT);
+            if (entityIds.contains(tgtLower)) return true;
         }
 
         // composite <id>@<user> — id matches action's target, user matches actor
-        if (!composites.isEmpty() && tgtLower != null && actorLower != null) {
+        if (!composites.isEmpty() && a.targetId() != null && a.actorName() != null) {
+            if (tgtLower == null) tgtLower = a.targetId().toLowerCase(Locale.ROOT);
+            if (actorLower == null) actorLower = a.actorName().toLowerCase(Locale.ROOT);
             if (composites.contains(new BlacklistFile.Composite(tgtLower, actorLower))) {
                 return true;
             }

@@ -19,6 +19,9 @@ import java.util.Set;
  */
 public final class QueryCompiler {
 
+    private static final int PLACEHOLDER_CACHE_MAX = 64;
+    private static final String[] PLACEHOLDER_CACHE = buildPlaceholderCache();
+
     /**
      * Columns we will ever splice into SQL by name (e.g. for ORDER BY, projection).
      * Anything not in this set MUST be bound, not concatenated.
@@ -192,6 +195,21 @@ public final class QueryCompiler {
     }
 
     private static String placeholders(int n) {
+        if (n >= 0 && n <= PLACEHOLDER_CACHE_MAX) {
+            return PLACEHOLDER_CACHE[n];
+        }
+        return buildPlaceholders(n);
+    }
+
+    private static String[] buildPlaceholderCache() {
+        String[] cache = new String[PLACEHOLDER_CACHE_MAX + 1];
+        for (int i = 0; i < cache.length; i++) {
+            cache[i] = buildPlaceholders(i);
+        }
+        return cache;
+    }
+
+    private static String buildPlaceholders(int n) {
         StringBuilder out = new StringBuilder(n * 2);
         for (int i = 0; i < n; i++) {
             if (i > 0) out.append(',');

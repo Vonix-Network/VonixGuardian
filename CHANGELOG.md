@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-07-02
+
+### Fixed
+
+- **Manual purge retention semantics** — `/vg purge t:<age>` now deletes rows **older than** the requested age, matching CoreProtect retention behavior. Previously the shared lookup filter was passed through as `sinceMillis`, which could target newer rows instead of expired history. Added regression coverage for old/new row preservation and too-recent/missing time bounds.
+- **Rollback/restore safety guard** — rollback and restore planning now require an explicit time filter before querying or mutating, reducing the risk of accidental unbounded world changes.
+- **Lookup page bounds** — `/vg lookup <page>` now clamps out-of-range page requests to the real last page across all 8 loader cells, avoiding empty/stale-looking results from bad offsets.
+- **Public API version test drift** — API version tests now assert against the source version constant instead of a stale literal.
+
+### Optimized
+
+- Precomputed `EventGate` action-type enablement instead of switching per submitted event.
+- Reduced unnecessary lowercasing in blacklist matching hot paths.
+- Cached common SQL placeholder strings in `QueryCompiler`.
+
 ## [1.2.3] - 2026-07-02
 
 ### Fixed

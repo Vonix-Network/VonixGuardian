@@ -1,8 +1,8 @@
 # VonixGuardian — TODO to reach 100% CoreProtect parity
 
-**Status at v1.2.2 (2026-07-02):** ~93% CoreProtect-parity by feature surface. Command tree is 1:1, permission model is stronger, storage supports SQLite/MySQL/MariaDB/PostgreSQL, i18n has 14 locales, WorldEdit bridge works, `#optimize` executes real `OPTIMIZE TABLE` / `VACUUM`. The remaining ~7% is split between (A) event-coverage families that need mixins to see the events at all, (B) config-shape parity (`blacklist.txt`, per-world overrides), (C) polish (Fabric mixin infrastructure gaps, deferred audit types).
+**Status at v1.2.4 (2026-07-02):** ~93% CoreProtect-parity by feature surface. Command tree is 1:1, permission model is stronger, storage supports SQLite/MySQL/MariaDB/PostgreSQL, i18n has 14 locales, WorldEdit bridge works, `#optimize` executes real `OPTIMIZE TABLE` / `VACUUM`. The remaining ~7% is split between (A) event-coverage families that need mixins to see the events at all, (B) config-shape parity (`blacklist.txt`, per-world overrides), (C) polish (Fabric mixin infrastructure gaps, deferred audit types).
 
-**Do NOT read this as "VG is broken" — VG at v1.2.2 is production-ready and CoreProtect-comparable for every server it's currently deployed on.** This TODO is the roadmap to being able to say **"exact 1:1 port"** without a single caveat.
+**Do NOT read this as "VG is broken" — VG at v1.2.4 is production-ready and CoreProtect-comparable for every server it's currently deployed on.** This TODO is the roadmap to being able to say **"exact 1:1 port"** without a single caveat.
 
 ## Source of truth
 

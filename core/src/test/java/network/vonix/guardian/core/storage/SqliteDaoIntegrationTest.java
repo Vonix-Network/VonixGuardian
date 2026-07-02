@@ -7,7 +7,9 @@ import network.vonix.guardian.core.storage.jdbc.SqliteDao;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -125,6 +127,55 @@ class SqliteDaoIntegrationTest {
         // but i must satisfy both: i%100 ≤ 5 AND (i/100)%100 ≤ 5
         // → i in {0..5, 100..105, 200..205, ..., 900..905} = 10 * 6 = 60
         assertThat(radiusCount).isEqualTo(36);
+    }
+
+    @Test
+    void query_orders_newest_rows_first_after_insert() throws Exception {
+        long beforeRestart = 1_700_000_000_000L;
+        long afterRestart = beforeRestart + 60_000L;
+
+        dao.insertBatch(List.of(
+            new Action(-1L, beforeRestart, ActionType.BLOCK_BREAK,
+                users.get(0), userNames.get(0), worlds.get(0),
+                0, 64, 0, "minecraft:stone", null, 1, false, "before-restart"),
+            new Action(-1L, afterRestart, ActionType.BLOCK_PLACE,
+                users.get(0), userNames.get(0), worlds.get(0),
+                1, 64, 0, "minecraft:dirt", null, 1, false, "after-restart")
+        ));
+
+        List<Action> rows = dao.query(QueryFilter.empty(), 0, 10);
+
+        assertThat(rows).extracting(Action::sourceTag)
+            .containsExactly("after-restart", "before-restart");
+        assertThat(rows.get(0).timestamp()).isEqualTo(afterRestart);
+    }
+
+    @Test
+    void file_backed_lookup_sees_rows_inserted_after_reopen(@TempDir Path tmp) throws Exception {
+        Path db = tmp.resolve("guardian.db");
+        long beforeRestart = 1_700_000_000_000L;
+        long afterRestart = beforeRestart + 60_000L;
+
+        dao.close();
+        dao = new SqliteDao("jdbc:sqlite:" + db);
+        dao.init();
+        dao.insertBatch(List.of(new Action(-1L, beforeRestart, ActionType.BLOCK_BREAK,
+            users.get(0), userNames.get(0), worlds.get(0),
+            0, 64, 0, "minecraft:stone", null, 1, false, "before-restart")));
+        dao.close();
+
+        dao = new SqliteDao("jdbc:sqlite:" + db);
+        dao.init();
+        dao.insertBatch(List.of(new Action(-1L, afterRestart, ActionType.BLOCK_PLACE,
+            users.get(0), userNames.get(0), worlds.get(0),
+            1, 64, 0, "minecraft:dirt", null, 1, false, "after-restart")));
+
+        List<Action> rows = dao.query(QueryFilter.empty(), 0, 10);
+        long total = dao.count(QueryFilter.empty());
+
+        assertThat(total).isEqualTo(2L);
+        assertThat(rows).extracting(Action::sourceTag)
+            .containsExactly("after-restart", "before-restart");
     }
 
     @Test

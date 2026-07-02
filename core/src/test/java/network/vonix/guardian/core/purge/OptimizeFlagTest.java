@@ -62,8 +62,12 @@ class OptimizeFlagTest {
         @Override public void close() { }
         // Skip size probe so we don't need to mock any SELECTs.
         @Override protected long safeSizeBytes() { return -1L; }
+        QueryFilter lastPurgeFilter;
         // Bypass real DELETE SQL — this test only cares about the OPTIMIZE gate.
-        @Override public long purge(QueryFilter filter) { return deleted; }
+        @Override public long purge(QueryFilter filter) {
+            this.lastPurgeFilter = filter;
+            return deleted;
+        }
     }
 
     private static Connection mockConn() throws SQLException {
@@ -103,6 +107,8 @@ class OptimizeFlagTest {
 
         assertThat(r.deletedCount()).isEqualTo(42L);
         assertThat(r.optimized()).isTrue();
+        assertThat(dao.lastPurgeFilter.sinceMillis()).isNull();
+        assertThat(dao.lastPurgeFilter.untilMillis()).isEqualTo(r.requestedSinceMs());
 
         List<String> sqls = captureExecuted(c);
         assertThat(sqls).hasSize(1);

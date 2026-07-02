@@ -98,6 +98,7 @@ public final class RollbackEngine {
                              UUID actorUuid) throws Exception {
         Objects.requireNonNull(filter, "filter");
         Objects.requireNonNull(mode, "mode");
+        requireTemporalBound(filter, mode);
         QueryFilter effective = withRolledBack(filter, mode == RollbackResult.Mode.RESTORE);
         List<Action> matches = fetchMatches(effective);
         if (matches.isEmpty()) {
@@ -203,6 +204,12 @@ public final class RollbackEngine {
             offset += PAGE_SIZE;
         }
         return out;
+    }
+
+    private static void requireTemporalBound(QueryFilter filter, RollbackResult.Mode mode) {
+        if (filter.sinceMillis() == null && filter.untilMillis() == null) {
+            throw new IllegalArgumentException(mode + " requires an explicit time filter (t:<age>)");
+        }
     }
 
     /**

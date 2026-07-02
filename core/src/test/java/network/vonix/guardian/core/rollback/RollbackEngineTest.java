@@ -40,13 +40,24 @@ class RollbackEngineTest {
         mutator = new RecordingMutator();
         sync = Runnable::run; // synchronous "main thread"
         engine = new RollbackEngine(dao, mutator, sync);
-        filter = new QueryFilter(
-            List.of(), null, null, null, null,
-            null, null, null,
-            List.of(), List.of(), List.of(),
-            null,
-            false, false, false, false, false
-        );
+        filter = QueryFilter.builder()
+            .sinceMillis(System.currentTimeMillis() - 86_400_000L)
+            .build();
+    }
+
+    // ------------------------------------------------------------------ guards
+
+    @Test
+    void rollbackAndRestoreRequireExplicitTimeFilter() throws Exception {
+        QueryFilter unbounded = QueryFilter.empty();
+
+        assertThatThrownBy(() -> engine.rollback(unbounded, false))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("time filter");
+        assertThatThrownBy(() -> engine.restore(unbounded, false))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("time filter");
+        verify(dao, never()).query(any(), anyInt(), anyInt());
     }
 
     // ------------------------------------------------------------------ ctor

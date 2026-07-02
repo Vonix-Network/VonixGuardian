@@ -44,13 +44,9 @@ class RollbackPlanTest {
         mutator = new RecordingMutator();
         Executor sync = Runnable::run;
         engine = new RollbackEngine(dao, mutator, sync);
-        filter = new QueryFilter(
-            List.of(), null, null, null, null,
-            null, null, null,
-            List.of(), List.of(), List.of(),
-            null,
-            false, false, false, false, false
-        );
+        filter = QueryFilter.builder()
+            .sinceMillis(System.currentTimeMillis() - 86_400_000L)
+            .build();
     }
 
     // ---------------------------------------------------------------- plan()

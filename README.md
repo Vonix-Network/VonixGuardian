@@ -11,7 +11,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 
-## Feature surface (v1.2.0)
+## Feature surface (v1.2.4)
 
 - **Logged actions** (39 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 

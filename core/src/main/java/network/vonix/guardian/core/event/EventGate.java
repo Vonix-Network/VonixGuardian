@@ -5,6 +5,7 @@ import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.config.GuardianConfig;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -36,6 +37,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class EventGate {
 
     private final GuardianConfig.Actions cfg;
+    private final EnumSet<ActionType> enabledTypes;
     private final Set<String> worldBlacklist;
     private final Set<String> blockBlacklist;
     private final Set<String> sourceBlacklist;
@@ -49,6 +51,7 @@ public final class EventGate {
             throw new NullPointerException("cfg");
         }
         this.cfg = cfg;
+        this.enabledTypes = enabledTypes(cfg);
         this.worldBlacklist = freeze(cfg.worldBlacklist());
         this.blockBlacklist = freeze(cfg.blockBlacklist());
         this.sourceBlacklist = freeze(cfg.sourceBlacklist());
@@ -117,6 +120,20 @@ public final class EventGate {
     }
 
     private boolean typeEnabled(ActionType t) {
+        return t != null && enabledTypes.contains(t);
+    }
+
+    private static EnumSet<ActionType> enabledTypes(GuardianConfig.Actions cfg) {
+        EnumSet<ActionType> out = EnumSet.noneOf(ActionType.class);
+        for (ActionType t : ActionType.values()) {
+            if (typeEnabled(cfg, t)) {
+                out.add(t);
+            }
+        }
+        return out;
+    }
+
+    private static boolean typeEnabled(GuardianConfig.Actions cfg, ActionType t) {
         return switch (t.category()) {
             case BLOCK -> cfg.logBlocks();
             case CONTAINER -> cfg.logContainers();
