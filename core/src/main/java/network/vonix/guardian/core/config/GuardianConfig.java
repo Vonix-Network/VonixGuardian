@@ -433,7 +433,7 @@ public record GuardianConfig(
             }
         }
 
-        boolean warnDefaultSalt = false;
+        boolean warnDefaultSalt = false; // legacy — retained so downstream tests still compile; salt reuse now errors above
         if (privacy == null) {
             errors.add("privacy: section missing");
         } else if (privacy.hashIps) {
@@ -443,7 +443,12 @@ public record GuardianConfig(
                 errors.add("privacy.salt: must be >= 16 chars when privacy.hashIps is true (got "
                     + privacy.salt.length() + ")");
             } else if (DEFAULT_PRIVACY_SALT.equals(privacy.salt)) {
-                warnDefaultSalt = true;
+                // v1.2.0 fail-closed: refuse to boot with hashIps=true AND the shipped default
+                // placeholder salt. This is a public-release safety gate — a default salt gives
+                // trivially reversible IP hashes, so an operator who genuinely wants hashing
+                // must change it. Set hashIps=false to opt out entirely.
+                errors.add("privacy.salt: must be changed from the default placeholder when "
+                    + "privacy.hashIps is true; set a random >=16 char salt or set hashIps=false");
             }
         }
 
@@ -482,7 +487,9 @@ public record GuardianConfig(
         }
 
         if (warnDefaultSalt) {
-            LOG.warn("Privacy.salt is still the default placeholder — change it in production!");
+            // v1.2.0: default-salt case is now hard error above; retained no-op branch so any
+            // legacy caller flipping this flag still sees a harmless log rather than an NPE.
+            LOG.warn("Privacy.salt legacy warn path invoked — verify config.");
         }
     }
 

@@ -14,12 +14,13 @@ plugins {
 
 rootProject.name = 'VonixGuardian'
 
-// Build profile: 'core' builds only :core; 'mc1211' adds 1.21.1 NeoForge + common;
-// 'all' adds every MC version + loader. Default = 'all' when unset.
-// 'forgeonly' = every Forge + NeoForge module, skipping Fabric (avoids fabric-loom
-// classloader conflict during cross-version builds; v1.0.1 hotfix only touches
-// Forge-family loaders, so this profile is the canonical hotfix-build profile).
+// Build profile: 'coreonly' builds only :core (fast iteration on the engine);
+// 'mc1211' adds 1.21.1 NeoForge + Fabric; 'all' adds every MC version + loader
+// (default when unset). 'forgeonly' = every Forge + NeoForge module, skipping
+// Fabric (avoids fabric-loom classloader conflict during cross-version builds).
+// Legacy alias 'core' == 'coreonly'.
 def profile = providers.gradleProperty('buildProfile').getOrElse('all')
+if (profile == 'core') profile = 'coreonly'
 
 // Pure-Java engine (no MC).
 include 'core'

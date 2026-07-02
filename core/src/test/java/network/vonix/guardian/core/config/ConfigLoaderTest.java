@@ -370,13 +370,17 @@ class ConfigLoaderTest {
     }
 
     @Test
-    @DisplayName("validate() with hashIps=true + default salt does NOT fail (WARN logged via SLF4J)")
-    void defaultSaltWithHashIpsPasses() {
+    @DisplayName("validate() with hashIps=true + default salt FAILS (v1.2.0 fail-closed)")
+    void defaultSaltWithHashIpsFailsClosed() {
         GuardianConfig d = GuardianConfig.defaults();
         GuardianConfig cfg = with(d,
             new GuardianConfig.Privacy(true, GuardianConfig.DEFAULT_PRIVACY_SALT));
-        // Must NOT throw — placeholder salt only emits a WARN log, not a validation error.
-        cfg.validate();
+        // v1.2.0: hashIps=true + placeholder salt is now a hard validation error,
+        // not a WARN. Operators who want hashing MUST set a real random salt.
+        assertThatThrownBy(cfg::validate)
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("privacy.salt")
+            .hasMessageContaining("default placeholder");
     }
 
     @Test
