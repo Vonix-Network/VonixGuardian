@@ -27,6 +27,7 @@ import java.util.Set;
  * @param privacy      IP hashing settings for SESSION_JOIN rows
  * @param purge        minimum-age floors for {@code /vg purge}
  * @param theme        chat theme key; must be a known {@link ThemeRegistry} entry
+ * @param language     player-facing message bundle key; one of {@link #KNOWN_LANGUAGES}
  * @since 0.1.0
  */
 public record GuardianConfig(
@@ -38,8 +39,27 @@ public record GuardianConfig(
     Lookup lookup,
     Privacy privacy,
     Purge purge,
-    String theme
+    String theme,
+    String language
 ) {
+
+    /**
+     * Backward-compat constructor for callers/tests written before {@code language} existed.
+     * Defaults {@code language} to {@code "en_us"}.
+     */
+    public GuardianConfig(
+        Database database,
+        Queue queue,
+        LogFile logFile,
+        Actions actions,
+        Permissions permissions,
+        Lookup lookup,
+        Privacy privacy,
+        Purge purge,
+        String theme
+    ) {
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge, theme, "en_us");
+    }
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianConfig.class);
 
@@ -53,6 +73,15 @@ public record GuardianConfig(
     /** Known database backend types. */
     public static final Set<String> KNOWN_DB_TYPES =
         Set.of("sqlite", "mysql", "postgresql");
+
+    /**
+     * Known language bundle keys — one bundle per key must live under
+     * {@code core/src/main/resources/lang/<key>.properties}.
+     */
+    public static final Set<String> KNOWN_LANGUAGES = Set.of(
+        "en_us", "en", "de", "es", "fr", "ja", "ko",
+        "pl", "ru", "tr", "tt", "uk", "vi", "zh_cn", "zh_tw"
+    );
 
     /**
      * Database connection settings.
@@ -265,7 +294,8 @@ public record GuardianConfig(
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
             new Purge(86_400L, 2_592_000L, 0L, "03:30"),
-            "aqua"
+            "aqua",
+            "en_us"
         );
     }
 
@@ -474,6 +504,10 @@ public record GuardianConfig(
 
         if (theme == null || !KNOWN_THEMES.contains(theme)) {
             errors.add("theme: must be one of " + KNOWN_THEMES + " (got " + theme + ")");
+        }
+
+        if (language == null || !KNOWN_LANGUAGES.contains(language)) {
+            errors.add("language: must be one of " + KNOWN_LANGUAGES + " (got " + language + ")");
         }
 
         if (!errors.isEmpty()) {

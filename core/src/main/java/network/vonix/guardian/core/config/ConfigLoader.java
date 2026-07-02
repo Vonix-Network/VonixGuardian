@@ -146,6 +146,14 @@ public final class ConfigLoader {
                 work.theme()
             );
         }
+        if (work.language() == null) {
+            LOG.info("Backfilling language=\"en_us\" (pre-W5-06 config)");
+            work = new GuardianConfig(
+                work.database(), work.queue(), work.logFile(), work.actions(),
+                work.permissions(), work.lookup(), work.privacy(), work.purge(),
+                work.theme()
+            );
+        }
         if (work.actions() == null) return work;
         var a = work.actions();
         boolean needsRewrite =
