@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-02
+
+### Added
+
+- **`/vg teleport <world> <x> [y] <z>` (alias `/vg tp`)** and **`/vg give <itemId> [amount]`** — full CoreProtect 1:1 command parity across all 8 loader cells. Both mirror the shape of `net.coreprotect.command.TeleportCommand` / `GiveCommand` from the CP v24.0 source. New permission nodes `vonixguardian.command.teleport` (default op) and `vonixguardian.command.give` (default false).
+- **`/vg config get <key>`** and **`/vg config set <key> <value>`** — key-level runtime hot-swap for whitelisted config keys (theme, log level, purge floors, action toggles, entity-block coalescer, page size / max radius / max results, IP hashing toggle, etc.). Persists via `ConfigLoader.save(...)` and applies via `Guardian.reloadConfig(...)`.
+- **CoreProtect-parity public API** on `network.vonix.guardian.core.api.VonixGuardianAPI` (W5-03): `itemLookup`, `inventoryLookup`, `sessionLookup`, `usernameLookup`, `signLookup`, `queueLookup` for query surface; `logChat`, `logCommand`, `logInteraction`, `logPlacement`, `logRemoval` for direct-write surface. Ships 5 new typed result records: `ItemLookupResult`, `InventoryLookupResult`, `SessionLookupResult`, `UsernameLookupResult`, `SignLookupResult`.
+- **WorldEdit selection bridge** (`r:#worldedit` / `r:#we`) — reflection-only soft-dep resolver `WorldEditRegionResolver`. Console callers get `query.error.radius_no_position`; players without a selection get `query.error.worldedit_no_selection`; missing WorldEdit yields zero rows rather than crashing.
+- **`#optimize` hashtag flag** — now actually executes: MySQL runs `OPTIMIZE TABLE vg_actions, vg_rollback_batches, vg_rollback_batch_actions`; PostgreSQL runs `VACUUM ANALYZE` per table in autocommit; SQLite runs whole-DB `VACUUM`. Regression tests pin every dialect path.
+- **Forge / NeoForge world-event mixins** (W5-01) — 5 mixin classes × 4 cells (1.18.2, 1.19.2, 1.20.1 Forge and 1.21.1 NeoForge) covering `FireBlock` (burn + ignite), `IceBlock` (fade), `SpreadingSnowyDirtBlock` (grass / mycelium spread), `LeavesBlock` (persistent-false decay), `DispenserBlock` (dispense). Closes the long-standing "declared in `EventSubmitter` but zero handlers fire" gap.
+- **NeoForge 1.21.1 bucket mixins** (W5-02) — `BucketItemMixin` and `MilkBucketItemMixin`, restoring CP-parity bucket fill/empty logging after NeoForge upstream removed `FillBucketEvent`.
+- **Fabric event coverage via mixins** (W5-08) — 10 mixin types × 4 Fabric cells = 40 classes, plus 4 `FabricMixinBridge` helpers. P0: `BlockPlace`, `LivingDestroyBlock`, `Explosion`, `SignChange`, `BucketItem`. P1: `Piston`, `Container` (chest open/close), `ItemToss`, `ItemPickup`, `CraftItem`. All mixins swallow throwables so a logging failure can never poison a world tick.
+- **Forge / NeoForge / Fabric mixin infrastructure** (W4-04, W4-05) — `vg.mixins.json` scaffolding + `mods.toml` declarations across all 8 cells, so future waves can drop mixin classes into pre-wired packages with no build-file churn.
+- **Native `PreLogEvent` bridges** on all 8 loader cells (W4-09) — third-party mods can cancel or annotate audit entries via their platform's native event bus (`MinecraftForge.EVENT_BUS`, `NeoForge.EVENT_BUS`, Fabric `Event<T>` callback). Bridges into the core `PreLogDispatcher`.
+- **14 CoreProtect-parity language bundles** (W5-06) — ported `en, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh_cn, zh_tw` from CP's `lang/*.yml`. Selectable via new `config.language` field (validated against `KNOWN_LANGUAGES`; defaults to `en_us`). `Messages.setLanguage(...)` swaps the active bundle; unknown / missing keys silently fall back to `en_us`.
+- **English message-key foundation** (W4-12) — `network.vonix.guardian.core.i18n.Messages` central lookup + `lang/en_us.properties` covering the entire `QueryParser` player-error surface + `/vg status` section headers. All `QueryParser` player errors now route through `Messages.get(...)`.
+- **13 additional per-event config toggles** on `GuardianConfig.Actions` (W5-07) — CP-parity granular knobs for natural breaks, tree/mushroom/vine/sculk growth, portals, water/lava flow, fire extinguish, campfire start, hopper meta filter, duplicate suppression, cancelled chat. Backward-compat via `@Deprecated` 18-arg positional constructor + `ConfigLoader.migrateForwardCompat()` heuristic backfill.
+- **Fabric event wiring parity via native API** (W4-03) — `AttackEntityCallback` → HANGING_BREAK, `ServerEntityEvents.ENTITY_LOAD` → HANGING_PLACE, async left-click inspector lookup on all 4 Fabric cells. Every gap Fabric API cannot cover natively is now enumerated as a single `TODO(v1.2.0): mixin` block in each cell's `register()` — the audit trail is honest about what needs a mixin (now delivered by W5-08).
+- **Ecosystem publishing config** (W4-14) — Maven Central staging URL + POM enrichment + `withJavadocJar()` + `signing` block (GPG-driven, only required when publishing to Central). GitHub Packages publishing preserved unchanged. Full `docs/PLUGINS.md` authoring guide for third-party mods (soft-dep Gradle coordinates, PreLogEvent hook example, PermissionNode reuse, EventSubmitter façade). `docs/API.md` gains a `Public class index` section + CI Javadoc site link.
+- **`docs/COREPROTECT-GAP-INVENTORY.md`** — exhaustive gap audit against CoreProtect v24.0 local source (`/root/staging/coreprotect-ref/CoreProtect`). Source-verified, not docs-derived.
+- **`docs/COMMAND-AUDIT-1.2.0.md`** — source-traced audit of every `/vg` subcommand + registration lines + permission nodes + handler methods + core service paths.
+- **`SECURITY.md`** — disclosure policy, salt-hashing notes, security scope.
+- **`CONTRIBUTING.md`** — contributor guide, development workflow, license notes.
+
+### Changed
+
+- **Salt reuse is now fail-closed.** `GuardianConfig.validate()` now refuses to boot when `privacy.hashIps=true` AND `privacy.salt` is still the shipped placeholder `"vonix-guardian-default-salt-CHANGE-ME"`. Prior versions emitted a WARN; v1.2.0 hard-errors so a public-release operator cannot accidentally ship trivially-reversible IP hashes. Operators who don't want hashing: set `privacy.hashIps=false` and the salt is ignored.
+- **`docs/COREPROTECT-COMPARISON.md`** refreshed to reflect the v1.2.0 snapshot. 18 wired command/alias entries, 0 stubs, 0 missing CoreProtect command surfaces. Remaining gaps are runtime/API polish, not command surface.
+- **`README.md`** refreshed from stale v0.1.0 feature list to the full v1.2.0 command surface, filter mini-language, storage backends, permissions, public API, extensibility, i18n, performance, diagnostics, and compat notes.
+
+### Fixed
+
+- **CI `build.yml` was using `-PbuildProfile=core`, a profile that did not exist in `settings.gradle`.** Silent no-op that happened to produce a correct build only because `:core` is always included. Fixed to `-PbuildProfile=coreonly` and added an explicit `coreonly` profile with `core` as a backwards-compat alias.
+
+### Deferred to v1.2.1
+
+- Fabric P2 vanilla block-tick mixins (`FireBurn/Ignite`, `IceFade`, `Dispense`, `LeavesDecay`, `BlockForm/Spread`) — documented in each cell's `FabricEvents.java`.
+- Barrel / shulker / hopper container snapshots (`ContainerMixin` currently covers `ChestBlockEntity` only).
+- Non-player hanging break paths (arrow / explosion / mob).
+- `queueLookup` deep snapshot — currently returns empty list with TODO; `BatchedAsyncWriteQueue` needs a `pendingSnapshot()` accessor.
+
+
 ## [1.1.8] - 2026-07-01
 
 ### Fixed
