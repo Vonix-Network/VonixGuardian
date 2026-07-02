@@ -4,7 +4,13 @@
   "package": "network.vonix.guardian.mc.v1_21_1.neoforge.mixin",
   "compatibilityLevel": "JAVA_21",
   "refmap": "vg.refmap.json",
-  "mixins": [],
+  "mixins": [
+    "FireBlockMixin",
+    "IceBlockMixin",
+    "SpreadingSnowyDirtBlockMixin",
+    "LeavesBlockMixin",
+    "DispenserBlockMixin"
+  ],
   "server": [],
   "client": [],
   "injectors": {

@@ -31,6 +31,7 @@ minecraft {
 repositories {
     mavenCentral()
     maven { url 'https://maven.minecraftforge.net/' }
+    maven { url 'https://repo.spongepowered.org/repository/maven-public/' }
 }
 
 configurations {
@@ -40,6 +41,9 @@ configurations {
 
 dependencies {
     minecraft "net.minecraftforge:forge:1.19.2-43.4.0"
+
+    // Mixin API provided by Forge loader at runtime; compileOnly is enough.
+    compileOnly 'org.spongepowered:mixin:0.8.5'
 
     shaded project(':core')
     // Hikari pulls slf4j-api transitively. Loader provides org.slf4j module
