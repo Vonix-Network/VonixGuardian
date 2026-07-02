@@ -4,6 +4,8 @@
  */
 package network.vonix.guardian.core.api;
 
+import network.vonix.guardian.core.action.Action;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -135,4 +137,168 @@ public interface VonixGuardianAPI {
      * @return the user's command entries within the window, newest first
      */
     List<MessageLookupResult> commandLookup(UUID user, long withinSeconds, int limit);
+
+    // ---------------------------------------------------------------- v1.2.0 CP-parity lookups
+
+    /**
+     * User-scoped item-family lookup — covers {@code ITEM_DROP},
+     * {@code ITEM_PICKUP} and {@code ITEM_CRAFT}.
+     *
+     * @param user          player UUID
+     * @param withinSeconds temporal window (seconds); {@code 0} = unbounded
+     * @param limit         hard cap on results ({@code 0} or negative = engine default)
+     * @return the user's item-family events within the window, newest first.
+     *         May be empty; never {@code null}.
+     * @since 1.2.0
+     */
+    List<ItemLookupResult> itemLookup(UUID user, long withinSeconds, int limit);
+
+    /**
+     * User-scoped player-inventory-family lookup — covers
+     * {@code INVENTORY_DEPOSIT} and {@code INVENTORY_WITHDRAW}.
+     *
+     * @param user          player UUID
+     * @param withinSeconds temporal window (seconds); {@code 0} = unbounded
+     * @param limit         hard cap on results ({@code 0} or negative = engine default)
+     * @return the user's inventory transactions within the window, newest first.
+     *         May be empty; never {@code null}.
+     * @since 1.2.0
+     */
+    List<InventoryLookupResult> inventoryLookup(UUID user, long withinSeconds, int limit);
+
+    /**
+     * User-scoped session-family lookup — covers {@code SESSION_JOIN} and
+     * {@code SESSION_LEAVE}.
+     *
+     * @param user          player UUID
+     * @param withinSeconds temporal window (seconds); {@code 0} = unbounded
+     * @param limit         hard cap on results ({@code 0} or negative = engine default)
+     * @return the user's session join/leave events within the window, newest first.
+     *         May be empty; never {@code null}.
+     * @since 1.2.0
+     */
+    List<SessionLookupResult> sessionLookup(UUID user, long withinSeconds, int limit);
+
+    /**
+     * User-scoped username-change lookup.
+     *
+     * @param user          player UUID
+     * @param withinSeconds temporal window (seconds); {@code 0} = unbounded
+     * @param limit         hard cap on results ({@code 0} or negative = engine default)
+     * @return the user's recorded username changes within the window, newest first.
+     *         May be empty; never {@code null}.
+     * @since 1.2.0
+     */
+    List<UsernameLookupResult> usernameLookup(UUID user, long withinSeconds, int limit);
+
+    /**
+     * Coordinate-scoped sign-edit lookup.
+     *
+     * @param worldId       world / dimension key
+     * @param x             sign X
+     * @param y             sign Y
+     * @param z             sign Z
+     * @param withinSeconds temporal window (seconds); {@code 0} = unbounded
+     * @return every sign edit at that exact coordinate within the window,
+     *         newest first. May be empty; never {@code null}.
+     * @since 1.2.0
+     */
+    List<SignLookupResult> signLookup(String worldId, int x, int y, int z, long withinSeconds);
+
+    /**
+     * Introspection helper: return the actions currently sitting in the
+     * async write queue for the given coordinate (i.e. submitted but not yet
+     * flushed to the DAO).
+     *
+     * <p>Intended for debugging tools and hot-path assertions; the underlying
+     * queue is not required to expose an efficient snapshot, so this method
+     * MAY return an empty list even if items are actually queued. Do not
+     * rely on it for correctness.
+     *
+     * @param worldId world / dimension key
+     * @param x       block X
+     * @param y       block Y
+     * @param z       block Z
+     * @return currently-pending actions at the coord; may be empty
+     * @since 1.2.0
+     */
+    List<Action> queueLookup(String worldId, int x, int y, int z);
+
+    // ---------------------------------------------------------------- v1.2.0 CP-parity direct logging
+
+    /**
+     * Direct-log a chat event through the standard {@code EventSubmitter}
+     * pipeline. Passes through the same gate/queue as native VG capture.
+     *
+     * @param user      player UUID (may be {@code null} for console/system origins)
+     * @param actorName resolved name at send time (may be {@code null} — a sentinel is used)
+     * @param worldId   world the sender was in
+     * @param message   full message body
+     * @return {@code true} if the event was accepted for enqueue,
+     *         {@code false} if gated or rejected by the queue
+     * @since 1.2.0
+     */
+    boolean logChat(UUID user, String actorName, String worldId, String message);
+
+    /**
+     * Direct-log a command event through the standard {@code EventSubmitter}
+     * pipeline.
+     *
+     * @param user      player UUID (may be {@code null} for console/system origins)
+     * @param actorName resolved name at send time
+     * @param worldId   world the sender was in
+     * @param command   full command body (including leading {@code /})
+     * @return {@code true} if the event was accepted for enqueue
+     * @since 1.2.0
+     */
+    boolean logCommand(UUID user, String actorName, String worldId, String command);
+
+    /**
+     * Direct-log a generic click / interaction event at a coordinate.
+     * Recorded as {@link network.vonix.guardian.core.action.ActionType#CLICK}.
+     *
+     * @param user      player UUID
+     * @param actorName resolved name at event time
+     * @param worldId   world / dimension key
+     * @param x         block X
+     * @param y         block Y
+     * @param z         block Z
+     * @return {@code true} if the event was accepted for enqueue
+     * @since 1.2.0
+     */
+    boolean logInteraction(UUID user, String actorName, String worldId, int x, int y, int z);
+
+    /**
+     * Direct-log a block placement. Recorded as
+     * {@link network.vonix.guardian.core.action.ActionType#BLOCK_PLACE}.
+     *
+     * @param user      player UUID (may be {@code null} for non-player sources)
+     * @param actorName resolved name / sentinel
+     * @param worldId   world / dimension key
+     * @param x         block X
+     * @param y         block Y
+     * @param z         block Z
+     * @param blockId   block registry id (e.g. {@code "minecraft:stone"})
+     * @return {@code true} if the event was accepted for enqueue
+     * @since 1.2.0
+     */
+    boolean logPlacement(UUID user, String actorName, String worldId,
+                         int x, int y, int z, String blockId);
+
+    /**
+     * Direct-log a block removal. Recorded as
+     * {@link network.vonix.guardian.core.action.ActionType#BLOCK_BREAK}.
+     *
+     * @param user      player UUID (may be {@code null} for non-player sources)
+     * @param actorName resolved name / sentinel
+     * @param worldId   world / dimension key
+     * @param x         block X
+     * @param y         block Y
+     * @param z         block Z
+     * @param blockId   block registry id
+     * @return {@code true} if the event was accepted for enqueue
+     * @since 1.2.0
+     */
+    boolean logRemoval(UUID user, String actorName, String worldId,
+                       int x, int y, int z, String blockId);
 }

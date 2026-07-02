@@ -173,6 +173,155 @@ public final class GuardianAPI implements VonixGuardianAPI {
         return out;
     }
 
+    // -------------------------------------------------------------- v1.2.0 user-scoped lookups
+
+    @Override
+    public List<ItemLookupResult> itemLookup(UUID user, long withinSeconds, int limit) {
+        List<Action> rows = userLookup(user, withinSeconds, limit,
+                ActionType.ITEM_DROP, ActionType.ITEM_PICKUP, ActionType.ITEM_CRAFT);
+        List<ItemLookupResult> out = new ArrayList<>(rows.size());
+        for (Action a : rows) {
+            out.add(new ItemLookupResult(
+                    a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
+                    a.targetId(), a.targetMeta(), a.amount(),
+                    stripSign(a.type().token()), a.rolledBack(), a.sourceTag()));
+        }
+        return out;
+    }
+
+    @Override
+    public List<InventoryLookupResult> inventoryLookup(UUID user, long withinSeconds, int limit) {
+        List<Action> rows = userLookup(user, withinSeconds, limit,
+                ActionType.INVENTORY_DEPOSIT, ActionType.INVENTORY_WITHDRAW);
+        List<InventoryLookupResult> out = new ArrayList<>(rows.size());
+        for (Action a : rows) {
+            out.add(new InventoryLookupResult(
+                    a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
+                    a.targetId(), a.targetMeta(), a.amount(),
+                    stripSign(a.type().token()), a.rolledBack(), a.sourceTag()));
+        }
+        return out;
+    }
+
+    @Override
+    public List<SessionLookupResult> sessionLookup(UUID user, long withinSeconds, int limit) {
+        List<Action> rows = userLookup(user, withinSeconds, limit,
+                ActionType.SESSION_JOIN, ActionType.SESSION_LEAVE);
+        List<SessionLookupResult> out = new ArrayList<>(rows.size());
+        for (Action a : rows) {
+            String direction = a.type() == ActionType.SESSION_JOIN ? "join" : "leave";
+            out.add(new SessionLookupResult(
+                    a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
+                    stripSign(a.type().token()), direction,
+                    a.targetId() != null ? a.targetId() : ""));
+        }
+        return out;
+    }
+
+    @Override
+    public List<UsernameLookupResult> usernameLookup(UUID user, long withinSeconds, int limit) {
+        List<Action> rows = userLookup(user, withinSeconds, limit, ActionType.USERNAME_CHANGE);
+        List<UsernameLookupResult> out = new ArrayList<>(rows.size());
+        for (Action a : rows) {
+            String prev = "?";
+            String target = a.targetId();
+            if (target != null) {
+                int idx = target.indexOf(" -> ");
+                if (idx >= 0) {
+                    prev = target.substring(0, idx);
+                }
+            }
+            out.add(new UsernameLookupResult(
+                    a.timestamp(), a.actorUuid(), a.actorName(), prev));
+        }
+        return out;
+    }
+
+    @Override
+    public List<SignLookupResult> signLookup(String worldId, int x, int y, int z, long withinSeconds) {
+        QueryFilter f = coordFilter(worldId, x, y, z, withinSeconds, List.of(ActionType.SIGN));
+        List<Action> rows = runQuery(f);
+        List<SignLookupResult> out = new ArrayList<>(rows.size());
+        for (Action a : rows) {
+            out.add(new SignLookupResult(
+                    a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
+                    a.x(), a.y(), a.z(),
+                    a.targetId() != null ? a.targetId() : "",
+                    a.sourceTag()));
+        }
+        return out;
+    }
+
+    @Override
+    public List<Action> queueLookup(String worldId, int x, int y, int z) {
+        Objects.requireNonNull(worldId, "worldId");
+        // TODO(v1.2.x): BatchedAsyncWriteQueue does not currently expose a
+        // pendingSnapshot() method. When queue introspection is added, filter
+        // its snapshot by (worldId, x, y, z) here. Until then this always
+        // returns empty — the javadoc contract permits that.
+        return List.of();
+    }
+
+    private List<Action> userLookup(UUID user, long withinSeconds, int limit, ActionType... kinds) {
+        Objects.requireNonNull(user, "user");
+        Long since = withinSeconds > 0 ? System.currentTimeMillis() - withinSeconds * 1000L : null;
+        QueryFilter.Builder b = QueryFilter.builder()
+                .addUser(new QueryFilter.UserSel(user, null, false))
+                .sinceMillis(since);
+        for (ActionType t : kinds) {
+            b.addAction(new QueryFilter.ActionSelect(t, QueryFilter.ActionSelect.Sign.ANY));
+        }
+        int effLimit = limit > 0
+                ? limit
+                : guardian.config().lookup().defaultPageSize();
+        try {
+            return guardian.dao().query(b.build(), 0, effLimit);
+        } catch (Exception e) {
+            throw new RuntimeException("VonixGuardianAPI user-scoped lookup failed", e);
+        }
+    }
+
+    // -------------------------------------------------------------- v1.2.0 direct logging
+
+    @Override
+    public boolean logChat(UUID user, String actorName, String worldId, String message) {
+        Objects.requireNonNull(worldId, "worldId");
+        guardian.submitChat(user, actorName, worldId, message);
+        return true;
+    }
+
+    @Override
+    public boolean logCommand(UUID user, String actorName, String worldId, String command) {
+        Objects.requireNonNull(worldId, "worldId");
+        guardian.submitCommand(user, actorName, worldId, command);
+        return true;
+    }
+
+    @Override
+    public boolean logInteraction(UUID user, String actorName, String worldId, int x, int y, int z) {
+        Objects.requireNonNull(worldId, "worldId");
+        guardian.submitClick(user, actorName, worldId, x, y, z, "", null);
+        return true;
+    }
+
+    @Override
+    public boolean logPlacement(UUID user, String actorName, String worldId,
+                                int x, int y, int z, String blockId) {
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(blockId, "blockId");
+        guardian.submitBlockPlace(user, actorName, worldId, x, y, z, blockId, null);
+        return true;
+    }
+
+    @Override
+    public boolean logRemoval(UUID user, String actorName, String worldId,
+                              int x, int y, int z, String blockId) {
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(blockId, "blockId");
+        guardian.submitBlockBreak(user, actorName, worldId, x, y, z, blockId, null);
+        return true;
+    }
+
     // -------------------------------------------------------------- shared helpers
 
     private QueryFilter coordFilter(String worldId, int x, int y, int z, long withinSeconds,
