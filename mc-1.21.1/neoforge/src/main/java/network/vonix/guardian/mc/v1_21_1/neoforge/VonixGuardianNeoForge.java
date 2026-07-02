@@ -13,6 +13,7 @@ import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.mc.v1_21_1.common.Inspector;
+import network.vonix.guardian.mc.v1_21_1.neoforge.bridge.NeoForgePreLogBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,6 +46,7 @@ public final class VonixGuardianNeoForge {
         // Lifecycle hooks live on the NeoForge runtime bus.
         NeoForge.EVENT_BUS.register(VonixGuardianNeoForge.class);
         NeoForge.EVENT_BUS.register(NeoForgeEvents.class);
+        NeoForgePreLogBridge.wire();
     }
 
     /**

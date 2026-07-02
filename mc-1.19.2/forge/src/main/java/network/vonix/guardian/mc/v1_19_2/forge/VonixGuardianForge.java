@@ -11,6 +11,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.mc.v1_19_2.common.Inspector;
+import network.vonix.guardian.mc.v1_19_2.forge.bridge.ForgePreLogBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +31,7 @@ public final class VonixGuardianForge {
         LOG.info(Guardian.MARKER, "VonixGuardian (Forge 1.19.2) loading.");
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(ForgeEvents.class);
+        ForgePreLogBridge.wire();
     }
 
     public static Guardian guardian() {
