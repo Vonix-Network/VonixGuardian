@@ -26,20 +26,21 @@ This section supersedes stale v1.1.5 findings below when they conflict. The olde
 - ✅ Maven/publishing ecosystem work exists: `docs/PLUGINS.md`, `docs/API.md` Javadoc/index extension, and Maven Central publishing config in `core/build.gradle`.
 - ✅ English i18n foundation exists: `Messages`, `lang/en_us.properties`, translator README, and QueryParser error extraction.
 
+- ✅ `/vg teleport <world> <x> [y] <z>` (alias `/vg tp`) — CoreProtect-parity, mirrors `net.coreprotect.command.TeleportCommand`.
+- ✅ `/vg give <itemId> [amount]` — CoreProtect-parity, mirrors `net.coreprotect.command.GiveCommand`.
+
 ### Remaining CoreProtect gaps as of this snapshot
 
-1. ❌ `/vg teleport` / `/vg tp` — not registered. Needs a per-player numbered lookup-result cache.
-2. ❌ `/vg give` — not registered. Needs lookup-result cache plus loader-specific item reconstruction/give facade.
-3. 🟡 Fabric still lacks true native coverage for several event families that Fabric API does not expose directly: real block place, mob block change, explosion detonate, piston pre, container open/close, bucket fill/empty, item drop/pickup/craft, sign edit, fire/ice/spread/dispense/leaves. The v1.2.0 Fabric mixin infrastructure is wired, but implementation mixins are not present yet.
-4. 🟡 Forge/NeoForge world-event mixin infrastructure is wired, but no actual FireBlock/IceBlock/SpreadingSnowyDirtBlock/LeavesBlock/DispenserBlock mixin classes are present yet.
-5. 🟡 NeoForge 1.21.1 bucket mixin infrastructure is wired, but BucketItem/MilkBucketItem mixin implementation is not present yet.
-6. ❌ `r:#worldedit` still has no actual WorldEdit selection bridge.
-7. 🟡 Language support is English-only; CP has broad translated bundles.
-8. 🟡 Third-party ecosystem is documented but still nascent; CP has mature external integrations.
+1. 🟡 Fabric still lacks true native coverage for several event families that Fabric API does not expose directly: real block place, mob block change, explosion detonate, piston pre, container open/close, bucket fill/empty, item drop/pickup/craft, sign edit, fire/ice/spread/dispense/leaves. The v1.2.0 Fabric mixin infrastructure is wired, but implementation mixins are not present yet.
+2. 🟡 Forge/NeoForge world-event mixin infrastructure is wired, but no actual FireBlock/IceBlock/SpreadingSnowyDirtBlock/LeavesBlock/DispenserBlock mixin classes are present yet.
+3. 🟡 NeoForge 1.21.1 bucket mixin infrastructure is wired, but BucketItem/MilkBucketItem mixin implementation is not present yet.
+4. ❌ `r:#worldedit` still has no actual WorldEdit selection bridge.
+5. 🟡 Language support is English-only; CP has broad translated bundles.
+6. 🟡 Third-party ecosystem is documented but still nascent; CP has mature external integrations.
 
 ### Command audit pointer
 
-See [`COMMAND-AUDIT-1.2.0.md`](./COMMAND-AUDIT-1.2.0.md) for the current `/vg` registration table: 16 wired command/alias entries, 0 stubs, 2 missing CoreProtect command surfaces.
+See [`COMMAND-AUDIT-1.2.0.md`](./COMMAND-AUDIT-1.2.0.md) for the current `/vg` registration table: 18 wired command/alias entries, 0 stubs, 0 missing CoreProtect command surfaces.
 
 ---
 

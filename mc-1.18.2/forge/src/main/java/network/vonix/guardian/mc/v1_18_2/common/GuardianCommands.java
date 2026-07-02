@@ -9,6 +9,14 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.core.Registry;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -160,6 +168,24 @@ public final class GuardianCommands {
                                 .then(Commands.argument("key", StringArgumentType.word())
                                         .then(Commands.argument("value", StringArgumentType.greedyString())
                                                 .executes(ctx -> Config.set(ctx, g))))))
+                // teleport <world> <x> [y] <z>  (CP parity /co teleport)
+                .then(Commands.literal("teleport")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.teleport", g))
+                        .then(Commands.argument("world", StringArgumentType.word())
+                                .then(Commands.argument("coords", StringArgumentType.greedyString())
+                                        .executes(ctx -> Teleport.run(ctx, g)))))
+                .then(Commands.literal("tp")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.teleport", g))
+                        .then(Commands.argument("world", StringArgumentType.word())
+                                .then(Commands.argument("coords", StringArgumentType.greedyString())
+                                        .executes(ctx -> Teleport.run(ctx, g)))))
+                // give <itemId> [amount]  (CP parity /co give)
+                .then(Commands.literal("give")
+                        .requires(s -> hasPerm(s, "vonixguardian.command.give", g))
+                        .then(Commands.argument("itemId", StringArgumentType.word())
+                                .executes(ctx -> Give.run(ctx, g, 1))
+                                .then(Commands.argument("amount", StringArgumentType.word())
+                                        .executes(ctx -> Give.runWithAmount(ctx, g)))))
                 // migrate-db <target-type> [CONFIRM] (console-only)
                 .then(Commands.literal("migrate-db")
                         .requires(s -> hasPerm(s, "vonixguardian.command.migrate-db", g))
@@ -768,6 +794,138 @@ public final class GuardianCommands {
         private static long parseLong(String value, String key) {
             try { return Long.parseLong(value); }
             catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
+        }
+    }
+
+    // ====================================================================== Teleport
+
+    /** {@code /vg teleport <world> <x> [y] <z>} (alias {@code /vg tp}) — CoreProtect-parity admin teleport. */
+    public static final class Teleport {
+        private Teleport() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer p)) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg teleport must be run by a player."));
+                return 0;
+            }
+            String worldArg = StringArgumentType.getString(ctx, "world");
+            String coords = StringArgumentType.getString(ctx, "coords").trim();
+            String[] parts = coords.split("\\s+");
+            if (parts.length < 2 || parts.length > 3) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Usage: /vg teleport <world> <x> [y] <z>"));
+                return 0;
+            }
+            ServerLevel level = resolveLevel(src.getServer(), worldArg);
+            if (level == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown world: " + worldArg));
+                return 0;
+            }
+            Double x, y, z;
+            try {
+                x = Double.parseDouble(parts[0].replaceAll("[^0-9.\\-]", ""));
+                if (parts.length == 3) {
+                    y = Double.parseDouble(parts[1].replaceAll("[^0-9.\\-]", ""));
+                    z = Double.parseDouble(parts[2].replaceAll("[^0-9.\\-]", ""));
+                } else {
+                    z = Double.parseDouble(parts[1].replaceAll("[^0-9.\\-]", ""));
+                    double curY = p.getY();
+                    if (curY > 63) curY = 63;
+                    y = curY;
+                }
+            } catch (NumberFormatException e) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Invalid coordinates: " + coords));
+                return 0;
+            }
+            final double fx = x, fy = y, fz = z;
+            final ServerLevel fl = level;
+            src.getServer().execute(() -> {
+                try {
+                    p.teleportTo(fl, fx, fy, fz, p.getYRot(), p.getXRot());
+                    send(src, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Teleported to " + worldArg + " " + fx + " " + fy + " " + fz));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Teleport failed", t);
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Teleport failed: " + t.getMessage()));
+                }
+            });
+            return 1;
+        }
+
+        private static ServerLevel resolveLevel(MinecraftServer server, String arg) {
+            if (server == null || arg == null) return null;
+            String key = arg;
+            if (!key.contains(":")) {
+                // Accept plain "nether"/"overworld"/"end" shortcuts.
+                switch (key) {
+                    case "overworld": key = "minecraft:overworld"; break;
+                    case "nether":    key = "minecraft:the_nether"; break;
+                    case "end":       key = "minecraft:the_end"; break;
+                    default:          key = "minecraft:" + key;
+                }
+            }
+            ResourceLocation rl = ResourceLocation.tryParse(key);
+            if (rl == null) return null;
+            ResourceKey<Level> key0 = ResourceKey.create(Registry.DIMENSION_REGISTRY, rl);
+            return server.getLevel(key0);
+        }
+    }
+
+    // ====================================================================== Give
+
+    /** {@code /vg give <itemId> [amount]} — CoreProtect-parity give command. */
+    public static final class Give {
+        private Give() {}
+
+        public static int runWithAmount(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            int amount = 1;
+            try { amount = Math.max(1, Integer.parseInt(StringArgumentType.getString(ctx, "amount"))); }
+            catch (Exception ignore) {}
+            return run(ctx, g, amount);
+        }
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g, int amount) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer p)) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] /vg give must be run by a player."));
+                return 0;
+            }
+            String itemArg = StringArgumentType.getString(ctx, "itemId");
+            String id = itemArg.contains(":") ? itemArg : "minecraft:" + itemArg;
+            ResourceLocation rl = ResourceLocation.tryParse(id);
+            if (rl == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Invalid item id: " + itemArg));
+                return 0;
+            }
+            Item item = Registry.ITEM.get(rl);
+            if (item == null || item == net.minecraft.world.item.Items.AIR) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown item: " + id));
+                return 0;
+            }
+            final int qty = Math.max(1, amount);
+            src.getServer().execute(() -> {
+                try {
+                    ItemStack stack = new ItemStack(item, qty);
+                    boolean ok = p.getInventory().add(stack);
+                    if (!ok || !stack.isEmpty()) {
+                        p.drop(stack, false);
+                    }
+                    send(src, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Gave " + qty + "x " + id));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Give failed", t);
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Give failed: " + t.getMessage()));
+                }
+            });
+            return 1;
         }
     }
 

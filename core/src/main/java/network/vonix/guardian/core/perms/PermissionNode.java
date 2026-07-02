@@ -42,6 +42,8 @@ public enum PermissionNode {
     MIGRATE_DB           ("vonixguardian.migrate_db",        4),
     CONSUMER             ("vonixguardian.consumer",          4),
     CONFIG              ("vonixguardian.command.config",    4),
+    TELEPORT            ("vonixguardian.command.teleport",  3),
+    GIVE                ("vonixguardian.command.give",      4),
     HELP                 ("vonixguardian.help",              0),
 
     // Advanced query flags (reserved; matches CoreProtect's granular perms)

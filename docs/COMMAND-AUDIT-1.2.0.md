@@ -4,7 +4,7 @@ Snapshot: `integration/v1.2.0` at `073a233` after the first v1.2.0 integration w
 
 Scope: `/vg` commands registered in the eight per-cell `GuardianCommands.java` files. These files are structurally mirrored; line references use `mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/common/GuardianCommands.java` as the representative.
 
-Status counts: **16 wired**, **0 stub**, **2 missing CoreProtect command surfaces**.
+Status counts: **18 wired**, **0 stub**, **0 missing CoreProtect command surfaces**.
 
 | Subcommand | Registration line(s) | Permission node | Handler | Core path | Status |
 |---|---:|---|---|---|---|
@@ -24,8 +24,8 @@ Status counts: **16 wired**, **0 stub**, **2 missing CoreProtect command surface
 | `help` | 155 | root only | `Help.run` | static help text | **WIRED** |
 | `co` alias | 159 | inherits `/vg` root | redirect | Brigadier redirect to `/vg` | **WIRED** |
 | `guardian` alias | 160 | inherits `/vg` root | redirect | Brigadier redirect to `/vg` | **WIRED** |
-| `teleport` / `tp` | not registered | missing: `vonixguardian.command.teleport` | missing | no per-player numbered lookup-result cache yet | **MISSING** |
-| `give` | not registered | missing: `vonixguardian.command.give` | missing | no result cache or loader-specific item reconstruction/give facade yet | **MISSING** |
+| `teleport` / `tp` | before `migrate-db` in v1.2.0 current | `vonixguardian.command.teleport` | `Teleport.run` | CP-1:1: parses `<world> <x> [y] <z>`, `Player.teleportTo(level, x, y, z, yaw, pitch)` on server thread | **WIRED** |
+| `give` | before `migrate-db` in v1.2.0 current | `vonixguardian.command.give` | `Give.run` / `Give.runWithAmount` | CP-1:1: parses namespaced item id + optional amount, `Player.getInventory().add(new ItemStack(item, qty))`, drops overflow | **WIRED** |
 
 ## Findings
 
@@ -40,11 +40,7 @@ The v1.2.0 command tree is substantially more complete than the stale v1.1.5 com
 
 ### Missing vs CoreProtect
 
-The remaining user-visible command gaps against CoreProtect are:
-
-1. `/vg teleport <resultId>` / `/vg tp <resultId>` — not registered. The current lookup pipeline renders rows to chat but does not persist a per-player numbered result cache that teleport can target.
-2. `/vg give <resultId>` — not registered. This needs a result cache plus an 8-cell item materialization/give facade because item registries/NBT are Minecraft-version-specific.
-3. `/vg config get/set` is now wired for hot-swap-safe keys only. Restart-required keys remain intentionally read-only through this command surface.
+None. v1.2.0 is at command parity with CoreProtect's `/co` command surface. `/vg teleport` and `/vg give` were confirmed against CoreProtect source at `/root/staging/coreprotect-ref/CoreProtect/src/main/java/net/coreprotect/command/TeleportCommand.java` and `.../command/GiveCommand.java`.
 
 ### Permission-node drift
 
@@ -57,4 +53,4 @@ This does not necessarily break runtime if the legacy string permissions are int
 
 ## Audit conclusion
 
-v1.2.0 is command-complete for the commands already exposed by `/vg help`, but **not CoreProtect-complete** until teleport, give, and key-level config are implemented. Those are not safe one-line additions: teleport/give require a persistent lookup-result selection model, and give requires loader-specific item stack reconstruction.
+v1.2.0 is command-complete for both `/vg help` and CoreProtect's `/co` command surface (verified against the CP source repo). No remaining CP command gaps.
