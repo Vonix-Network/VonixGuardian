@@ -6,6 +6,7 @@ package network.vonix.guardian.mc.v1_19_2.fabric;
 
 import net.fabricmc.api.DedicatedServerModInitializer;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.mc.v1_19_2.fabric.bridge.FabricPreLogBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +33,7 @@ public final class VonixGuardianFabric implements DedicatedServerModInitializer 
         try {
             FabricBootstrap.register();
             FabricEvents.register();
+            FabricPreLogBridge.wire();
         } catch (Throwable t) {
             LOG.error(Guardian.MARKER, "VonixGuardian Fabric init failed", t);
         }
