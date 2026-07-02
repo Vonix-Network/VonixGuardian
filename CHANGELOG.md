@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-02
+
+### Fixed
+
+- **NeoForge 1.21.1 boot crash — `MixinInitialisationError`** (found during v1.2.1 fleet deploy on Stone Block 4 and Better MC 5). v1.2.1's `mods.toml` declared `[[mixins]] config = "vg.mixins.json"` on all 4 Forge/NeoForge cells, but the SpongePowered Mixin Gradle plugin was never wired into the build, so no refmap was generated. NeoForge 1.21.1 hard-crashes at bootstrap with `The specified resource 'vg.mixins.json' was invalid or could not be read` because the mixin config references classes it can't resolve without a refmap. Forge 1.18-1.20 have looser mixin validation so they booted OK — but their mixin classes weren't actually running either. Removed the `[[mixins]]` declaration and the `vg.mixins.json` config from all 4 cells to restore pre-W5-01 boot behaviour. Real mixin support returns in a future release once the Mixin gradle plugin is wired end-to-end with proper refmap generation.
+
 ## [1.2.1] - 2026-07-02
 
 Companion release to the internal 1.2.0 build. **Version bumped so operators
