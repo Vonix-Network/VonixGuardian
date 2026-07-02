@@ -123,6 +123,28 @@ public final class FabricEvents {
         });
 
         // ================================================================== Fabric-API gaps
+        //
+        // W5-08 UPDATE: The following event categories are now covered by
+        // Fabric mixins (see vg.mixins.json + `mixin/` package):
+        //   - BLOCK_PLACE       (BlockPlaceMixin on BlockItem#place)
+        //   - ENTITY_CHANGE     (LivingDestroyBlockMixin on Level#destroyBlock)
+        //   - EXPLOSION         (ExplosionMixin on Explosion#finalizeExplosion)
+        //   - PISTON_EXTEND/RETRACT (PistonMixin on PistonBaseBlock#moveBlocks)
+        //   - CONTAINER open/close  (ContainerMixin on ChestBlockEntity)
+        //   - BUCKET_FILL/EMPTY (BucketItemMixin on BucketItem#use)
+        //   - ITEM_DROP         (ItemTossMixin on Player#drop)
+        //   - ITEM_PICKUP       (ItemPickupMixin on ItemEntity#playerTouch)
+        //   - ITEM_CRAFT        (CraftItemMixin on ResultSlot#onTake)
+        //   - SIGN_CHANGE       (SignChangeMixin on ServerGamePacketListenerImpl#handleSignUpdate)
+        //
+        // Still deferred (v1.2.1):
+        //   - FIRE_BURN, FIRE_IGNITE, ICE_FADE, DISPENSE, LEAVES_DECAY,
+        //     BLOCK_FORM/SPREAD  (vanilla block tick mixins — W2-P2 wave)
+        //   - Barrel / shulker / hopper container snapshots (ContainerMixin
+        //     currently covers ChestBlockEntity only)
+        //   - Non-player hanging break (arrow/explosion/mob)
+        //
+        // (original TODO block, kept for history) ================================================================== Fabric-API gaps
         // TODO(v1.2.0): mixin — W4-04/W4-06
         //   Fabric API has NO native event for the following. Each requires a
         //   dedicated mixin; wiring is intentionally left off so the audit stays
