@@ -569,8 +569,100 @@ result back to the server thread if you need to render it in-game.
 
 ---
 
+## Javadoc
+
+Every tagged release publishes a rendered Javadoc site via CI:
+
+- **Latest release:** <https://vonix-network.github.io/VonixGuardian/javadoc/>
+- **Per-version archive:** `https://vonix-network.github.io/VonixGuardian/javadoc/<version>/`
+
+The Javadoc jar is also attached to each GitHub Release and published as
+`vonixguardian-core-<version>-javadoc.jar` alongside the sources jar on
+Maven Central / GitHub Packages.
+
+## Public class index (v1.2.0)
+
+Everything below is part of the stable third-party surface. Anything not
+in this list is internal and may change without a deprecation cycle.
+
+**Facade & event submission**
+- `network.vonix.guardian.core.Guardian`
+- `network.vonix.guardian.core.action.Action`
+- `network.vonix.guardian.core.action.ActionBuilder`
+- `network.vonix.guardian.core.action.ActionType`
+- `network.vonix.guardian.core.event.EventSubmitter`
+- `network.vonix.guardian.core.event.EventGate`
+- `network.vonix.guardian.core.event.EventHook`
+- `network.vonix.guardian.core.event.PerWorldEventHook`
+- `network.vonix.guardian.core.event.BlacklistFileHook`
+- `network.vonix.guardian.core.event.PreLogDispatcher`
+- `network.vonix.guardian.core.event.PreLogEvent`
+- `network.vonix.guardian.core.event.PreLogEventHook`
+- `network.vonix.guardian.core.event.Sentinel`
+
+**Typed API (v1)**
+- `network.vonix.guardian.core.api.VonixGuardianAPI`
+- `network.vonix.guardian.core.api.GuardianAPI`
+- `network.vonix.guardian.core.api.BlockLookupResult`
+- `network.vonix.guardian.core.api.ContainerLookupResult`
+- `network.vonix.guardian.core.api.MessageLookupResult`
+
+**Query & storage**
+- `network.vonix.guardian.core.query.QueryFilter`
+- `network.vonix.guardian.core.query.QueryParser`
+- `network.vonix.guardian.core.query.QueryParseException`
+- `network.vonix.guardian.core.query.ActionTokens`
+- `network.vonix.guardian.core.query.InspectorLookup`
+- `network.vonix.guardian.core.storage.GuardianDao`
+- `network.vonix.guardian.core.storage.QueryCompiler`
+- `network.vonix.guardian.core.storage.Schema`
+- `network.vonix.guardian.core.storage.StorageFactory`
+
+**Permissions**
+- `network.vonix.guardian.core.perms.PermissionNode`
+- `network.vonix.guardian.core.perms.PermissionResolver`
+- `network.vonix.guardian.core.perms.CommandGate`
+- `network.vonix.guardian.core.perms.LookupPermissionFilter`
+- `network.vonix.guardian.core.perms.LuckPermsBridge`
+- `network.vonix.guardian.core.perms.OpLevelFallback`
+
+**Rollback**
+- `network.vonix.guardian.core.rollback.RollbackEngine`
+- `network.vonix.guardian.core.rollback.RollbackPlan`
+- `network.vonix.guardian.core.rollback.RollbackResult`
+- `network.vonix.guardian.core.rollback.UndoStack`
+- `network.vonix.guardian.core.rollback.WorldMutator`
+- `network.vonix.guardian.core.rollback.PurgeEngine`
+
+**Attribution**
+- `network.vonix.guardian.core.attribution.Attribution`
+- `network.vonix.guardian.core.attribution.AttributionKind`
+- `network.vonix.guardian.core.attribution.AttributionResolver`
+- `network.vonix.guardian.core.attribution.DamageHistory`
+
+**Config, diagnostics, theme**
+- `network.vonix.guardian.core.config.GuardianConfig`
+- `network.vonix.guardian.core.config.ConfigLoader`
+- `network.vonix.guardian.core.config.PerWorldConfigStore`
+- `network.vonix.guardian.core.config.IpHasher`
+- `network.vonix.guardian.core.diagnostics.GuardianStatus`
+- `network.vonix.guardian.core.theme.Theme`
+- `network.vonix.guardian.core.theme.ThemeRegistry`
+- `network.vonix.guardian.core.logfile.JsonLinesLogFile`
+- `network.vonix.guardian.core.blacklist.BlacklistFile`
+- `network.vonix.guardian.core.blacklist.BlacklistMatcher`
+- `network.vonix.guardian.core.filter.VanillaGrieferSet`
+- `network.vonix.guardian.core.command.CommandSpec`
+- `network.vonix.guardian.core.command.SubcommandSpec`
+- `network.vonix.guardian.core.command.ArgumentSpec`
+
+For a step-by-step integration walkthrough (soft-dep pattern, `EventHook`
+subscription, `PermissionNode` reuse, `Action` submission) see
+[PLUGINS.md](PLUGINS.md).
+
 ## See also
 
+- [`docs/PLUGINS.md`](PLUGINS.md) — ecosystem plugin author's guide.
 - [`docs/MODDED-ATTRIBUTION.md`](MODDED-ATTRIBUTION.md) — sentinel naming,
   modded-mob attribution rules, and the PR rubric for new `ActionType`s.
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — high-level component diagram
