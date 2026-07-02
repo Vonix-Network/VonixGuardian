@@ -7,6 +7,7 @@ package network.vonix.guardian.mc.v1_20_1.fabric;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
+import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
@@ -15,10 +16,12 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.decoration.HangingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -27,6 +30,7 @@ import network.vonix.guardian.core.attribution.Attribution;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.IpHasher;
 import network.vonix.guardian.core.event.EventSubmitter;
+import network.vonix.guardian.core.event.Sentinel;
 import network.vonix.guardian.mc.v1_20_1.common.ChatRenderer;
 import network.vonix.guardian.mc.v1_20_1.common.EntitySentinel;
 import network.vonix.guardian.mc.v1_20_1.common.GuardianCommands;
@@ -36,8 +40,11 @@ import network.vonix.guardian.mc.v1_20_1.common.WorldKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Fabric event handlers translating Fabric API callbacks into
@@ -46,12 +53,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Every handler catches {@link Throwable} and logs via {@code VONIXGUARDIAN};
  * exceptions never escape into the server thread.
  *
- * <p><b>v0.1.0 Fabric gaps</b> (no first-class Fabric API event): LivingDestroyBlock
- * (universal mob griefing), Piston pre, LeavesDecay, NeighborNotify (fire spread,
- * fluid flow), Explosion detonate, ItemToss / ItemPickup / ItemCraft, SignChange.
- * These will be covered by mixins in v0.2.0; for v0.1.0 we cover the player-driven
- * surface (break, place via UseBlock proxy, click, death, spawn, join/leave, chat,
- * command, container interaction).
+ * <p><b>v1.2.0 parity note (W4-03):</b> Fabric API exposes fewer events than
+ * Forge/NeoForge. This file wires everything that <em>is</em> natively available;
+ * the remaining Forge-parity handlers (block place, explosion detonate, piston,
+ * container open/close, fill bucket, item toss/pickup/craft, sign edit, fire/ice
+ * ticks, dispense, leaves decay, universal mob-griefing) require mixins and are
+ * scheduled for W4-04 / W4-06. Each gap is marked with an explicit
+ * {@code TODO(v1.2.0): mixin — W4-04/W4-06} block below so the audit surface stays
+ * honest.
  */
 public final class FabricEvents {
 
@@ -61,26 +70,41 @@ public final class FabricEvents {
     private static final Map<String, Long> SPAWN_LIMIT = new ConcurrentHashMap<>();
     private static final long SPAWN_LIMIT_MS = 1_000L;
 
+    /** Daemon worker for off-tick JDBC (inspector lookups). Mirrors ForgeEvents. */
+    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "VonixGuardian-FabricEvents-Worker");
+        t.setDaemon(true);
+        return t;
+    });
+
     private FabricEvents() {
         // utility
     }
 
     /** Hook all Fabric API callbacks. Called once from the mod entrypoint. */
     public static void register() {
+        // ---- blocks
         PlayerBlockBreakEvents.AFTER.register(FabricEvents::onBlockBreakAfter);
         UseBlockCallback.EVENT.register(FabricEvents::onUseBlock);
         AttackBlockCallback.EVENT.register(FabricEvents::onAttackBlock);
 
+        // ---- combat
         net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH
                 .register(FabricEvents::onAfterDeath);
         net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE
                 .register(FabricEvents::onAllowDamage);
 
+        // ---- entities (mob spawn + hanging place share the same callback)
         ServerEntityEvents.ENTITY_LOAD.register(FabricEvents::onEntityLoad);
 
+        // ---- interaction (hanging break — player-caused)
+        AttackEntityCallback.EVENT.register(FabricEvents::onAttackEntity);
+
+        // ---- sessions
         ServerPlayConnectionEvents.JOIN.register(FabricEvents::onJoin);
         ServerPlayConnectionEvents.DISCONNECT.register(FabricEvents::onDisconnect);
 
+        // ---- chat / commands
         ServerMessageEvents.CHAT_MESSAGE.register(FabricEvents::onChatMessage);
         ServerMessageEvents.COMMAND_MESSAGE.register(FabricEvents::onCommandMessage);
 
@@ -97,6 +121,45 @@ public final class FabricEvents {
                 LOG.warn(Guardian.MARKER, "CommandRegistration failed", t);
             }
         });
+
+        // ================================================================== Fabric-API gaps
+        // TODO(v1.2.0): mixin — W4-04/W4-06
+        //   Fabric API has NO native event for the following. Each requires a
+        //   dedicated mixin; wiring is intentionally left off so the audit stays
+        //   honest (nothing "kind of" logs these).
+        //
+        //   - BLOCK_PLACE       → mixin on BlockItem#place / Level#setBlock capture
+        //                          (Forge: BlockEvent.EntityPlaceEvent).
+        //   - ENTITY_CHANGE     → mixin on universal mob-griefing paths
+        //                          (Forge: LivingDestroyBlockEvent).
+        //   - EXPLOSION         → mixin on Explosion#finalizeExplosion capturing
+        //                          affected-blocks list (Forge: ExplosionEvent.Detonate).
+        //   - PISTON_EXTEND/RETRACT → mixin on PistonBaseBlock#moveBlocks
+        //                          (Forge: PistonEvent.Pre).
+        //   - CONTAINER_OPEN    → mixin on ServerPlayer#openMenu capturing snapshot
+        //                          (Forge: PlayerContainerEvent.Open).
+        //   - CONTAINER_CLOSE   → mixin on ServerPlayer#doCloseContainer diffing
+        //                          snapshot (Forge: PlayerContainerEvent.Close).
+        //   - BUCKET_FILL/EMPTY → mixin on BucketItem#use / #emptyContents
+        //                          (Forge: FillBucketEvent).
+        //   - ITEM_DROP         → mixin on Player#drop / ServerGamePacketListenerImpl
+        //                          handlers (Forge: ItemTossEvent).
+        //   - ITEM_PICKUP       → mixin on ItemEntity#playerTouch (Forge:
+        //                          PlayerEvent.ItemPickupEvent).
+        //   - ITEM_CRAFT        → mixin on RecipeManager#byKey result or
+        //                          ResultSlot#onTake (Forge: PlayerEvent.ItemCraftedEvent).
+        //   - SIGN_CHANGE       → mixin on SignBlockEntity#updateSignText / handler
+        //                          for ServerboundSignUpdatePacket (Forge:
+        //                          SignChangeEvent — Bukkit only, no Forge event
+        //                          either; both cells need a mixin).
+        //   - FIRE_BURN         → mixin on FireBlock#tick / #checkBurnOut.
+        //   - FIRE_IGNITE       → mixin on FireBlock#tick + FlintAndSteelItem#useOn.
+        //   - ICE_FADE          → mixin on IceBlock#tick / SnowLayerBlock#tick.
+        //   - DISPENSE          → mixin on DispenserBlockEntity#dispenseFrom.
+        //   - LEAVES_DECAY      → mixin on LeavesBlock#randomTick.
+        //   - BLOCK_FORM/SPREAD → mixin on GrassBlock/MyceliumBlock/VineBlock tick,
+        //                          ConcretePowderBlock, WaterBlock/LavaBlock freeze/harden.
+        //   All wired in W4-04 (block state changes) and W4-06 (container + item ops).
     }
 
     // ====================================================================== access
@@ -141,8 +204,6 @@ public final class FabricEvents {
      * this for block-placement intent (the actual placed-block event has no
      * loader-agnostic surface; we approximate via the click and rely on the
      * AFTER break for sibling completeness).
-     *
-     * <p>TODO(v0.2.0): mixin BlockItem#place so we capture real BlockPlace events.
      */
     private static InteractionResult onUseBlock(Player player,
                                                 Level world,
@@ -166,9 +227,13 @@ public final class FabricEvents {
     }
 
     /**
-     * Left-click block → if the player is inspecting, swallow the swing and emit
-     * a chat-feedback line. The break event will not fire because we return
-     * {@link InteractionResult#SUCCESS} to claim the interaction.
+     * Left-click block. Two responsibilities:
+     * <ol>
+     *   <li>If the player is inspecting, swallow the swing and run an async
+     *       lookup at the clicked position, mirroring
+     *       {@code ForgeEvents#onLeftClickBlock}.</li>
+     *   <li>Otherwise pass through so vanilla break processing runs normally.</li>
+     * </ol>
      */
     private static InteractionResult onAttackBlock(Player player,
                                                    Level world,
@@ -179,12 +244,31 @@ public final class FabricEvents {
             if (player == null) return InteractionResult.PASS;
             if (!Inspector.isInspecting(player.getUUID())) return InteractionResult.PASS;
             Guardian gg = g();
-            if (gg != null && player instanceof ServerPlayer sp) {
+            if (gg == null) return InteractionResult.SUCCESS;
+            if (player instanceof ServerPlayer sp) {
                 // Re-sync client; cancelling the swing doesn't always restore the block client-side.
                 sp.connection.send(new ClientboundBlockUpdatePacket(pos, world.getBlockState(pos)));
-                sp.sendSystemMessage(ChatRenderer.primary(gg.theme(),
-                        "[VonixGuardian] inspect @ " + pos.getX() + "," + pos.getY() + "," + pos.getZ()));
-                // TODO: wire a proper position-lookup query once QueryParser supports `p:x,y,z`.
+                final MinecraftServer server = sp.getServer();
+                final String worldId = WorldKey.of(world);
+                final int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+                WORKER.submit(() -> {
+                    try {
+                        List<String> lines = gg.lookupAtPos(worldId, x, y, z, 10, System.currentTimeMillis());
+                        if (server != null) {
+                            server.execute(() -> {
+                                for (String line : lines) {
+                                    sp.sendSystemMessage(ChatRenderer.primary(gg.theme(), line));
+                                }
+                            });
+                        }
+                    } catch (Throwable t) {
+                        LOG.warn(Guardian.MARKER, "inspector lookup failed at {} {},{},{}", worldId, x, y, z, t);
+                        if (server != null) {
+                            server.execute(() -> sp.sendSystemMessage(ChatRenderer.error(gg.theme(),
+                                    "[VonixGuardian] Inspect lookup error: " + t.getMessage())));
+                        }
+                    }
+                });
             }
             return InteractionResult.SUCCESS;
         } catch (Throwable t) {
@@ -242,12 +326,32 @@ public final class FabricEvents {
 
     // ====================================================================== entities
 
-    /** Log non-player entity spawns; rate-limited per entity-type. */
+    /**
+     * ENTITY_LOAD is Fabric's single hook for "new entity into world" — it covers
+     * both mob spawning and hanging-entity placement. We fan out here:
+     * <ul>
+     *   <li>{@link HangingEntity} → HANGING_PLACE via universal attribution.</li>
+     *   <li>Other {@link LivingEntity} (non-player) → ENTITY_SPAWN, rate-limited.</li>
+     * </ul>
+     *
+     * <p><b>Known gap vs Forge:</b> Fabric's ENTITY_LOAD does not expose a
+     * {@code loadedFromDisk()} discriminator, so chunk-load reanimations cannot
+     * be filtered without a mixin. The per-type 1s rate limit blunts the flood
+     * but does not eliminate it; the full MobSpawnType classifier is scheduled
+     * for W4-04.
+     */
     private static void onEntityLoad(Entity entity, net.minecraft.server.level.ServerLevel level) {
         try {
             EventSubmitter s = sub();
             GuardianConfig c = cfg();
             if (s == null || c == null || entity == null) return;
+
+            // ---- hanging place (item frames, paintings, leash knots)
+            if (entity instanceof HangingEntity) {
+                onHangingLoad(entity, level);
+                return;
+            }
+
             if (!c.actions().logEntities()) return;
             if (!(entity instanceof LivingEntity) || entity instanceof Player) return;
             String type = EntitySentinel.of(entity);
@@ -262,6 +366,67 @@ public final class FabricEvents {
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onEntityLoad failed", t);
         }
+    }
+
+    /**
+     * W2-02 / A10 parity — HANGING_PLACE. Attribution runs through the shared
+     * damage-history resolver so a player-placed frame gets the placer as actor;
+     * synthetic sources fall back to {@link Sentinel#UNKNOWN}.
+     *
+     * <p>TODO(v1.2.0): mixin — W4-04/W4-06. Without ENTITY_LOAD exposing a
+     * loaded-from-disk flag we cannot suppress chunk-reload replays; a mixin on
+     * {@code HangingEntity#(BlockPos)} or {@code Level#addFreshEntity} lets us
+     * filter properly.
+     */
+    private static void onHangingLoad(Entity e, net.minecraft.server.level.ServerLevel level) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            String type = EntitySentinel.of(e);
+            BlockPos pos = e.blockPosition();
+            Attribution attr = FabricBootstrap.resolver != null
+                    ? FabricBootstrap.resolver.resolve(e, System.currentTimeMillis())
+                    : Attribution.unknown(EntitySentinel.UNKNOWN);
+            s.submitHangingPlace(attr.actorUuid(),
+                    attr.actorName() != null ? attr.actorName() : Sentinel.UNKNOWN,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    type, SourceTagger.tag(e));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onHangingLoad failed", t);
+        }
+    }
+
+    // ====================================================================== interaction (hanging break)
+
+    /**
+     * W2-02 / A10 parity — HANGING_BREAK, player-caused only.
+     * {@link AttackEntityCallback} fires the tick a player left-clicks an entity;
+     * if the target is a {@link HangingEntity} vanilla removes it on that swing.
+     *
+     * <p>TODO(v1.2.0): mixin — W4-04/W4-06 — arrow / explosion / mob-caused
+     * hanging breaks need a mixin on {@code HangingEntity#kill()} or
+     * {@code HangingEntity#hurt}; no Fabric API surface for those paths.
+     */
+    private static InteractionResult onAttackEntity(Player player,
+                                                    Level world,
+                                                    net.minecraft.world.InteractionHand hand,
+                                                    Entity target,
+                                                    net.minecraft.world.phys.EntityHitResult hit) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || player == null || target == null) return InteractionResult.PASS;
+            if (!(target instanceof HangingEntity)) return InteractionResult.PASS;
+            String type = EntitySentinel.of(target);
+            BlockPos pos = target.blockPosition();
+            s.submitHangingBreak(player.getUUID(), player.getName().getString(),
+                    WorldKey.of(world),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    type, SourceTagger.tag(target));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onAttackEntity failed", t);
+        }
+        return InteractionResult.PASS; // observe only — do not cancel damage
     }
 
     // ====================================================================== sessions
