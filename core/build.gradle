@@ -8,6 +8,7 @@
 plugins {
     id 'java-library'
     id 'maven-publish'
+    id 'signing'
 }
 
 java {
@@ -15,6 +16,7 @@ java {
         languageVersion = JavaLanguageVersion.of(17)
     }
     withSourcesJar()
+    withJavadocJar()
 }
 
 repositories {
@@ -66,6 +68,19 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += ['-Xlint:all', '-Xlint:-processing', '-Xlint:-serial']
 }
 
+// Javadoc is generated for the -javadoc.jar attached to Maven Central
+// publications. Doclint is disabled and links to broken symbols are demoted
+// from errors to warnings so pre-existing @link/@code issues in engine-side
+// code don't fail the publish pipeline. Any hard fix should land in a
+// dedicated docs pass, not here.
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+    if (options instanceof StandardJavadocDocletOptions) {
+        options.addStringOption('Xdoclint:none', '-quiet')
+    }
+    failOnError = false
+}
+
 tasks.named('jar') {
     manifest {
         attributes(
@@ -87,22 +102,31 @@ publishing {
                 name = 'VonixGuardian Core'
                 description = 'CoreProtect-grade audit + rollback engine for modded Minecraft (Fabric/Forge/NeoForge).'
                 url = 'https://github.com/Vonix-Network/VonixGuardian'
+                inceptionYear = '2025'
                 licenses {
                     license {
                         name = 'MIT'
                         url = 'https://opensource.org/licenses/MIT'
+                        distribution = 'repo'
                     }
                 }
                 developers {
                     developer {
                         id = 'vonix-network'
                         name = 'Vonix Network'
+                        email = 'ops@vonix.network'
+                        organization = 'Vonix Network'
+                        organizationUrl = 'https://vonix.network'
                     }
                 }
                 scm {
                     connection = 'scm:git:https://github.com/Vonix-Network/VonixGuardian.git'
                     developerConnection = 'scm:git:https://github.com/Vonix-Network/VonixGuardian.git'
                     url = 'https://github.com/Vonix-Network/VonixGuardian'
+                }
+                issueManagement {
+                    system = 'GitHub'
+                    url = 'https://github.com/Vonix-Network/VonixGuardian/issues'
                 }
             }
         }
@@ -116,5 +140,41 @@ publishing {
                 password = System.getenv('GITHUB_TOKEN')
             }
         }
+        // TODO(sonatype): switch this URL to the OSSRH host once the Sonatype
+        // namespace claim for `network.vonix.guardian` is approved. Until then
+        // the `publishMavenPublicationToMavenCentralRepository` task will
+        // resolve to the staging endpoint below but MUST NOT be invoked in CI
+        // — the block is present so downstream consumers (and Gradle IDEs)
+        // can see the coordinates + POM shape we intend to publish, and so
+        // that credential/signing wiring is exercised in dry-run builds.
+        maven {
+            name = 'MavenCentral'
+            url  = uri('https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/')
+            credentials {
+                // Populated by CI via ORG_GRADLE_PROJECT_ossrhUsername /
+                // ORG_GRADLE_PROJECT_ossrhPassword environment variables,
+                // which Gradle auto-maps onto the `ossrhUsername` /
+                // `ossrhPassword` project properties.
+                username = project.findProperty('ossrhUsername') ?: System.getenv('ORG_GRADLE_PROJECT_ossrhUsername') ?: ''
+                password = project.findProperty('ossrhPassword') ?: System.getenv('ORG_GRADLE_PROJECT_ossrhPassword') ?: ''
+            }
+        }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Signing — required for Maven Central. Uses gpg-agent via `signing.gnupg.*`
+// so CI can inject the private key without touching the on-disk keyring:
+//
+//   ORG_GRADLE_PROJECT_signingKeyName    -> signing.gnupg.keyName
+//   ORG_GRADLE_PROJECT_signingPassphrase -> signing.gnupg.passphrase
+//
+// Signing is only enforced when publishing to the MavenCentral repo; local
+// installs and GitHub Packages pushes stay unsigned so day-to-day dev + the
+// existing GHP pipeline are unaffected.
+// -----------------------------------------------------------------------------
+signing {
+    useGpgCmd()
+    required = { gradle.taskGraph.hasTask('publishMavenPublicationToMavenCentralRepository') }
+    sign publishing.publications.maven
 }
