@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-07-02
+## [1.2.1] - 2026-07-02
+
+Companion release to the internal 1.2.0 build. **Version bumped so operators
+who already deployed the earlier 1.2.0 jar (e.g. FTB Architects @ 02:39 UTC)
+don't hit a "same version, different bytes" collision** — see
+`docs/CHANGES-SINCE-1.2.0-INTERNAL.md` for the exact delta.
+
+Everything below was already in the intended v1.2.0 scope; the tag was
+re-cut as 1.2.1 to preserve SemVer + Keep-a-Changelog integrity with the
+previously-shipped `vonixguardian-forge-1.20.1-1.2.0.jar` (20,246,097 bytes,
+mtime `2026-07-02T02:39:06Z`).
+
+### Added since the internal 1.2.0 jar
+
+- **Forge / NeoForge world-event mixins** (W5-01) — 5 classes × 4 cells
+  (FireBlock, IceBlock, SpreadingSnowyDirtBlock, LeavesBlock, DispenserBlock).
+  The internal 1.2.0 jar declared the `submitBurn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay` API but had zero handlers firing them.
+- **NeoForge 1.21.1 bucket mixins** (W5-02) — `BucketItemMixin`, `MilkBucketItemMixin`. Restores CP-parity bucket logging after NeoForge removed `FillBucketEvent` upstream.
+- **Fabric event mixins P0+P1** (W5-08) — 10 types × 4 cells = 40 mixin classes: `BlockPlace`, `LivingDestroyBlock`, `Explosion`, `SignChange`, `BucketItem`, `Piston`, `Container` (chest), `ItemToss`, `ItemPickup`, `CraftItem`.
+- **CoreProtect-parity public API** (W5-03) — `itemLookup`, `inventoryLookup`, `sessionLookup`, `usernameLookup`, `signLookup`, `queueLookup`, `logChat`, `logCommand`, `logInteraction`, `logPlacement`, `logRemoval` + 5 new typed result records.
+- **WorldEdit selection bridge** (W5-04) — `r:#worldedit` / `r:#we` now actually reads the caller's selection via reflection-only soft-dep.
+- **`#optimize` flag** (W5-05) — MySQL `OPTIMIZE TABLE`, PostgreSQL `VACUUM ANALYZE`, SQLite `VACUUM`. Regression-tested per dialect.
+- **14 CoreProtect-parity language bundles** (W5-06) — en, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh_cn, zh_tw. Selectable via `config.language`.
+- **13 additional per-event config toggles** (W5-07) — natural breaks, tree/mushroom/vine/sculk growth, portals, water/lava flow, fire extinguish, campfire start, hopper meta filter, duplicate suppression, cancelled chat.
+- **Salt reuse is now fail-closed** (public-release polish) — `GuardianConfig.validate()` hard-errors on `privacy.hashIps=true` + default placeholder salt. Previously only WARNed.
+- **`SECURITY.md`**, **`CONTRIBUTING.md`**, refreshed **`README.md`**.
+
+### Fixed
+
+- **CI `build.yml` was using `-PbuildProfile=core`**, a profile that did not exist in `settings.gradle`. Silent no-op that happened to produce a correct build only because `:core` is always included. Fixed to `-PbuildProfile=coreonly` and added an explicit `coreonly` profile with `core` as a backwards-compat alias.
+
+### What was already in the internal 1.2.0 jar (2026-07-02T02:39:06Z)
+
+All these were present before the bump:
+
+- CP 1:1 command surface: `/vg teleport`, `/vg tp`, `/vg give`, `/vg config get/set`, `/vg migrate-db`, refreshed `/vg reload`, real `/vg undo`, full `/vg status`.
+- `PreLogEvent` native bridges on all 8 loader cells.
+- Fabric native event parity (hanging place/break, async inspector left-click).
+- English i18n foundation + `Messages` lookup.
+- Fabric + Forge + NeoForge mixin infrastructure (`vg.mixins.json` + `mods.toml`).
+- Maven Central publishing config + `docs/PLUGINS.md` + `docs/API.md` refresh.
+- Command audit doc + CoreProtect comparison refresh.
+
+## [1.2.0] - 2026-07-02 (internal / superseded by 1.2.1)
 
 ### Added
 
