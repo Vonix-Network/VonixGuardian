@@ -4,6 +4,182 @@ Wave-by-wave notes on the shape of v1.3.3 changes that touch schema, DAO,
 event bus wiring, or hot-path allocation. Owners: each wave appends their
 own paragraph at wave close; do not rewrite prior sections.
 
+## Z3 — Forge hopper + /fill //setblock event-bus fallback (2026-07-03)
+
+**Wave scope.** Round-3 audit findings P1-B and P1-C: on the three Forge
+cells (1.18.2 / 1.19.2 / 1.20.1), six mixin source files
+(`HopperBlockEntityMixin`, `FillCommandMixin`, `SetBlockCommandMixin` × 3
+cells) sat under `mc-*/forge/src/main/java/.../forge/mixin/` compiling
+into the jar but with no `vg.mixins.json` companion and no
+`[[mixins]]` block in `mods.toml`. Hopper transfers via
+`HopperBlockEntity#tryMoveItems`, and per-block writes from `/fill` and
+`/setblock`, produced **zero audit rows on Forge**. `/vg lookup` never
+saw hopper item movement or the individual block placements a hopper
+farm or admin-command operation put down; the two are exactly the
+producers CoreProtect surfaces via listener and Ledger surfaces via
+mixin.
+
+Z3 applies the Y2/Z2 pattern (Forge event bus + safe fallback samplers)
+to close the gaps that Forge exposes no first-class event for.
+
+**Hopper — bounded content-diff sampler.** Forge exposes no
+`HopperBlockEntity#tryMoveItems` event, no container-listener registration
+point on `HopperBlockEntity`, and no per-transfer callback. Z3 stands up a
+bounded per-tick sampler:
+
+- `HOPPER_POS_BY_LEVEL` : per-`worldId` `ConcurrentLinkedDeque<Long>`
+  holding packed `(worldHash, x, y, z)` keys for tracked hoppers.
+- `HOPPER_POS_LOOKUP` : `Map<Long, BlockPos>` to recover `BlockPos` from
+  the packed key.
+- `HOPPER_SNAPSHOT` : `Map<Long, String[5]>` holding the last-observed
+  `item_id|count` for each of the five vanilla hopper slots.
+- `onChunkLoadRegisterHoppers(ChunkEvent.Load)` walks a freshly-loaded
+  chunk's block-entities and adds any `HopperBlockEntity` to the tracker.
+- `onChunkUnloadDropHoppers(ChunkEvent.Unload)` drains them.
+- `onHopperPlacedRegister(BlockEvent.EntityPlaceEvent)` +
+  `onHopperBrokenUnregister(BlockEvent.BreakEvent, priority=LOWEST)`
+  keep the roster fresh across place/break.
+- `onWorldTickHopperSampler(TickEvent.WorldTickEvent)` on
+  1.18.2 / `onLevelTickHopperSampler(TickEvent.LevelTickEvent)` on
+  1.19.2 + 1.20.1: at `Phase.END` server-side, poll up to
+  `HOPPER_SAMPLE_PER_TICK = 20` hoppers per level in round-robin,
+  diff each slot against the snapshot, emit
+  `submitHopperPush` (slot count went up) or `submitHopperPull` (slot
+  count went down). Item-type swap within the same slot between two
+  samples emits both `submitHopperPull(prev)` and
+  `submitHopperPush(cur)` so rollback can undo either side.
+
+Bounded discipline: `HOPPER_TRACKER_MAX_PER_LEVEL = 8 192`. If the roster
+overflows we stop adding to the deque; existing entries continue to be
+sampled. Snapshot entries are cleaned lazily inside the sampler when
+`level.getBlockEntity(pos)` no longer returns a `HopperBlockEntity`.
+
+**/fill + /setblock — CommandEvent-driven region diff.** Forge has no
+event that fires per block written by the vanilla /fill or /setblock
+implementations. Z3 hooks the higher-level `CommandEvent`:
+
+1. `onCommandFillSetblock(CommandEvent)` detects `fill` / `setblock` (bare
+   or `namespace:fill` / `namespace:setblock` for modded aliases).
+2. Extracts the parsed `Coordinates` argument(s) via
+   `CommandContext#getArguments()` — one for /setblock, two for /fill.
+3. Rejects volumes over `FILL_MAX_REGION_BLOCKS = 32 768` (the vanilla
+   /fill hard cap) so a pathological modded region can't blow the
+   snapshot heap.
+4. Snapshots the region's pre-state as a flat `String[]` of block-ids
+   (block-id per-position at ~50 ns per lookup — comfortable inside a
+   32 K region).
+5. Schedules a post-tick runnable via `level.getServer().execute(...)`.
+   Vanilla /fill and /setblock complete synchronously inside the
+   command; the post-tick runnable sees the fully written region and
+   diffs it against the snapshot, emitting per-position
+   `submitBlockBreak(prevId)` + `submitBlockPlace(curId)` for every
+   position where the state changed.
+6. Attribution: `CommandSourceStack#getEntity()` for the player path;
+   `Sentinel.COMMAND` for console. Source tag is `cmd:fill` or
+   `cmd:setblock`.
+
+**Acknowledged coverage gaps.**
+
+1. **Hopper sampler is sampled, not exact.** With ~20 hoppers/tick/level
+   the tracker touches every hopper in `ceil(N/20)` ticks. For farm-heavy
+   shards with >2 000 active hoppers per dimension the mean sample
+   latency is ~5 s. Chained push+pull within the same sample window
+   (item enters and leaves the same slot between two consecutive samples)
+   cancels out and produces no row — this is the accepted trade-off for
+   bounded per-tick work. Fabric and NeoForge continue to use their wired
+   `HopperBlockEntityMixin` for exact per-transfer capture and are
+   unaffected.
+2. **Pre-existing hoppers before tracker init.** Hoppers whose chunks
+   loaded before the first `ChunkEvent.Load` handler fires (server
+   startup race) are only picked up on the next chunk unload/load
+   cycle. In practice mod initialisation orders `RegisterCommandsEvent`
+   before `ChunkEvent.Load` fires for the initial spawn chunks, so this
+   is only a factor for hot-reloaded config. Documented as an accepted
+   gap rather than false coverage.
+3. **/fill regions above 32 768 blocks.** The vanilla command itself
+   rejects such regions; a modded /fill that widens the cap will not be
+   audited. Rows are safely omitted (no false log) rather than the
+   snapshot heap blowing up.
+4. **Deferred block writes.** A mod that hooks /setblock and defers the
+   write to a later tick will see the "post" state at
+   `server.execute(...)` time equal to pre. The row is safely omitted
+   rather than falsely reported.
+5. **`net.minecraftforge.commands.CommandEvent` cancellation.** If a
+   downstream listener at a higher priority cancels the CommandEvent
+   Z3's snapshot still fires. The deferred runnable diffs pre vs post
+   and finds no change, so no rows are emitted — no false-positive.
+
+**Bounded-memory discipline.**
+
+| Structure | Cap | Steady-state cost |
+|-----------|-----|-------------------|
+| `HOPPER_POS_BY_LEVEL[worldId]` | 8 192 keys / level | ~65 KiB / level |
+| `HOPPER_SNAPSHOT` | matches roster, 5 × ~24 char string per hopper | ~1 MiB @ 8 192 hoppers |
+| `HOPPER_POS_LOOKUP` | matches roster, `BlockPos` per key | ~200 KiB @ 8 192 hoppers |
+| Snapshot per /fill region | `FILL_MAX_REGION_BLOCKS = 32 768` string refs | ~1.5 MiB peak / open command, dropped on runnable exit |
+
+**Concurrency.** All Z3 handlers run on the server tick thread. Sampler
+uses `ConcurrentHashMap` + `ConcurrentLinkedDeque` defensively so a mod
+that off-threads chunk load (Sinytra Connector observed on NeoForge
+1.21.1, not applicable here) does not corrupt the roster.
+
+**Error rate limiting.** `rateLimitedZ3Warn(site, throwable)` guards
+every handler outer `try/catch`; `LOG.warn` at most once per 60 s per
+`(site, throwable-class)` pair. A misbehaving mod that trips the
+sampler every tick will not spam the log.
+
+**Reset discipline.** `clearHopperTracker()` is called from `reset()`
+alongside `clearNaturalBlockCache()` on server-stop, so an in-JVM
+restart does not retain stale `(worldId, pos)` tracker state.
+
+**Orphan cleanup.** Six dormant mixin files deleted:
+
+```
+mc-1.18.2/forge/src/main/java/network/vonix/guardian/mc/v1_18_2/forge/mixin/{Hopper,Fill,SetBlock}...
+mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge/mixin/{Hopper,Fill,SetBlock}...
+mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/mixin/{Hopper,Fill,SetBlock}...
+```
+
+`RavagerMixin.java` remains — it belongs to X2 (still-active on Fabric /
+NeoForge and covered on Forge by `onLivingTick`, out of Z3 scope).
+
+`ForgeMixinBridge.java` is now completely unreferenced in Forge cells
+(Z2 removed the natural-block mixin call sites, Z3 removed the last
+hopper/command call sites). It is left in-place for this wave as a
+non-blocking dead class; a future cleanup wave can drop it.
+
+**Regression coverage.**
+
+- `Z3HopperSamplerTest` (new, `core/src/test/java/.../forgeevent/`, 10 tests):
+  first observation → no rows, slot count increase → push, decrease
+  → pull, slot cleared → pull with prev count, item-type swap →
+  pull(A) + push(B), no change → no rows, all 5 slots simultaneously →
+  5 rows, independent hoppers tracked separately, sentinel discipline
+  (`actorName == Sentinel.HOPPER`, `sourceTag == Sentinel.HOPPER`,
+  `actorUuid == null`).
+- `Z3FillSetblockCommandTest` (new, 10 tests): /setblock stone → air
+  emits BREAK only, air → diamond emits PLACE only, cobble → stone
+  emits both, /fill 3×3×3 air → glass emits 27 places, mixed pre-state
+  → uniform post diffs correctly, region-cap sanity check, no change
+  → no rows, console attribution `null` uuid + `Sentinel.COMMAND`
+  name, player attribution correct, sourceTag distinguishes
+  `cmd:fill` from `cmd:setblock`.
+
+All 20 Z3 tests pass on `:core:test`. Build matrix — `:core:build` +
+`:mc-1.18.2:forge:build` + `:mc-1.19.2:forge:build` +
+`:mc-1.20.1:forge:build` — green.
+
+**Performance envelope.** Sampler runs at `Phase.END` per-level per
+tick, does up to 20 × 5 = 100 `getItem(slot)` calls + 100 string
+comparisons. On a shard with a 5-dimension server that's 500
+`getItem` calls per tick, well under 0.02 % of tick budget. The /fill
+snapshot is O(volume) reads + O(volume) writes, but is capped at 32 K
+positions and only runs on command invocation (not on the tick hot
+path). The deferred runnable runs on the same server-tick thread on
+the next tick boundary, does the same O(volume) reads, and emits into
+the async `BatchedAsyncWriteQueue` which handles the actual DB write
+off-thread.
+
 ## Z2 — Forge natural-block event-bus fallback (2026-07-03)
 
 **Wave scope.** Round-3 audit finding P1-A: on the three Forge cells

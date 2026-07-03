@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Z3 — Forge hopper + `/fill`/`/setblock` event-bus fallback.** Round-3
+  audit findings P1-B + P1-C: the three Forge cells (1.18.2 / 1.19.2 /
+  1.20.1) shipped six dormant mixin source files
+  (`HopperBlockEntityMixin`, `FillCommandMixin`, `SetBlockCommandMixin`
+  × 3) that compiled without a `vg.mixins.json` companion, so hopper
+  transfers and per-block writes from `/fill` and `/setblock` produced
+  zero audit rows on Forge. Z3 restores coverage via a bounded per-tick
+  content-diff sampler (20 hoppers/tick/level, populated by
+  `ChunkEvent.Load` + `BlockEvent.EntityPlaceEvent`) and a
+  `CommandEvent`-driven pre/post region-diff (bounded to the vanilla
+  32 768-block cap) inside each cell's `ForgeEvents.java`. Two
+  best-effort trade-offs are explicitly acknowledged in code +
+  `docs/PERF-NOTES-1.3.3.md` § Z3: chained hopper push+pull within a
+  sample window can cancel out, and modded /fill variants that widen
+  the region cap are not audited.
 - **Z2 — Forge natural-block event-bus fallback.** Round-3 audit finding P1-A:
   the three Forge cells (1.18.2 / 1.19.2 / 1.20.1) shipped 15 mixin source
   files (`FireBlockMixin`, `IceBlockMixin`, `LeavesBlockMixin`,
@@ -24,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Z3 — orphan mixin cleanup.** Six dormant Forge mixin files deleted
+  (`HopperBlockEntityMixin` + `FillCommandMixin` + `SetBlockCommandMixin`
+  × 3 cells). `RavagerMixin.java` retained (X2, still-active on Fabric /
+  NeoForge and covered on Forge by `onLivingTick`). Fabric + NeoForge
+  cells unchanged — they still log hopper and command block writes via
+  their wired mixins.
 - **Z2 — orphan mixin cleanup.** Fifteen dormant Forge mixin files deleted
   (`Fire`/`Ice`/`Leaves`/`SpreadingSnowyDirt`/`DispenserBlockMixin.java` × 3
   cells). Fabric + NeoForge cells unchanged — they still log the natural
