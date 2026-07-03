@@ -495,6 +495,90 @@ public final class FabricMixinBridge {
         }
     }
 
+    // ================================================================== v1.3.1 X4 dispatchers
+
+    /**
+     * v1.3.1 X4 — Hopper push (item moved into a container). Attribution is
+     * {@link Sentinel#HOPPER}: no player owner exists for a vanilla hopper.
+     */
+    public static void hopperPush(Level level, BlockPos pos, ItemStack stack) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || stack == null || stack.isEmpty()) return;
+            s.submitHopperPush(null, Sentinel.HOPPER, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    itemId(stack), stack.getCount(), Sentinel.HOPPER);
+        } catch (Throwable t) {
+            warn("hopperPush", t);
+        }
+    }
+
+    /** v1.3.1 X4 — Hopper pull (item moved out of a container). */
+    public static void hopperPull(Level level, BlockPos pos, ItemStack stack) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || stack == null || stack.isEmpty()) return;
+            s.submitHopperPull(null, Sentinel.HOPPER, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    itemId(stack), stack.getCount(), Sentinel.HOPPER);
+        } catch (Throwable t) {
+            warn("hopperPull", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code BLOCK_PLACE}
+     * with {@link Sentinel#PORTAL} attribution and source tag {@code #portal};
+     * rollback treats these rows as world-events (see RollbackEngine PORTAL_CREATE handling).
+     */
+    public static void portalCreate(Level level, BlockPos pos, BlockState state) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || state == null) return;
+            s.submitBlockPlace(null, Sentinel.PORTAL, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(state), Sentinel.PORTAL);
+        } catch (Throwable t) {
+            warn("portalCreate", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X4 — {@code /fill} / {@code /setblock} per-block old-state break row.
+     * Attributed to the player when a player invoked the command, else to
+     * {@link Sentinel#COMMAND}.
+     */
+    public static void commandBlockBreak(Player player, Level level, BlockPos pos,
+                                         BlockState oldState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null || oldState.isAir()) return;
+            UUID uuid = player != null ? player.getUUID() : null;
+            String name = player != null ? player.getName().getString() : Sentinel.COMMAND;
+            s.submitBlockBreak(uuid, name, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), sourceTag != null ? sourceTag : "cmd");
+        } catch (Throwable t) {
+            warn("commandBlockBreak", t);
+        }
+    }
+
+    /** v1.3.1 X4 — {@code /fill} / {@code /setblock} per-block new-state place. */
+    public static void commandBlockPlace(Player player, Level level, BlockPos pos,
+                                         BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || newState == null) return;
+            UUID uuid = player != null ? player.getUUID() : null;
+            String name = player != null ? player.getName().getString() : Sentinel.COMMAND;
+            s.submitBlockPlace(uuid, name, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(newState), sourceTag != null ? sourceTag : "cmd");
+        } catch (Throwable t) {
+            warn("commandBlockPlace", t);
+        }
+    }
+
     private static void warn(String label, Throwable t) {
         LOG.warn(Guardian.MARKER, "mixin bridge {} failed", label, t);
     }

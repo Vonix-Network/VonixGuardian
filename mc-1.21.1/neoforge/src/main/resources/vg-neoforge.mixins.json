@@ -11,7 +11,11 @@
     "IceBlockMixin",
     "LeavesBlockMixin",
     "MilkBucketItemMixin",
-    "SpreadingSnowyDirtBlockMixin"
+    "SpreadingSnowyDirtBlockMixin",
+    "HopperBlockEntityMixin",
+    "PortalShapeMixin",
+    "FillCommandMixin",
+    "SetBlockCommandMixin"
   ],
   "server": [],
   "client": [],

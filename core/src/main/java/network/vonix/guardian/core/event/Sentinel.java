@@ -35,6 +35,20 @@ public final class Sentinel {
     public static final String SKELETON       = "#skeleton";
     public static final String ENDERMAN       = "#enderman";
     public static final String EXPLOSION      = "#explosion";
+    /** v1.3.1 X4 — actor sentinel for portal-frame block creation. */
+    public static final String PORTAL         = "#portal";
+    /**
+     * v1.3.1 X4 — actor sentinel for {@code /fill} / {@code /setblock} per-block
+     * audit rows emitted when the source is a non-player (e.g. command block,
+     * automation). Player-invoked commands use the player's UUID/name directly.
+     */
+    public static final String COMMAND        = "#command";
+    /**
+     * v1.3.1 X4 — hopper/dropper-driven container transfers with no player
+     * attribution (vanilla hopper pull/push). Kept distinct from
+     * {@link #PISTON} to keep source classification honest.
+     */
+    public static final String HOPPER         = "#hopper";
     public static final String UNKNOWN        = "#unknown";
 
     /** Unmodifiable view of every sentinel string, in declaration order. */
@@ -61,6 +75,9 @@ public final class Sentinel {
         s.add(SKELETON);
         s.add(ENDERMAN);
         s.add(EXPLOSION);
+        s.add(PORTAL);
+        s.add(COMMAND);
+        s.add(HOPPER);
         s.add(UNKNOWN);
         ALL = Collections.unmodifiableSet(s);
     }

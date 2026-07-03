@@ -108,3 +108,79 @@ on any backend.
   Track for v1.3.1 X6.
 - The eight `WorldMutator` cells will need per-cell overrides in X-β; the
   interface default keeps them source-compatible until then.
+
+---
+
+## X4 — Hopper + Portal + /fill + /setblock producers
+
+**Ledger-parity closure of G-Led-4 / G-Led-5.** Four new mixin sets, each
+present in all eight cells (4 Fabric + 3 Forge + 1 NeoForge):
+
+- `HopperBlockEntityMixin` — `@Inject(RETURN)` on `ejectItems` (push) and
+  `suckInItems` (pull). Reads the first non-empty slot as a witness stack and
+  submits `HOPPER_PUSH` / `HOPPER_PULL` via the new bridge dispatchers. All
+  hooks carry `require = 0` — mapping / signature drift silently no-ops.
+  Attribution: `Sentinel.HOPPER` (`#hopper`). Ledger's
+  `TransportItemsBetweenContainersMixin` covers the copper-golem AI path;
+  we ship the vanilla-hopper equivalent here.
+- `PortalShapeMixin` — `@Redirect` on `LevelAccessor.setBlock` inside
+  `createPortalBlocks`. Only fires when the write succeeds. Emits
+  `BLOCK_PLACE` with `Sentinel.PORTAL` (`#portal`) as both actor name and
+  source tag; `RollbackEngine` already admits `PORTAL_CREATE`-shaped rows for
+  world-event rollback (see `RollbackEngine.java:575,643,708`).
+  `ActionType.PORTAL_CREATE` (id=37) exists since v0.1.0 but had no producer
+  — this fixes the "enum + rollback wired to nothing" gap.
+- `FillCommandMixin` + `SetBlockCommandMixin` — `@Redirect` on the shared
+  `BlockInput.place(ServerLevel, BlockPos, int)` INVOKE. Per successful
+  place, emits BOTH a `BLOCK_BREAK` (of the pre-fill state, when not air)
+  and a `BLOCK_PLACE` (of the post-fill state), scoped with source tag
+  `cmd:fill` / `cmd:setblock`. Attribution: the command source's player
+  when the source is a player, else `Sentinel.COMMAND` (`#command`).
+
+**Server-thread bounded work discipline.** Unlike explosions (which build a
+single joined-affected-list string per detonation), `/fill` emits per-position
+atomic Actions with fixed-size payloads. The existing `BatchedAsyncWriteQueue`
+handles the I/O offload; no `ExplosionJoinWorker`-style batching is required.
+Verified via `X4ProducerParityTest.oversizedFill_5000_positions_all_rows_land`
+which pins that 10,000 rows land on the recording submitter without drop.
+
+**New Sentinels.** `Sentinel.PORTAL`, `Sentinel.COMMAND`, `Sentinel.HOPPER`
+added to the frozen registry (contract bump: additive only). Full 20 → 23
+entries; existing entries unchanged.
+
+**Bridge additions.**
+- `FabricMixinBridge` (× 4): `hopperPush`, `hopperPull`, `portalCreate`,
+  `commandBlockBreak`, `commandBlockPlace`.
+- `NeoForgeMixinBridge`: same five dispatchers.
+- `ForgeMixinBridge` (× 3): **new class** — the three Forge cells previously
+  had no shared bridge (their sibling mixins resolved Guardian inline). X4
+  introduces this consolidation because the five X4 dispatchers share more
+  surface than a per-mixin inline resolver justifies. Existing Forge mixins
+  (Fire/Ice/Leaves/etc.) are left untouched.
+
+**Mixins.json registration.** All 4 Fabric configs + the NeoForge config
+gain the four new mixin names. Forge cells continue to rely on classpath
+scanning (no mixin.json in this repo).
+
+**Regression tests.** `core/src/test/java/network/vonix/guardian/core/event/X4ProducerParityTest.java`
+covers:
+- Sentinel `PORTAL` / `COMMAND` / `HOPPER` presence and frozen membership.
+- Portal-frame `BLOCK_PLACE` shape (`Sentinel.PORTAL` in actor + tag).
+- `/fill` per-pos paired `BLOCK_BREAK` + `BLOCK_PLACE` with player
+  attribution.
+- `/setblock` with non-player source (`Sentinel.COMMAND` attribution).
+- Hopper push / pull with `Sentinel.HOPPER`.
+- Oversized 5,000-position `/fill` smoke — 10,000 rows land, no drop.
+
+**Build verification.** `:core:build` + `:core:test` clean.
+`compileJava` clean on all 8 cells (`mc-{1.18.2,1.19.2,1.20.1}:forge`,
+`mc-1.21.1:neoforge`, all 4 `mc-*:fabric`).
+
+**Followups (not this wave).**
+- Hopper mixin captures a per-tick "witness stack" rather than exact deltas
+  between source/dest inventories; a follow-up wave (X9 candidate) can
+  differentiate exact moved-slot amounts via `@Inject` on
+  `HopperBlockEntity.tryMoveItems` inner path.
+- `TransportItemsBetweenContainersMixin` (Ledger G-Led-6, copper golem AI)
+  is not shipped by X4 — it only exists on 1.21+ and requires additional
+  attribution plumbing. Track for post-1.3.1.

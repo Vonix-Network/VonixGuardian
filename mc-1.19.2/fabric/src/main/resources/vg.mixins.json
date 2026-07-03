@@ -20,7 +20,11 @@
     "ItemTossMixin",
     "ItemPickupMixin",
     "CraftItemMixin",
-    "SignChangeMixin"
+    "SignChangeMixin",
+    "HopperBlockEntityMixin",
+    "PortalShapeMixin",
+    "FillCommandMixin",
+    "SetBlockCommandMixin"
   ],
   "server": [],
   "client": [],
