@@ -7,22 +7,35 @@ package network.vonix.guardian.mc.v1_19_2.forge;
 import com.mojang.brigadier.ParseResults;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Registry;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.decoration.HangingEntity;
+import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.world.entity.monster.Silverfish;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.AbstractArrow;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.block.TntBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -30,10 +43,13 @@ import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraftforge.event.entity.EntityStruckByLightningEvent;
+import net.minecraftforge.event.entity.ProjectileImpactEvent;
 import net.minecraftforge.event.entity.item.ItemTossEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingDestroyBlockEvent;
+import net.minecraftforge.event.entity.living.LivingEvent;
 import net.minecraftforge.event.entity.player.AttackEntityEvent;
 import net.minecraftforge.event.entity.player.FillBucketEvent;
 import net.minecraftforge.event.entity.player.PlayerContainerEvent;
@@ -44,6 +60,9 @@ import net.minecraftforge.event.level.ExplosionEvent;
 import net.minecraftforge.event.level.PistonEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+import network.vonix.guardian.core.attribution.FluidSourceMemory;
+import network.vonix.guardian.core.attribution.TntPrimeMemory;
+import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.Attribution;
 import network.vonix.guardian.core.config.GuardianConfig;
@@ -325,7 +344,7 @@ public final class ForgeEvents {
             Entity source = ev.getExplosion().getExploder();
             // v1.3.1 X7: PrimedTnt loses its igniter by the time
             // ExplosionEvent.Detonate fires. Consult TntPrimeMemory
-            // (populated by TntBlockMixin / PrimedTntEntityMixin) at
+            // (populated by Y2 event-bus handlers onTntRightClickPrime /
             // the entity's block position before falling back to the
             // resolver. Closes CoreProtect-parity gap G-CP-2.
             String worldIdForPrime = WorldKey.of((Level) ev.getLevel());
@@ -1102,6 +1121,381 @@ public final class ForgeEvents {
     public static void reset() {
         pendingDispatcher = null;
     }
+
+    // ====================================================================== v1.3.2 Y2 — event-bus parity handlers
+    //
+    // Y2 closes P0-2/P0-3 from the round-2 audit: X2/X3/X4/X7 mixins compile
+    // dormant on Forge cells (no vg.mixins.json / mods.toml wiring). Rather
+    // than adding forge-side mixin config (which forces us to validate SRG/
+    // remapping descriptors across three Forge mapping vintages), we cover the
+    // same event surface via Forge's public event bus. Coverage is a superset
+    // of what the dormant mixins gave us on NeoForge/Fabric because Forge
+    // exposes first-class events for several of these paths.
+
+    /**
+     * Y2 — Fluid flow attribution (X3 parity).
+     *
+     * <p>Forge has no {@code BlockFromToEvent}, but {@link BlockEvent.NeighborNotifyEvent}
+     * fires from {@code Level#updateNeighborsAt} whenever a state changes and
+     * notifies its neighbours. When the notifying block is a {@link LiquidBlock}
+     * we scan the notified sides on the same tick and, if any neighbour is now
+     * itself a fluid (i.e. the flow just extended into it), we emit a fluid-flow
+     * row with attribution resolved through {@link FluidSourceMemory}.</p>
+     *
+     * <p>Also handles {@link BlockEvent.FluidPlaceBlockEvent} which fires
+     * when fluid interaction creates a block (cobblestone / obsidian / basalt
+     * generators). That transition is a place-side attribution — the block that
+     * appeared is the flow source.</p>
+     */
+    @SubscribeEvent
+    public static void onNeighborNotifyFluid(BlockEvent.NeighborNotifyEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            BlockState src = ev.getState();
+            if (src == null || !(src.getBlock() instanceof LiquidBlock)) return;
+            Level level = (Level) ev.getLevel();
+            if (!(level instanceof ServerLevel serverLevel)) return;
+            BlockPos origin = ev.getPos();
+            String worldId = WorldKey.of(level);
+            long now = System.currentTimeMillis();
+            for (Direction d : ev.getNotifiedSides()) {
+                BlockPos nbr = origin.relative(d);
+                FluidState fs = level.getFluidState(nbr);
+                if (fs == null || fs.isEmpty()) continue;
+                BlockState nbrState = level.getBlockState(nbr);
+                if (!(nbrState.getBlock() instanceof LiquidBlock)) continue;
+                String path;
+                try {
+                    ResourceLocation rl = Registry.FLUID.getKey(fs.getType());
+                    path = rl == null ? "water" : rl.getPath();
+                } catch (Throwable t) {
+                    path = "water";
+                }
+                String kind = path.contains("lava") ? "lava" : "water";
+                String fluidBlockId = "minecraft:" + kind;
+                String sourceTag = MixinHotEventFilter.PREFIX_FLUID + ":" + kind;
+                UUID actorUuid = null;
+                String actorName = Sentinel.FLUID;
+                Guardian gg = g();
+                if (gg != null) {
+                    FluidSourceMemory mem = gg.fluidSourceMemory();
+                    if (mem != null) {
+                        FluidSourceMemory.Record rec = mem.lookup(worldId, nbr.getX(), nbr.getY(), nbr.getZ(), now);
+                        if (rec != null && rec.actorUuid != null) {
+                            actorUuid = rec.actorUuid;
+                            actorName = rec.actorName != null ? rec.actorName : Sentinel.FLUID;
+                        }
+                    }
+                }
+                s.submitFluidFlow(actorUuid, actorName, worldId,
+                        nbr.getX(), nbr.getY(), nbr.getZ(), fluidBlockId, sourceTag);
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onNeighborNotifyFluid failed", t);
+        }
+    }
+
+    /** Y2 — cobble/obsidian/basalt generator: fluid interaction creates a block. */
+    @SubscribeEvent
+    public static void onFluidPlaceBlock(BlockEvent.FluidPlaceBlockEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            BlockPos pos = ev.getPos();
+            BlockState newState = ev.getNewState();
+            if (newState == null) return;
+            String worldId = WorldKey.of((Level) ev.getLevel());
+            s.submitBlockPlace(null, Sentinel.FLUID, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), blockId(newState),
+                    MixinHotEventFilter.PREFIX_FLUID + ":place");
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onFluidPlaceBlock failed", t);
+        }
+    }
+
+    /**
+     * Y2 — TNT-prime capture, player right-click path (X7 parity).
+     *
+     * <p>Fires on {@link PlayerInteractEvent.RightClickBlock} when the player
+     * targets a TNT block. Records the actor into {@link TntPrimeMemory} at the
+     * block position; {@code onExplosionDetonate} consumes it.</p>
+     */
+    @SubscribeEvent
+    public static void onTntRightClickPrime(PlayerInteractEvent.RightClickBlock ev) {
+        try {
+            Player p = ev.getEntity();
+            if (p == null) return;
+            BlockPos pos = ev.getPos();
+            Level level = (Level) ev.getLevel();
+            BlockState state = level.getBlockState(pos);
+            if (!(state.getBlock() instanceof TntBlock)) return;
+            Guardian gg = g();
+            if (gg == null) return;
+            TntPrimeMemory mem = gg.tntPrimeMemory();
+            if (mem == null) return;
+            long now = System.currentTimeMillis();
+            mem.record(WorldKey.of(level), pos.getX(), pos.getY(), pos.getZ(),
+                    TntPrimeMemory.PrimeRecord.player(p.getUUID(),
+                            p.getName().getString(), now));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onTntRightClickPrime failed", t);
+        }
+    }
+
+    /**
+     * Y2 — TNT-prime capture, projectile path (X7 parity).
+     *
+     * <p>Fires when a projectile impacts a block. If the block hit is TNT and
+     * the projectile is a burning arrow (or otherwise on fire), record the
+     * shooter as the priming actor.</p>
+     */
+    @SubscribeEvent
+    public static void onProjectileImpactTnt(ProjectileImpactEvent ev) {
+        try {
+            Projectile proj = ev.getProjectile();
+            HitResult hit = ev.getRayTraceResult();
+            if (proj == null || !(hit instanceof BlockHitResult bhr)) return;
+            if (!proj.isOnFire() && !(proj instanceof AbstractArrow arr && arr.isOnFire())) return;
+            Level level = proj.level;
+            if (level == null) return;
+            BlockPos pos = bhr.getBlockPos();
+            BlockState state = level.getBlockState(pos);
+            if (!(state.getBlock() instanceof TntBlock)) return;
+            Entity owner = proj.getOwner();
+            Guardian gg = g();
+            if (gg == null) return;
+            TntPrimeMemory mem = gg.tntPrimeMemory();
+            if (mem == null) return;
+            long now = System.currentTimeMillis();
+            if (owner instanceof Player p) {
+                mem.record(WorldKey.of(level), pos.getX(), pos.getY(), pos.getZ(),
+                        TntPrimeMemory.PrimeRecord.player(p.getUUID(),
+                                p.getName().getString(), now));
+            } else {
+                mem.record(WorldKey.of(level), pos.getX(), pos.getY(), pos.getZ(),
+                        TntPrimeMemory.PrimeRecord.fire(null, Sentinel.FIRE, now));
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onProjectileImpactTnt failed", t);
+        }
+    }
+
+    /**
+     * Y2 — TNT-prime capture, PrimedTnt-entity join (X7 belt-and-braces).
+     *
+     * <p>Catches modded TNT variants that spawn {@link PrimedTnt} directly
+     * without going through {@code TntBlock#explode}. When Forge's
+     * {@code getOwner()} returns a Player we record it.</p>
+     */
+    @SubscribeEvent
+    public static void onPrimedTntJoin(EntityJoinLevelEvent ev) {
+        try {
+            Entity e = ev.getEntity();
+            if (!(e instanceof PrimedTnt tnt)) return;
+            if (ev.loadedFromDisk()) return;
+            LivingEntity owner = tnt.getOwner();
+            if (!(owner instanceof Player p)) return;
+            Guardian gg = g();
+            if (gg == null) return;
+            TntPrimeMemory mem = gg.tntPrimeMemory();
+            if (mem == null) return;
+            BlockPos pos = tnt.blockPosition();
+            long now = System.currentTimeMillis();
+            mem.record(WorldKey.of(tnt.level), pos.getX(), pos.getY(), pos.getZ(),
+                    TntPrimeMemory.PrimeRecord.player(p.getUUID(),
+                            p.getName().getString(), now));
+        } catch (Throwable ignored) {
+            // Silent — this fires for every entity spawn, so a warn-per-error would flood.
+        }
+    }
+
+    /** Y2 — Nether portal frame creation (X4 parity). */
+    @SubscribeEvent
+    public static void onPortalSpawn(BlockEvent.PortalSpawnEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            BlockPos pos = ev.getPos();
+            BlockState state = ev.getState();
+            String worldId = WorldKey.of((Level) ev.getLevel());
+            s.submitBlockPlace(null, Sentinel.PORTAL, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    state != null ? blockId(state) : "minecraft:nether_portal",
+                    Sentinel.PORTAL);
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onPortalSpawn failed", t);
+        }
+    }
+
+    /**
+     * Y2 — Lightning strike fire attribution (X2 parity for LightningBolt.spawnFire).
+     *
+     * <p>Fires on {@link EntityStruckByLightningEvent}. We scan the 3x3 column
+     * around the struck position for {@code minecraft:fire} blocks that would
+     * have been created by {@code LightningBolt.spawnFire}. This is a lossy but
+     * pragmatic replacement — the mixin caught the exact write; the event fires
+     * BEFORE the fire is placed, so we defer capture by one server tick using
+     * the level's server executor.</p>
+     */
+    @SubscribeEvent
+    public static void onEntityStruckByLightning(EntityStruckByLightningEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            Entity struck = ev.getEntity();
+            LightningBolt bolt = ev.getLightning();
+            if (bolt == null) return;
+            Level level = bolt.level;
+            if (!(level instanceof ServerLevel serverLevel)) return;
+            final BlockPos origin = struck != null ? struck.blockPosition() : bolt.blockPosition();
+            final String worldId = WorldKey.of(level);
+            // Defer one tick — LightningBolt.spawnFire runs after the event.
+            serverLevel.getServer().execute(() -> {
+                try {
+                    EventSubmitter s2 = sub();
+                    if (s2 == null) return;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = -1; dz <= 1; dz++) {
+                            BlockPos p = origin.offset(dx, 0, dz);
+                            BlockState st = serverLevel.getBlockState(p);
+                            if (st != null && st.getBlock() == Blocks.FIRE) {
+                                s2.submitBlockPlace(null, EntitySentinel.SRC_LIGHTNING, worldId,
+                                        p.getX(), p.getY(), p.getZ(), "minecraft:fire",
+                                        EntitySentinel.SRC_LIGHTNING);
+                            }
+                        }
+                    }
+                } catch (Throwable t2) {
+                    LOG.warn(Guardian.MARKER, "onEntityStruckByLightning deferred scan failed", t2);
+                }
+            });
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onEntityStruckByLightning failed", t);
+        }
+    }
+
+    /**
+     * Y2 — falling-block spawn attribution (X2 parity for FallingBlock.tick).
+     *
+     * <p>{@link FallingBlockEntity} spawning represents gravity converting a
+     * placed block into an entity (sand/gravel/anvil falling). We log the origin
+     * as an entity-change-block break — the block at the spawn position was
+     * removed by gravity. The corresponding land-place is handled by
+     * {@link BlockEvent.EntityPlaceEvent} which already fires with the
+     * FallingBlockEntity as the placing entity.</p>
+     */
+    @SubscribeEvent
+    public static void onFallingBlockJoin(EntityJoinLevelEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            Entity e = ev.getEntity();
+            if (!(e instanceof FallingBlockEntity fbe)) return;
+            if (ev.loadedFromDisk()) return;
+            BlockState fallen = fbe.getBlockState();
+            if (fallen == null) return;
+            BlockPos pos = fbe.blockPosition();
+            String worldId = WorldKey.of(ev.getLevel());
+            s.submitEntityChangeBlock(null, EntitySentinel.SRC_GRAVITY, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(fallen), "minecraft:air", EntitySentinel.SRC_GRAVITY);
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onFallingBlockJoin failed", t);
+        }
+    }
+
+    /**
+     * Y2 — dragon &amp; silverfish block-change tick surface (X2 parity).
+     *
+     * <p>{@link LivingDestroyBlockEvent} already covers the ravager and most
+     * dragon paths but MISSES {@code EnderDragon.checkWalls} and
+     * {@code Silverfish$SilverfishMergeWithStoneGoal.start}. Those methods
+     * remove/replace blocks without firing {@code LivingDestroyBlockEvent}.
+     * We approximate by tick-hooking these specific entity types: on each tick
+     * we compare a small position window in front of them to a per-entity
+     * previous snapshot and emit a change row when it differs.</p>
+     *
+     * <p>To keep cost bounded we only sample once every {@link #LIVING_TICK_SAMPLE_INTERVAL}
+     * ticks per entity and cap the tracked-entity map at
+     * {@link #LIVING_TICK_MAX_TRACKED}.</p>
+     */
+    @SubscribeEvent
+    public static void onLivingTick(LivingEvent.LivingTickEvent ev) {
+        try {
+            LivingEntity e = ev.getEntity();
+            if (e == null) return;
+            if (!(e instanceof EnderDragon) && !(e instanceof Silverfish)
+                    && !(e instanceof net.minecraft.world.entity.animal.SnowGolem)) return;
+            Level level = e.level;
+            if (!(level instanceof ServerLevel)) return;
+            long tick = e.tickCount;
+            if ((tick & (LIVING_TICK_SAMPLE_INTERVAL - 1)) != 0) return;
+            String sourceTag;
+            if (e instanceof EnderDragon) sourceTag = EntitySentinel.SRC_ENDER_DRAGON;
+            else if (e instanceof Silverfish) sourceTag = EntitySentinel.SRC_SILVERFISH;
+            else sourceTag = EntitySentinel.SRC_SNOW_GOLEM;
+            String actorName = sourceTag;
+            EventSubmitter s = sub();
+            if (s == null) return;
+            String worldId = WorldKey.of(level);
+            BlockPos entPos = e.blockPosition();
+            java.util.Map<Long, String> prevSnap = LIVING_BLOCK_SNAPSHOT.computeIfAbsent(e.getUUID(),
+                    k -> new java.util.concurrent.ConcurrentHashMap<>());
+            if (LIVING_BLOCK_SNAPSHOT.size() > LIVING_TICK_MAX_TRACKED) {
+                // fast-path bounded eviction: drop an entry
+                java.util.Iterator<UUID> it = LIVING_BLOCK_SNAPSHOT.keySet().iterator();
+                if (it.hasNext()) {
+                    UUID drop = it.next();
+                    if (!drop.equals(e.getUUID())) it.remove();
+                }
+            }
+            int r = e instanceof EnderDragon ? 3 : 1;
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dy = -r; dy <= r; dy++) {
+                    for (int dz = -r; dz <= r; dz++) {
+                        BlockPos p = entPos.offset(dx, dy, dz);
+                        long key = p.asLong();
+                        BlockState cur = level.getBlockState(p);
+                        String curId = cur != null ? blockId(cur) : "minecraft:air";
+                        String prev = prevSnap.get(key);
+                        if (prev == null) {
+                            prevSnap.put(key, curId);
+                            continue;
+                        }
+                        if (!prev.equals(curId)) {
+                            s.submitEntityChangeBlock(null, actorName, worldId,
+                                    p.getX(), p.getY(), p.getZ(),
+                                    prev, curId, sourceTag);
+                            prevSnap.put(key, curId);
+                        }
+                    }
+                }
+            }
+            // Bound snapshot size per entity
+            if (prevSnap.size() > 512) {
+                prevSnap.clear();
+            }
+        } catch (Throwable t) {
+            long now = System.currentTimeMillis();
+            String key = t.getClass().getName();
+            Long last = LIVING_TICK_WARN_LIMIT.get(key);
+            if (last == null || now - last >= 60_000L) {
+                LIVING_TICK_WARN_LIMIT.put(key, now);
+                LOG.warn(Guardian.MARKER, "onLivingTick failed", t);
+            }
+        }
+    }
+
+    /** Sample interval (power-of-two) for {@link #onLivingTick}. */
+    private static final int LIVING_TICK_SAMPLE_INTERVAL = 8;
+    /** Hard cap on tracked living entities to bound memory. */
+    private static final int LIVING_TICK_MAX_TRACKED = 64;
+    /** Per-entity block-state snapshot (position -> registry id). */
+    private static final Map<UUID, Map<Long, String>> LIVING_BLOCK_SNAPSHOT =
+            new ConcurrentHashMap<>();
+    /** Rate-limit for onLivingTick error logging. */
+    private static final Map<String, Long> LIVING_TICK_WARN_LIMIT = new ConcurrentHashMap<>();
 
     // ====================================================================== helpers
 

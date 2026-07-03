@@ -131,3 +131,94 @@ the "extend ActionType" recipe.
 `GuardianConfig.java` (X1 shipped `Storage.persistNbt` already), `Schema.java`
 (X1 finalized v5), `EventGate.java`, mixins, `ActionBuilder.java` (X1 already
 added NBT setters).
+
+## Y2 — Forge cell parity via event bus (2026-07-03)
+
+**Wave scope.** Round-2 audit lines 30-31 (P0-2/P0-3): the X2/X3/X4/X7 mixins
+for the three Forge cells (1.18.2 / 1.19.2 / 1.20.1) existed as source files
+under `mc-*/forge/**/mixin/` but no `vg.mixins.json` / `mods.toml
+[[mixins]]` block ever wired them. Coverage-illusion. Y2 closes the gap by
+routing the same event surface through Forge's public event bus, avoiding
+per-cell SRG-descriptor validation on three separate Forge mapping vintages.
+
+**Handlers added to each `ForgeEvents.java`.**
+
+- `onNeighborNotifyFluid(BlockEvent.NeighborNotifyEvent)` — X3 fluid-flow
+  producer. Fires when a `LiquidBlock` notifies its neighbours; if any
+  notified side is itself a fluid we emit `submitFluidFlow` with
+  attribution resolved through `FluidSourceMemory` (2-min /
+  8-block window from the bucket-empty seed on `onFillBucket`).
+- `onFluidPlaceBlock(BlockEvent.FluidPlaceBlockEvent)` — X3 cobble /
+  obsidian / basalt generator producer.
+- `onTntRightClickPrime(PlayerInteractEvent.RightClickBlock)` — X7 TNT
+  player-prime capture (flint & steel on TNT block).
+- `onProjectileImpactTnt(ProjectileImpactEvent)` — X7 TNT projectile-prime
+  capture (burning arrow into TNT), resolves projectile owner as the
+  actor.
+- `onPrimedTntJoin(EntityJoinLevelEvent)` — X7 belt-and-braces for modded
+  TNT variants that spawn `PrimedTnt` directly and set `owner` at
+  construction.
+- `onPortalSpawn(BlockEvent.PortalSpawnEvent)` — X4 nether-portal-frame
+  place row (`Sentinel.PORTAL`).
+- `onEntityStruckByLightning(EntityStruckByLightningEvent)` — X2 lightning
+  fire attribution. Because the fire is spawned AFTER the event fires we
+  defer the 3x3 column scan by one server tick via
+  `serverLevel.getServer().execute(...)` and emit place rows for any new
+  `minecraft:fire` blocks.
+- `onFallingBlockJoin(EntityJoinLevelEvent)` — X2 gravity block-origin
+  capture. The corresponding land-place is already covered by
+  `BlockEvent.EntityPlaceEvent` firing with the `FallingBlockEntity` as
+  the placer.
+- `onLivingTick(LivingEvent.LivingTickEvent)` — X2 dragon /
+  silverfish / snow-golem block-change tick surface. Sampled every 8
+  ticks per entity with a bounded 64-entity tracked set and per-entity
+  snapshot capped at 512 positions to keep steady-state cost O(1) per
+  tick.
+
+**Version differences (three cells, one design).**
+
+- 1.18.2 uses `EntityJoinWorldEvent` / `LivingEvent.LivingUpdateEvent` /
+  `ev.getWorld()` / `net.minecraftforge.event.world.BlockEvent` /
+  `PlayerInteractEvent.getPlayer()` / `net.minecraft.core.Registry`.
+- 1.19.2 uses `EntityJoinLevelEvent` / `LivingEvent.LivingTickEvent` /
+  `ev.getLevel()` / `net.minecraftforge.event.level.BlockEvent` / entity
+  `.level` field access (not method) /
+  `net.minecraft.core.Registry`.
+- 1.20.1 matches 1.19.2 except `BuiltInRegistries` replaced the legacy
+  `Registry` class.
+
+**Dormant mixin cleanup (Y8 sub-task).** Deleted 27 files (9 per cell,
+across 3 cells): `EnderDragonMixin`, `SnowGolemMixin`,
+`FallingBlockEntityMixin`, `LightningBoltMixin`, `SilverfishMixin`
+(X2 — replaced by `onLivingTick` / `onFallingBlockJoin` /
+`onEntityStruckByLightning`); `LiquidBlockMixin` (X3 — replaced by
+`onNeighborNotifyFluid`); `PortalShapeMixin` (X4 — replaced by
+`onPortalSpawn`); `TntBlockMixin`, `PrimedTntEntityMixin` (X7 — replaced
+by `onTntRightClickPrime` / `onProjectileImpactTnt` / `onPrimedTntJoin`).
+Kept: `HopperBlockEntityMixin` (Y6's slot-cache surface),
+`FillCommandMixin` / `SetBlockCommandMixin` (X4 command-tracing, not
+Y2 scope), plus `FireBlockMixin` / `IceBlockMixin` / `LeavesBlockMixin` /
+`RavagerMixin` / `SpreadingSnowyDirtBlockMixin` /
+`DispenserBlockMixin` (mixin-scope items outside Y2). Also removed
+`ForgeMixinBridge.portalCreate()` — the sole caller (`PortalShapeMixin`)
+is gone and `onPortalSpawn` inlines the submit.
+
+**Hot-path cost.** `onNeighborNotifyFluid` runs on every neighbour-notify
+tick but instance-checks `LiquidBlock` before doing any allocation — the
+early-out is one virtual-call. `onLivingTick` uses a power-of-two mask
+(`tick & 7`) to sample every 8th tick per living entity and holds a
+bounded 64-entity map, per-entity snapshot capped at 512 positions.
+`onFallingBlockJoin` and `onPrimedTntJoin` early-out on `!(e instanceof
+...)` before touching Guardian state. `onEntityStruckByLightning` runs
+a 9-block scan once per strike (rare event, deferred to the tick
+executor).
+
+**Tests.** `core/src/test/java/network/vonix/guardian/core/forgeevent/
+ForgeEventBusParityTest` — 10 regressions covering each replaced mixin:
+fluid attribution (X3, 2 tests), TNT prime (X7, 3 tests — right-click,
+projectile, PrimedTnt-join), portal spawn (X4), dragon / silverfish /
+falling-block / lightning (X2, 4 tests). Ran alongside the full
+`:core:test` suite; the sole unrelated failure
+(`GuardianAPIExtendedTest.queueLookup_filters_pending_queue_snapshot`)
+was verified failing on the base commit `12b1423` before any Y2
+changes.

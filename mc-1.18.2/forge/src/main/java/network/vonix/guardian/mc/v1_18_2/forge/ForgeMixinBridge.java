@@ -96,18 +96,8 @@ public final class ForgeMixinBridge {
         }
     }
 
-    /** v1.3.1 X4 — Portal-frame block placement. */
-    public static void portalCreate(Level level, BlockPos pos, BlockState state) {
-        try {
-            EventSubmitter s = sub();
-            if (s == null || level == null || pos == null || state == null) return;
-            s.submitBlockPlace(null, Sentinel.PORTAL, worldKey(level),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    blockId(state), Sentinel.PORTAL);
-        } catch (Throwable t) {
-            warn("portalCreate", t);
-        }
-    }
+    // portalCreate() removed in v1.3.2 Y2 — Nether portal frame creation is
+    // now captured directly via BlockEvent.PortalSpawnEvent in ForgeEvents.
 
     /** v1.3.1 X4 — /fill or /setblock per-block old-state break row. */
     public static void commandBlockBreak(Player player, Level level, BlockPos pos,
