@@ -135,6 +135,13 @@ public final class GuardianStatus {
                     line(out, "  #" + (i + 1) + "         " + hooks.get(i).getClass().getSimpleName());
                 }
             }
+            // v1.3.1 X6 (P3-5): surface the internal-hook count so operators can spot
+            // misbehaving plugin registrations against the mixin-hot-event chain.
+            int internalCount = g.gate().internalHooks().size();
+            String capNote = internalCount > network.vonix.guardian.core.event.EventGate.INTERNAL_HOOKS_SOFT_CAP
+                ? " (over soft cap " + network.vonix.guardian.core.event.EventGate.INTERNAL_HOOKS_SOFT_CAP + ")"
+                : "";
+            line(out, "  internal   " + internalCount + capNote);
         } catch (Throwable t) {
             line(out, "  (err: " + t.getClass().getSimpleName() + ")");
         }

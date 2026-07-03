@@ -283,10 +283,17 @@ public final class RollbackEngine {
             }
 
             int limit = Math.min(options.pageSize(), remainingScanBudget);
-            List<Action> page = dao.query(filter, offset, limit);
-            if (page == null || page.isEmpty()) {
+            // v1.3.1 X6 (P3-6): request limit+1 rows so we can detect "has more" without
+            // a follow-up dao.query() round-trip below. Only the first `limit` rows
+            // are actually consumed; the extra row is a boolean signal.
+            List<Action> pageWithProbe = dao.query(filter, offset, limit + 1);
+            if (pageWithProbe == null || pageWithProbe.isEmpty()) {
                 break;
             }
+            boolean probeHasMore = pageWithProbe.size() > limit;
+            List<Action> page = probeHasMore
+                    ? new ArrayList<>(pageWithProbe.subList(0, limit))
+                    : pageWithProbe;
             pages++;
 
             List<Action> orderedPage = new ArrayList<>(page);
@@ -314,7 +321,8 @@ public final class RollbackEngine {
 
             boolean fullPage = page.size() == limit;
             boolean scanBudgetExhausted = scanned >= options.maxScannedActions();
-            boolean scanLimitReached = scanBudgetExhausted && fullPage && hasMoreRows(filter, offset + page.size());
+            // v1.3.1 X6 (P3-6): reuse the +1 probe result instead of a separate dao.query.
+            boolean scanLimitReached = scanBudgetExhausted && fullPage && probeHasMore;
             RollbackProgress progress = progress(pages, scanned, builder, scanLimitReached, false, false);
             options.publish(progress);
             if (scanLimitReached) {

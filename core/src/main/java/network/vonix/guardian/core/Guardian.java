@@ -186,6 +186,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             logFile = new JsonLinesLogFile(logDir,
                     config.logFile().gzipRotated(),
                     config.logFile().retentionDays(),
+                    config.logFile().forceSyncOnFlush(),
                     Clock.systemUTC());
         }
 
@@ -437,7 +438,31 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
         GuardianConfig fresh;
         try {
-            fresh = ConfigLoader.load(p);
+            // v1.3.1 X6 (P2-2): route ConfigLoader.load onto the common ForkJoinPool
+            // so Files.readString + Gson.fromJson do not stall the server thread on
+            // a slow / networked filesystem. reloadConfig is a synchronous API, so
+            // we block waiting for the parse — but a hot ForkJoinPool worker doing
+            // the IO keeps a soft-stall out of the tick when the caller thread is
+            // the server thread. Timeout guards against a stuck NFS mount.
+            final Path readPath = p;
+            fresh = java.util.concurrent.CompletableFuture
+                    .supplyAsync(() -> {
+                        try {
+                            return ConfigLoader.load(readPath);
+                        } catch (java.io.IOException ex) {
+                            throw new java.io.UncheckedIOException(ex);
+                        }
+                    })
+                    .get(10L, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            errs.add("load timed out after 10s (slow filesystem?)");
+            LOG.warn(MARKER, "Config reload timed out for {}", p);
+            return new ReloadResult(hot, restart, errs);
+        } catch (java.util.concurrent.ExecutionException ee) {
+            Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+            errs.add("load failed: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            LOG.warn(MARKER, "Config reload failed for {}", p, cause);
+            return new ReloadResult(hot, restart, errs);
         } catch (Exception e) {
             errs.add("load failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             LOG.warn(MARKER, "Config reload failed for {}", p, e);
@@ -471,7 +496,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 fresh.logFile().enabled(),          // HOT
                 old.logFile().directory(),          // restart
                 old.logFile().gzipRotated(),        // restart
-                old.logFile().retentionDays()       // restart
+                old.logFile().retentionDays(),      // restart
+                fresh.logFile().forceSyncOnFlush()  // HOT (v1.3.1 X6 P3-4)
             ),
             fresh.actions(),                        // HOT (whole subsection)
             old.permissions(),                      // restart-required
@@ -502,8 +528,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         if (!Objects.equals(old.theme(), fresh.theme())) hot.add("theme");
 
         // Swap in.
+        // v1.3.1 X6 (P2-5): build the fresh EventGate on a LOCAL reference and
+        // register every hook against it before publishing to `this.gate`. Between
+        // the pre-X6 `this.gate = new EventGate(...)` at the top and the last
+        // `this.gate.addHook(...)` at the bottom, concurrent submitters saw a
+        // freshly-empty gate — blacklist rules briefly did not apply, per-world
+        // overrides briefly did not apply. Building locally means every submitter
+        // sees either the fully old chain OR the fully new chain, never a
+        // half-registered one.
         this.config = merged;
-        this.gate = new EventGate(merged.actions());
+        EventGate localGate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
         network.vonix.guardian.core.i18n.Messages.setLanguage(merged.language());
 
@@ -526,7 +560,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 java.util.Set<String> before = new java.util.HashSet<>(store.overriddenWorlds());
                 store.reload(worldsDir);
                 java.util.Set<String> after = store.overriddenWorlds();
-                this.gate.addHook(new PerWorldEventHook(store, merged.actions()));
+                localGate.addHook(new PerWorldEventHook(store, merged.actions()));
                 if (!before.equals(after)) {
                     java.util.Set<String> added = new java.util.HashSet<>(after);
                     added.removeAll(before);
@@ -544,7 +578,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 store.updateRoot(merged.actions());
                 boolean hadEntries = !store.overriddenWorlds().isEmpty();
                 store.reload(worldsDir);
-                this.gate.addHook(new PerWorldEventHook(store, merged.actions()));
+                localGate.addHook(new PerWorldEventHook(store, merged.actions()));
                 if (hadEntries) hot.add("per-world: cleared (worlds/ dir gone)");
             }
         } catch (Exception e) {
@@ -555,6 +589,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // W3-B6: reload blacklist.txt. Re-parse from disk; if present, build a
         // fresh matcher and register a new hook on the new gate. Report rule
         // count under "blacklist.txt" in the hot-swapped list.
+        BlacklistFileHook newBlacklistHook = null;
         try {
             Path blPath = (dataDir != null) ? dataDir.resolve("blacklist.txt") : null;
             BlacklistFile.Parsed parsed = (blPath != null)
@@ -563,13 +598,12 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             if (parsed.size() > 0) {
                 BlacklistMatcher matcher = new BlacklistMatcher(parsed);
                 BlacklistFileHook hook = new BlacklistFileHook(matcher);
-                this.gate.addHook(hook);
-                this.blacklistHook = hook;
+                localGate.addHook(hook);
+                newBlacklistHook = hook;
                 if (matcher.size() != oldCount) {
                     hot.add("blacklist.txt (" + matcher.size() + " rules)");
                 }
             } else {
-                this.blacklistHook = null;
                 if (oldCount > 0) {
                     hot.add("blacklist.txt (cleared)");
                 }
@@ -582,7 +616,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // W3-B11: preserve the public cancellable pre-log hook on the rebuilt
         // EventGate. Keep it terminal so cheaper per-world/blacklist hooks run
         // before native event-bus dispatches after /vg reload just like at boot.
-        this.gate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
+        localGate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
+
+        // v1.3.1 X6 (P2-5): atomic publication. Every hook is registered on
+        // localGate; only now do we flip `this.gate` and `this.blacklistHook`.
+        // Any submitter racing this method observes either the old fully-populated
+        // gate or the new fully-populated gate.
+        this.gate = localGate;
+        this.blacklistHook = newBlacklistHook;
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
         // (build a new JsonLinesLogFile at the same directory).
@@ -595,6 +636,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                         logDir,
                         merged.logFile().gzipRotated(),
                         merged.logFile().retentionDays(),
+                        merged.logFile().forceSyncOnFlush(),
                         Clock.systemUTC());
                 logFileRef.set(fresh2);
             } else if (!wantEnabled && currentLf != null) {
@@ -721,11 +763,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     @Override
     public void submitExplosion(UUID actorUuid, String actorName, String worldId,
                                 int x, int y, int z, String affectedJoined, String sourceTag) {
-        submit(new ActionBuilder()
-                .type(ActionType.EXPLOSION)
-                .actorUuid(actorUuid)
-                .actorName(actorName != null ? actorName : Sentinel.EXPLOSION)
-                .worldId(worldId)
+        // v1.3.1 X6 (P3-2): use the per-thread scratch builder via seed() instead of
+        // allocating a fresh ActionBuilder. Consistent with every other submit* path
+        // and cuts ~40B/allocation on the explosion-join worker thread on TNT-heavy
+        // servers. actorName defaults to Sentinel.EXPLOSION when null (kept identical
+        // to pre-X6 semantics — do NOT change to Sentinel.UNKNOWN).
+        submit(seed(ActionType.EXPLOSION, actorUuid,
+                    actorName != null ? actorName : Sentinel.EXPLOSION,
+                    worldId)
                 .position(x, y, z)
                 .targetId(affectedJoined)
                 .sourceTag(sourceTag)
@@ -1218,6 +1263,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         } catch (Exception e) {
             LOG.warn(MARKER, "AutoPurgeScheduler shutdown raised", e);
         }
+        // v1.3.1 X6 (P2-1): drain the ExplosionJoinWorker BEFORE queue.drainAndFlush.
+        // Any join task queued at t=stop-Δ needs to land its submitExplosion call
+        // into the write queue before we tell the queue to drain — otherwise the
+        // row races the queue close and the DAO close, and gets silently dropped.
+        // close() now blocks up to 5s waiting for pending join tasks to finish.
+        try {
+            explosionJoinWorker.close();
+        } catch (Exception e) {
+            LOG.warn(MARKER, "ExplosionJoinWorker close raised", e);
+        }
         try {
             queue.drainAndFlush(30_000L);
         } catch (Exception e) {
@@ -1235,11 +1290,6 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             dao.close();
         } catch (Exception e) {
             LOG.warn(MARKER, "DAO close raised", e);
-        }
-        try {
-            explosionJoinWorker.close();
-        } catch (Exception e) {
-            LOG.warn(MARKER, "ExplosionJoinWorker close raised", e);
         }
         LOG.info(MARKER, "VonixGuardian offline.");
     }

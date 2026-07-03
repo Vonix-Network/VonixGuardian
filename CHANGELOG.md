@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-07-03
+
+**Parity + perf close-out.** Closes v1.3.0's audit findings across nine parallel
+X-waves (X1-X9). Three P0 parity gaps: entity-block-change coverage, NBT
+fidelity, fluid-flow attribution. Six P1 parity gaps: TNT-prime attribution,
+hopper/portal producers, /fill //setblock command mixins, auto-purge daemon,
+query-parser polish (decimal/range time, WorldEdit bridge). Three P1 perf items:
+HikariCP prep-stmt cache, DamageHistory eviction, W5 supplemental spatial bound.
+Perf P2/P3 polish: shutdown ordering, reload atomicity, DAO amortization, and
+misc cleanups.
+
+### Added
+
+- **X1 — Schema V5 NBT fidelity + producer surface (P0).** Five nullable
+  columns on `vg_actions` (`old_block_state TEXT`, `new_block_state TEXT`,
+  `block_entity_nbt BLOB`, `item_nbt BLOB`, `entity_nbt BLOB`) with a
+  `V5NbtFidelity` migration. Five NBT setters on `ActionBuilder`; NBT-aware
+  default overloads on `EventSubmitter` and `WorldMutator`; new config toggle
+  `config.storage.persistNbt` (default `false`) gating producer-side NBT
+  capture. Closes the largest CoreProtect / Ledger parity gap — named +
+  enchanted swords, chest contents, custom-named tamed mobs, waterlogged /
+  facing state all round-trip through rollback when the toggle is on. Zero
+  hot-path allocation when the toggle is off.
+- **X2 — Entity-caused block-change dedicated mixins (P0).** New mixins on
+  EnderDragon, Ravager, SnowGolem, FallingBlockEntity, LightningBolt,
+  Silverfish; EntitySentinel additions. Closes the "modded entities that break
+  blocks without firing `LivingDestroyBlockEvent`" gap.
+- **X3 — Fluid-flow attribution producer (P0).** New `LiquidBlockMixin`,
+  `Sources.FLUID` + `#fluid` sentinel, `ActionType.FLUID_FLOW`, RollbackEngine
+  admit path. Water / lava flow now attributes to the placing player through
+  the standard producer surface.
+- **X4 — Hopper + Portal producers + /fill //setblock command mixins (P1).**
+  New HopperBlockEntityMixin, PortalShapeMixin, FillCommandMixin,
+  SetBlockCommandMixin; new `submitHopperPush/Pull` producer wiring.
+- **X5 — Auto-purge daemon + query-parser polish (P1).** New
+  `AutoPurgeScheduler` daemon under `config.purge.autoPurgeSeconds +
+  autoPurgeTime`, gated by the 30-day minimum. QueryParser now accepts decimal
+  time (`t:1.5h`), range time (`t:1h..2h`), and the WorldEdit selection bridge
+  (`t:we-sel`). GuardianSuggestions aligned.
+- **X7 — TNT-prime attribution (P1).** New TntBlockMixin + PrimedTntEntityMixin
+  (8 cells), attribution resolver extension. Player who primed the TNT is
+  credited on the resulting EXPLOSION row instead of `#tnt`.
+- **X8 — W5 supplemental spatial bounding (P1 perf).** RollbackEngine
+  supplemental EXPLOSION scan now widens the DAO spatial predicate by
+  `config.rollback.explosionSupplementalReach` (default 16 blocks) instead of
+  dropping it entirely, keeping the DAO scan bounded on high-TNT servers.
+- **X9 — Container coverage widening + `BaseContainerBlockEntityMixin` (P2).**
+  New base mixin, ContainerMixin widening; closes the "some modded containers
+  didn't fire CONTAINER_* events because they extend the base class directly"
+  gap.
+
+### Changed
+
+- **X6 — HikariCP tuning, DAO polish, shutdown ordering, reload atomicity,
+  perf polish (P1/P2/P3).**
+  - `MysqlDao` — enable server-side prepared-statement caching via
+    `cachePrepStmts / prepStmtCacheSize=250 / prepStmtCacheSqlLimit=2048 /
+    useServerPrepStmts=true` matching HikariCP's MySQL recommendation.
+    Biggest remaining backend win on busy audit shards.
+  - `PostgresDao` — set `prepareThreshold=3` so pgJDBC switches to named
+    server-side prepared statements after three executes of the same PS.
+  - `GuardianConfig.database.hikari` — new nested record with
+    `maxPoolSize / connectionTimeoutMs / maxLifetimeMs / leakDetectionMs`
+    knobs; defaults match Hikari's own except pool=10 (pre-X6 hard-coded
+    value). `ConfigLoader` backfills the section on pre-X6 configs.
+  - `StorageFactory` — switch the read-side rate-limit `Semaphore` from
+    fair (FIFO) to unfair. Cuts p99 lookup latency under contention.
+  - `AbstractJdbcDao.resolveUserOn` — amortize the `UPDATE vg_users SET
+    last_seen` write. Only rewrite when the in-memory record drifts by more
+    than 60 s.
+  - `DamageHistory.record` — amortize the O(n) `evictOldest` sweep. Only run
+    every 64th over-cap insert instead of every damage event at cap.
+  - `EntityBlockChangeCoalescer.shouldLog` — short-circuit consecutive
+    over-cap inserts. After a sweep that evicted zero entries, drop new
+    events for a 50 ms back-off window before probing again.
+  - `Guardian.shutdown` — reorder so `ExplosionJoinWorker.close()` runs
+    BEFORE `queue.drainAndFlush(...)`, and give it `awaitTermination(5s)`.
+    Pending join tasks now land their `submitExplosion` calls in the write
+    queue before the queue drains and the DAO closes.
+  - `Guardian.reloadConfig` — build the fresh `EventGate` on a local
+    reference, register per-world / blacklist / PreLog hooks against the
+    local before publishing to `this.gate`. Concurrent submitters no longer
+    observe a half-registered hook chain during `/vg reload`.
+  - `Guardian.reloadConfig` — route `ConfigLoader.load` onto the common
+    ForkJoinPool with a 10 s timeout, so `Files.readString + Gson.fromJson`
+    do not stall the server thread on a slow or networked filesystem.
+  - `Guardian.submitExplosion` — use the per-thread scratch builder via
+    `seed()` instead of `new ActionBuilder()`. Consistent with every other
+    submit path and cuts ~40 B / allocation on the explosion-join worker.
+  - `NeoForgeEvents.reset` — shut down the previously-static-daemon
+    `WORKER` executor. Fixes a dev-mode thread leak on in-JVM restart.
+  - `JsonLinesLogFile` — new `config.logFile.forceSyncOnFlush` toggle
+    (default `true`). Operators on slow storage can trade &lt; flushIntervalMs
+    of durability for zero per-batch `FileChannel.force(false)` cost.
+  - `PerWorldConfigStore.reload` — cache file mtimes; unchanged files reuse
+    the previous merged snapshot instead of re-reading and re-parsing.
+  - `EventGate.addInternalHook` — soft cap of 32 internal hooks with a
+    one-shot WARN when exceeded; `/vg status` now surfaces the count under
+    the Event Hooks section.
+  - `RollbackEngine.hasMoreRows` — replace the extra `dao.query(..., 1)`
+    round-trip per page-boundary with `dao.query(..., PAGE_SIZE+1)` so the
+    "has more" signal comes from the main page fetch.
+
+### Fixed
+
+- All P0/P1 parity findings from the v1.3.0 post-integration audit (see
+  `docs/PERF-NOTES-1.3.1.md` for the wave-by-wave rationale).
+
+### Version
+
+- `gradle.properties` — `mod_version` bumped `1.3.0` → `1.3.1`.
+- `GuardianAPI.PLUGIN_VERSION` bumped `1.3.0` → `1.3.1`.
+
 ## [1.3.0] - 2026-07-03
 
 **Async / server-thread performance wave.** Full v1.3.0 release notes covering

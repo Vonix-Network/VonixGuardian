@@ -49,6 +49,15 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     private final ConcurrentHashMap<String, Integer> userIdByUuid = new ConcurrentHashMap<>();
     /** name -> id, used for sentinels and uuid-less lookups. */
     private final ConcurrentHashMap<String, Integer> userIdByName = new ConcurrentHashMap<>();
+    /**
+     * v1.3.1 X6 (P3-8): last time (ms) we issued an {@code UPDATE vg_users SET last_seen}
+     * for each user id. Amortizes the write — resolveUserOn only issues the UPDATE when
+     * the in-memory record drifts by more than {@link #LAST_SEEN_DRIFT_MS}. Kept keyed
+     * by user id (int) because a single user may be resolved by both uuid and name paths.
+     */
+    private final ConcurrentHashMap<Integer, Long> lastSeenLastWriteMs = new ConcurrentHashMap<>();
+    /** Amortization threshold: only rewrite last_seen when it drifts by more than this many ms. */
+    static final long LAST_SEEN_DRIFT_MS = 60_000L;
     private final ConcurrentHashMap<String, Integer> worldIdByKey = new ConcurrentHashMap<>();
 
     /** Optional read-side rate limit. May be {@code null} (no limit). */
@@ -635,10 +644,19 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 }
             }
         } else {
-            try (PreparedStatement ps = c.prepareStatement("UPDATE vg_users SET last_seen = ? WHERE id = ?")) {
-                ps.setLong(1, now);
-                ps.setInt(2, found);
-                ps.executeUpdate();
+            // v1.3.1 X6 (P3-8): amortize the last_seen UPDATE. On the very first
+            // resolve per (uuid|name) after boot we still write; subsequent hits for
+            // the same user id skip the round-trip until LAST_SEEN_DRIFT_MS has
+            // elapsed. This trims out synchronous UPDATEs on the queue worker for
+            // hot players (repeated inserts arrive at hundreds/sec at busy join times).
+            Long lastWrote = lastSeenLastWriteMs.get(found);
+            if (lastWrote == null || (now - lastWrote) > LAST_SEEN_DRIFT_MS) {
+                try (PreparedStatement ps = c.prepareStatement("UPDATE vg_users SET last_seen = ? WHERE id = ?")) {
+                    ps.setLong(1, now);
+                    ps.setInt(2, found);
+                    ps.executeUpdate();
+                }
+                lastSeenLastWriteMs.put(found, now);
             }
         }
         if (found == null) {

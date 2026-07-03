@@ -32,7 +32,12 @@ public final class StorageFactory {
         int maxResultRows = 0;
         if (config.lookup() != null) {
             int permits = Math.max(1, config.lookup().maxConcurrent());
-            lookupSemaphore = new Semaphore(permits, true);
+            // v1.3.1 X6 (P3-3): switch from fair (FIFO) to unfair semaphore. Fair mode
+            // adds queueing latency on every acquire; lookup contention is uncommon in
+            // practice and the fairness guarantee is not observable to operators
+            // (lookups have no per-caller SLA). Unfair improves p99 lookup latency
+            // under contention with no behavioural regression.
+            lookupSemaphore = new Semaphore(permits, false);
             maxResultRows = Math.max(0, config.lookup().maxResultRows());
         }
         String type = config.database().type().toLowerCase();
