@@ -50,6 +50,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cells). Fabric + NeoForge cells unchanged — they still log the natural
   block surface via their wired mixins.
 
+## [1.3.4] - 2026-07-03
+
+### Fixed
+
+- **AA1 — sub-record canonical ctor sweep across all 8 loader cells.**
+  Round-4 audit found the round-3 Z1 `/vg config set` fix pinned the outer
+  `GuardianConfig(12-arg)` boundary but left the sub-record boundaries on
+  legacy backward-compat shims. Every cell's `GuardianCommands.java` was
+  reconstructing `LogFile` via the 4-arg shim (dropping `forceSyncOnFlush`,
+  v1.3.1 X6) and `Actions` via the 18-arg shim (dropping 13 W1 CP-parity
+  kill-switches + W4's `mixinHotEvents`) on 14 of the 15 `actions.*` case
+  arms. Symptom: an operator who set `actions.logWaterFlow=true` then
+  flipped `actions.logBlocks=false` silently lost `logWaterFlow` because
+  the 18-arg shim reset it to the CP-default `false`. AA1 threads every
+  widened field via getters through the canonical `LogFile(5-arg)` and
+  `Actions(32-arg)` constructors in all 8 cells (Fabric × 4 + Forge × 3
+  + NeoForge × 1) — 8 `LogFile` sites + 112 `Actions` sites fixed. The
+  `actions.mixinHotEvents` case-arm was already canonical (32-arg) from
+  the v1.3.0 W4 wave; it was the only surviving pin.
+- **AA1 regression suite.** New
+  `ConfigSetPreservesSubRecordFieldsTest` (18 parameterised cases + 2
+  focused sub-record tests) pins the canonical contract from the core
+  module by mirroring the exact cell code. Any future regression to a
+  shorter shim on either sub-record boundary — LogFile(4-arg) or
+  Actions(18-arg) or Actions(31-arg) — fails these tests before the
+  cells even build.
+
 ## [1.3.3] - 2026-07-03
 
 **Round-3 audit close-out.** v1.3.2 shipped clean reload+boot plumbing for
