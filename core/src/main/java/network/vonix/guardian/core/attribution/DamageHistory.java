@@ -135,6 +135,14 @@ public final class DamageHistory {
         // single O(n) pass and remove the STRIDE oldest entries in one shot,
         // trading one O(n log STRIDE) sweep every 64 events for O(1) per event
         // amortized (was O(n) per event with only 1 eviction, before X6).
+        //
+        // v1.3.6 CC2 (P2-10): audit — the PriorityQueue allocation here is
+        // paid at most once per EVICT_STRIDE=64 events, so the amortized cost
+        // is (64 entries × ~40B / entry) / 64 events ≈ 40 bytes/event. That's
+        // trivially below GC noise; the PQ is left in place as-is. A future
+        // refactor could keep an intrusive linked-timestamp index to avoid
+        // the PQ entirely, but that adds a lot of state per Hit for no
+        // measurable win at 20 Hz tick.
         int target = EVICT_STRIDE;
         // Small ordered ring of "oldest-so-far" keys. Java has no fixed-size
         // priority queue that keeps the MAX for easy replacement; use PQ with

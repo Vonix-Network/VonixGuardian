@@ -136,6 +136,14 @@ public final class FluidSourceMemory {
                 Key evict = insertOrder.pollFirst();
                 if (evict != null) byPos.remove(evict);
             }
+            // v1.3.6 CC2 (P2-8): amortized TTL sweep on the record path.
+            // Previously the TTL-expire pass was co-located with lookup(), which
+            // meant every fluid-tick paid an O(n) scan + O(n) Deque.remove per
+            // expired entry (O(n²) worst case). Move it here where it's only
+            // paid on bucket-empty (rare relative to fluid ticks) and use an
+            // amortized stride so no single call scans more than SWEEP_STRIDE
+            // entries.
+            sweepExpiredAmortized(nowMs);
             // v1.3.2 Y5 (P1-4): publish new size for the lock-free fast-path
             // in lookup(). Written inside the lock so it strictly reflects
             // byPos.size(); read outside the lock via the volatile.
@@ -144,6 +152,45 @@ public final class FluidSourceMemory {
             lock.unlock();
         }
     }
+
+    /**
+     * v1.3.6 CC2 (P2-8): amortized TTL sweep — walks at most
+     * {@link #SWEEP_STRIDE} entries per call and drops any past their TTL.
+     * Called from {@link #recordBucketEmpty} under the lock; the caller
+     * must republish {@code size} after invocation.
+     *
+     * <p>The insertOrder Deque is walked in parallel with byPos removal so
+     * we amortize the O(n) {@code Deque.remove(Object)} cost across many
+     * calls: rather than one lookup paying O(k) removes at O(n) each, this
+     * pattern drops each stale key with a single poll + map remove at O(1).
+     */
+    private void sweepExpiredAmortized(long nowMs) {
+        long cutoff = nowMs - ttlMs;
+        int n = 0;
+        Iterator<Key> it = insertOrder.iterator();
+        while (it.hasNext() && n < SWEEP_STRIDE) {
+            Key k = it.next();
+            Record r = byPos.get(k);
+            n++;
+            if (r == null) {
+                // Already evicted by cap-based drop; keep insertOrder tidy.
+                it.remove();
+                continue;
+            }
+            if (r.timestampMs < cutoff) {
+                it.remove();
+                byPos.remove(k);
+                continue;
+            }
+            // insertOrder is FIFO; once we hit a fresh entry, older-than-cutoff
+            // entries can still exist behind us (out-of-order timestamps are
+            // possible if the wall clock jumped backwards), but this is a
+            // best-effort amortized sweep — the next call picks up any leftovers.
+        }
+    }
+
+    /** Amortized-sweep stride: bound scan cost per record() call. */
+    private static final int SWEEP_STRIDE = 32;
 
     /**
      * Look up a bucket-empty ancestor for a spread cell at {@code (x,y,z)}.
@@ -179,9 +226,16 @@ public final class FluidSourceMemory {
                 Map.Entry<Key, Record> e = it.next();
                 Record r = e.getValue();
                 if (r.timestampMs < cutoff) {
-                    // TTL-expired: opportunistically evict.
+                    // v1.3.6 CC2 (P2-8): TTL-expired -> drop from the map only.
+                    // The prior implementation also called insertOrder.remove(k)
+                    // here, which is an O(n) Deque.remove(Object) and turned
+                    // a single lookup into O(n²) when multiple entries expired
+                    // in the same call. We now leave the stale key in
+                    // insertOrder to be reaped by the amortized sweep on the
+                    // next recordBucketEmpty (or on shutdown reset) — the sweep
+                    // detects orphaned keys via byPos.get()==null and drops them
+                    // O(1) apiece.
                     it.remove();
-                    insertOrder.remove(e.getKey());
                     anyRemoved = true;
                     continue;
                 }

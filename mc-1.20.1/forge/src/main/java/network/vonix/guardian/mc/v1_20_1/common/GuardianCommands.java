@@ -776,25 +776,50 @@ public final class GuardianCommands {
                         "[VonixGuardian] Unknown or read-only config key: " + key));
                 return 0;
             }
+            // v1.3.6 CC2 (P1-6): route the blocking IO (ConfigLoader.save writes
+            // the on-disk YAML; reloadConfig re-parses it and rebuilds config-
+            // derived state) onto the shared WORKER pool. Pre-1.3.6 this ran on
+            // the server tick — a slow disk (spinning rust, NFS, encrypted-swap
+            // host, or another mod holding a filesystem lock) would freeze the
+            // tick until the write returned. All result reporting hops back to
+            // the server thread via server.execute so the theme/chat pipeline
+            // stays single-threaded (theme resolution touches Level state).
             try {
                 next.validate();
-                ConfigLoader.save(path, next);
-                Guardian.ReloadResult r = g.reloadConfig(path);
-                if (!r.errors().isEmpty()) {
-                    send(src, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Config saved but reload failed: " + String.join(", ", r.errors())));
-                    return 0;
-                }
-                send(src, ChatRenderer.success(g.theme(),
-                        "[VonixGuardian] Updated " + key + " = " + readValue(g.config(), key)
-                                + " (hot-swapped: " + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
-                return 1;
             } catch (Exception e) {
-                LOG.warn(Guardian.MARKER, "Config set failed", e);
+                LOG.warn(Guardian.MARKER, "Config set validation failed", e);
                 send(src, ChatRenderer.error(g.theme(),
                         "[VonixGuardian] Config update failed: " + e.getMessage()));
                 return 0;
             }
+            final GuardianConfig finalNext = next;
+            final java.nio.file.Path finalPath = path;
+            final String finalKey = key;
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            WORKER.submit(() -> {
+                try {
+                    ConfigLoader.save(finalPath, finalNext);
+                    Guardian.ReloadResult r = g.reloadConfig(finalPath);
+                    if (server == null) return;
+                    server.execute(() -> {
+                        if (!r.errors().isEmpty()) {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Config saved but reload failed: " + String.join(", ", r.errors())));
+                            return;
+                        }
+                        send(src, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Updated " + finalKey + " = " + readValue(g.config(), finalKey)
+                                        + " (hot-swapped: " + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
+                    });
+                } catch (Exception e) {
+                    LOG.warn(Guardian.MARKER, "Config set failed", e);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Config update failed: " + e.getMessage())));
+                    }
+                }
+            });
+            return 1;
         }
 
         private static String readValue(GuardianConfig c, String key) {
