@@ -13,7 +13,13 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
-/** Captures actual ice melt / fade mutations on Fabric. */
+/**
+ * Captures actual ice melt / fade mutations on Fabric.
+ *
+ * <p>v1.3.0 W1c: Fabric cells already used the tight @Redirect discipline on
+ * both {@code removeBlock} and {@code setBlockAndUpdate} — no behavioral change.
+ * Verified matches Forge/NeoForge after W1c tighten.</p>
+ */
 @Mixin(IceBlock.class)
 public abstract class IceBlockMixin {
 
