@@ -67,8 +67,18 @@ public final class RollbackEngine {
     private final GuardianDao dao;
     private final WorldMutator mutator;
     private final Executor mainThreadExecutor;
-    /** Extra block radius applied to the supplemental EXPLOSION scan's spatial pre-filter. */
-    private final int explosionSupplementalReach;
+    /**
+     * Extra block radius applied to the supplemental EXPLOSION scan's spatial
+     * pre-filter.
+     *
+     * <p>{@code volatile} because {@code /vg reload} can call
+     * {@link #setExplosionSupplementalReach(int)} from off the query thread
+     * (v1.3.2 Y3, P2-1 close-out). Publishing this via {@code volatile} means
+     * a concurrent {@link #rollback}/{@link #restore} either observes the old
+     * value or the new value — never a torn read — and avoids rebuilding the
+     * engine on every knob change.
+     */
+    private volatile int explosionSupplementalReach;
 
     /**
      * @param dao                action store; must not be {@code null}
@@ -103,6 +113,40 @@ public final class RollbackEngine {
                 "explosionSupplementalReach must be >= 0 (got " + explosionSupplementalReach + ")");
         }
         this.explosionSupplementalReach = explosionSupplementalReach;
+    }
+
+    /**
+     * Hot-swap the supplemental EXPLOSION scan reach (v1.3.2 Y3, P2-1 close-out).
+     *
+     * <p>Called from {@code Guardian.reloadConfig} after a merged
+     * {@link network.vonix.guardian.core.config.GuardianConfig} lands, so
+     * operators editing {@code rollback.explosionSupplementalReach} in
+     * {@code config.json} see the value applied immediately without a server
+     * restart. The write is published through the {@code volatile} field so a
+     * concurrently running rollback observes either the old or the new value —
+     * never a torn read.
+     *
+     * @param reach new block-radius padding; must be {@code >= 0}
+     * @throws IllegalArgumentException if {@code reach < 0}
+     * @since 1.3.2 Y3
+     */
+    public void setExplosionSupplementalReach(int reach) {
+        if (reach < 0) {
+            throw new IllegalArgumentException(
+                "explosionSupplementalReach must be >= 0 (got " + reach + ")");
+        }
+        this.explosionSupplementalReach = reach;
+    }
+
+    /**
+     * Current supplemental EXPLOSION scan reach — exposed for tests and
+     * {@code /vg status}.
+     *
+     * @return current block-radius padding
+     * @since 1.3.2 Y3
+     */
+    public int getExplosionSupplementalReach() {
+        return explosionSupplementalReach;
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
