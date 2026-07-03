@@ -72,19 +72,39 @@ public final class RollbackEngine {
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
-        return execute(plan(filter, RollbackResult.Mode.ROLLBACK, null), preview);
+        return rollback(filter, preview, null, RollbackOptions.defaults());
     }
 
     public RollbackResult restore(QueryFilter filter, boolean preview) throws Exception {
-        return execute(plan(filter, RollbackResult.Mode.RESTORE, null), preview);
+        return restore(filter, preview, null, RollbackOptions.defaults());
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview, UUID actorUuid) throws Exception {
-        return execute(plan(filter, RollbackResult.Mode.ROLLBACK, actorUuid), preview);
+        return rollback(filter, preview, actorUuid, RollbackOptions.defaults());
     }
 
     public RollbackResult restore(QueryFilter filter, boolean preview, UUID actorUuid) throws Exception {
-        return execute(plan(filter, RollbackResult.Mode.RESTORE, actorUuid), preview);
+        return restore(filter, preview, actorUuid, RollbackOptions.defaults());
+    }
+
+    /** Execute rollback with explicit large-job safety controls. */
+    public RollbackResult rollback(QueryFilter filter, boolean preview, RollbackOptions options) throws Exception {
+        return rollback(filter, preview, null, options);
+    }
+
+    /** Execute restore with explicit large-job safety controls. */
+    public RollbackResult restore(QueryFilter filter, boolean preview, RollbackOptions options) throws Exception {
+        return restore(filter, preview, null, options);
+    }
+
+    /** Execute rollback with explicit actor + large-job safety controls. */
+    public RollbackResult rollback(QueryFilter filter, boolean preview, UUID actorUuid, RollbackOptions options) throws Exception {
+        return execute(plan(filter, RollbackResult.Mode.ROLLBACK, actorUuid, options), preview);
+    }
+
+    /** Execute restore with explicit actor + large-job safety controls. */
+    public RollbackResult restore(QueryFilter filter, boolean preview, UUID actorUuid, RollbackOptions options) throws Exception {
+        return execute(plan(filter, RollbackResult.Mode.RESTORE, actorUuid, options), preview);
     }
 
     /**
@@ -96,16 +116,27 @@ public final class RollbackEngine {
     public RollbackPlan plan(QueryFilter filter,
                              RollbackResult.Mode mode,
                              UUID actorUuid) throws Exception {
+        return plan(filter, mode, actorUuid, RollbackOptions.defaults());
+    }
+
+    /**
+     * Bounded streaming variant of {@link #plan(QueryFilter, RollbackResult.Mode, UUID)}.
+     * It pages DAO results and never materializes the full raw match set.
+     */
+    public RollbackPlan plan(QueryFilter filter,
+                             RollbackResult.Mode mode,
+                             UUID actorUuid,
+                             RollbackOptions options) throws Exception {
         Objects.requireNonNull(filter, "filter");
         Objects.requireNonNull(mode, "mode");
+        options = RollbackOptions.normalize(options);
         requireTemporalBound(filter, mode);
         QueryFilter effective = withRolledBack(filter, mode == RollbackResult.Mode.RESTORE);
-        List<Action> matches = fetchMatches(effective);
-        if (matches.isEmpty()) {
+        RollbackPlan plan = streamPlan(effective, mode, actorUuid, options);
+        if (plan.isEmpty()) {
             LOG.debug("RollbackEngine.{}: 0 matches", mode);
-            return RollbackPlan.empty(effective, mode, actorUuid);
         }
-        return RollbackPlan.build(matches, effective, mode, actorUuid);
+        return plan;
     }
 
     /**
@@ -185,25 +216,99 @@ public final class RollbackEngine {
     // ---------------------------------------------------------------------
 
     /**
-     * Pages the DAO with the filter as given. The {@code rolledBack} predicate
-     * MUST already be set on {@code filter} — this method no longer filters
-     * client-side, which is the whole point of the v0.1.1 perf fix.
+     * Pages the DAO with the filter as given and incrementally builds a bounded
+     * plan. The {@code rolledBack} predicate MUST already be set on
+     * {@code filter}; SQL-side filtering keeps the scanned row count meaningful.
      */
-    private List<Action> fetchMatches(QueryFilter filter) throws Exception {
-        List<Action> out = new ArrayList<>();
+    private RollbackPlan streamPlan(QueryFilter filter,
+                                    RollbackResult.Mode mode,
+                                    UUID actorUuid,
+                                    RollbackOptions options) throws Exception {
+        RollbackPlan.StreamingBuilder builder = RollbackPlan.streaming(filter, mode, actorUuid);
         int offset = 0;
+        int scanned = 0;
+        int pages = 0;
+
         while (true) {
-            List<Action> page = dao.query(filter, offset, PAGE_SIZE);
+            if (options.isCancelRequested()) {
+                RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                options.publish(progress);
+                throw new RollbackCancelledException(progress);
+            }
+
+            int remainingScanBudget = options.maxScannedActions() - scanned;
+            if (remainingScanBudget <= 0) {
+                if (hasMoreRows(filter, offset)) {
+                    RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
+                    options.publish(progress);
+                    throw new RollbackLimitExceededException(
+                        "Rollback planning exceeded scan cap of " + options.maxScannedActions() + " action(s)",
+                        progress);
+                }
+                break;
+            }
+
+            int limit = Math.min(options.pageSize(), remainingScanBudget);
+            List<Action> page = dao.query(filter, offset, limit);
             if (page == null || page.isEmpty()) {
                 break;
             }
-            out.addAll(page);
-            if (page.size() < PAGE_SIZE) {
+            pages++;
+
+            List<Action> orderedPage = new ArrayList<>(page);
+            orderedPage.sort((a, b) -> {
+                int c = Long.compare(b.timestamp(), a.timestamp());
+                return c != 0 ? c : Long.compare(b.id(), a.id());
+            });
+
+            for (Action action : orderedPage) {
+                if (options.isCancelRequested()) {
+                    RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                    options.publish(progress);
+                    throw new RollbackCancelledException(progress);
+                }
+                scanned++;
+                builder.add(action);
+                if (builder.plannedSteps() > options.maxPlannedSteps()) {
+                    RollbackProgress progress = progress(pages, scanned, builder, false, true, false);
+                    options.publish(progress);
+                    throw new RollbackLimitExceededException(
+                        "Rollback planning exceeded mutation cap of " + options.maxPlannedSteps() + " step(s)",
+                        progress);
+                }
+            }
+
+            boolean fullPage = page.size() == limit;
+            boolean scanBudgetExhausted = scanned >= options.maxScannedActions();
+            boolean scanLimitReached = scanBudgetExhausted && fullPage && hasMoreRows(filter, offset + page.size());
+            RollbackProgress progress = progress(pages, scanned, builder, scanLimitReached, false, false);
+            options.publish(progress);
+            if (scanLimitReached) {
+                throw new RollbackLimitExceededException(
+                    "Rollback planning exceeded scan cap of " + options.maxScannedActions() + " action(s)",
+                    progress);
+            }
+            if (!fullPage) {
                 break;
             }
-            offset += PAGE_SIZE;
+            offset += page.size();
         }
-        return out;
+        return builder.build();
+    }
+
+    private boolean hasMoreRows(QueryFilter filter, int offset) throws Exception {
+        List<Action> probe = dao.query(filter, offset, 1);
+        return probe != null && !probe.isEmpty();
+    }
+
+    private static RollbackProgress progress(int pages,
+                                             int scanned,
+                                             RollbackPlan.StreamingBuilder builder,
+                                             boolean scanLimitReached,
+                                             boolean plannedLimitReached,
+                                             boolean cancelled) {
+        return new RollbackProgress(pages, scanned, builder.plannedSteps(), builder.skippedActions(),
+            scanLimitReached, plannedLimitReached, cancelled);
     }
 
     private static void requireTemporalBound(QueryFilter filter, RollbackResult.Mode mode) {
@@ -234,7 +339,8 @@ public final class RollbackEngine {
             base.preview(),
             base.verbose(),
             base.silent(),
-            base.optimize()
+            base.optimize(),
+            base.worldEditPlayer()
         );
     }
 
@@ -332,6 +438,8 @@ public final class RollbackEngine {
                 mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()), a.targetMeta());
             // --- v0.1.0 expansion: entities ---
+            case HANGING_PLACE ->
+                mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
             case HANGING_BREAK ->
                 mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
             // --- per-action explicit refusals (replacing the silent default branch) ---
@@ -347,9 +455,6 @@ public final class RollbackEngine {
                 LOG.warn("RollbackEngine: refusing to roll back ENTITY_SPAWN (id={}) — despawn unsafe", a.id());
             case ENTITY_INTERACT ->
                 LOG.warn("RollbackEngine: refusing to roll back ENTITY_INTERACT (id={}) — no state change to undo", a.id());
-            // TODO: add WorldMutator.removeHangingAt(worldId, x, y, z, entityType) so this can be honoured.
-            case HANGING_PLACE ->
-                LOG.warn("RollbackEngine: refusing to roll back HANGING_PLACE (id={}) — WorldMutator has no removeEntity API", a.id());
             case CHUNK_POPULATE ->
                 LOG.warn("RollbackEngine: refusing to roll back CHUNK_POPULATE (id={}) — chunk-scale revert unsafe", a.id());
             case CLICK ->
@@ -402,6 +507,8 @@ public final class RollbackEngine {
             // --- v0.1.0 expansion: entities ---
             case HANGING_PLACE ->
                 mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case HANGING_BREAK ->
+                mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
             // --- per-action explicit refusals (replacing the silent default branch) ---
             case DISPENSE ->
                 LOG.warn("RollbackEngine: refusing to restore DISPENSE (id={}) — container slot tracking required", a.id());
@@ -415,9 +522,6 @@ public final class RollbackEngine {
                 LOG.warn("RollbackEngine: refusing to restore ENTITY_SPAWN (id={}) — despawn unsafe", a.id());
             case ENTITY_INTERACT ->
                 LOG.warn("RollbackEngine: refusing to restore ENTITY_INTERACT (id={}) — no state change to redo", a.id());
-            // TODO: add WorldMutator.removeHangingAt(worldId, x, y, z, entityType) so this can be honoured.
-            case HANGING_BREAK ->
-                LOG.warn("RollbackEngine: refusing to restore HANGING_BREAK (id={}) — WorldMutator has no removeEntity API", a.id());
             case CHUNK_POPULATE ->
                 LOG.warn("RollbackEngine: refusing to restore CHUNK_POPULATE (id={}) — chunk-scale revert unsafe", a.id());
             case CLICK ->
@@ -495,11 +599,19 @@ public final class RollbackEngine {
             case BLOCK_PLACE, BLOCK_BREAK,
                  CONTAINER_DEPOSIT, CONTAINER_WITHDRAW,
                  ITEM_DROP, ITEM_PICKUP,
-                 ENTITY_KILL, EXPLOSION -> true;
+                 ENTITY_KILL, EXPLOSION,
+                 BURN, IGNITE, FADE, FORM, SPREAD, LEAVES_DECAY,
+                 BUCKET_EMPTY, BUCKET_FILL, ENTITY_CHANGE_BLOCK,
+                 HOPPER_PUSH, HOPPER_PULL,
+                 HANGING_PLACE, HANGING_BREAK,
+                 STRUCTURE_GROW, PORTAL_CREATE -> true;
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
-                 USERNAME_CHANGE -> false;
-            default -> false;
+                 USERNAME_CHANGE,
+                 DISPENSE, PISTON_EXTEND, PISTON_RETRACT,
+                 INVENTORY_DEPOSIT, INVENTORY_WITHDRAW, ITEM_CRAFT,
+                 ENTITY_SPAWN, ENTITY_INTERACT,
+                 CHUNK_POPULATE, CLICK -> false;
         };
     }
 

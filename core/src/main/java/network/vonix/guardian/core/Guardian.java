@@ -789,15 +789,18 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
                                         int x, int y, int z,
                                         String oldBlockId, String newBlockId, String sourceTag) {
-        // Central vanilla-griefer whitelist gate (WAVE-AUDIT-1.1.5 A4).
-        // The cell layer still runs its own check for now — this belt-and-braces
-        // enforcement means any future submitter that forgets the check is still
-        // guarded. When actorName is a "#mob:<ns>:<path>" sentinel we strip it
-        // and require the registry key be in DEFAULT_ALLOWLIST or config.
-        // Player-driven paths (actorName not a mob sentinel) are pass-through.
-        String stripped = VanillaGrieferSet.stripMobPrefix(actorName);
-        if (stripped != null) {
-            if (!VanillaGrieferSet.shouldRecord(stripped,
+        // Central vanilla-griefer whitelist gate (WAVE-AUDIT-1.1.5 A4, v1.2.5 attribution hardening).
+        // Loader resolvers may legitimately credit a mob-caused block change to a
+        // player owner/rider/tamer via actorUuid+actorName. That attribution is
+        // valuable for lookup, but it must NOT bypass the modded-entity flood
+        // policy: the entity that physically changed the block is carried in
+        // sourceTag as "#mob:<ns>:<path>" and is checked here as well.
+        String entityRegistryKey = VanillaGrieferSet.stripMobPrefix(actorName);
+        if (entityRegistryKey == null) {
+            entityRegistryKey = VanillaGrieferSet.stripMobPrefix(sourceTag);
+        }
+        if (entityRegistryKey != null) {
+            if (!VanillaGrieferSet.shouldRecord(entityRegistryKey,
                     config.actions().entityChangeAllowlist(),
                     config.actions().entityChangeLogAllEntities())) {
                 gated.incrementAndGet();

@@ -91,6 +91,12 @@ public final class GuardianStatus {
                 line(out, "  maxTracked " + g.config().actions().entityBlockChangeMaxTracked());
                 var coal = g.entityBlockCoalescer();
                 line(out, "  active     " + (coal != null ? coal.size() : 0));
+                if (coal != null) {
+                    line(out, "  suppressed " + coal.hits());
+                    line(out, "  passed     " + coal.misses());
+                    line(out, "  evictions  " + coal.evictions());
+                    line(out, "  capDrops   " + coal.capDrops());
+                }
             }
         } catch (Throwable ignored) { }
 

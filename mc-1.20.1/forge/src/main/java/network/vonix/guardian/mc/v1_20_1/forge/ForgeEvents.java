@@ -98,10 +98,18 @@ public final class ForgeEvents {
     private static final Map<UUID, Long> LAST_CONTAINER_RC_AT = new ConcurrentHashMap<>();
     /** Snapshot of container contents at open time, keyed by player UUID. */
     private static final Map<UUID, Map<Integer, ItemStack>> CONTAINER_SNAPSHOT = new ConcurrentHashMap<>();
-    /** Position the snapshot was taken at (held across open->close), keyed by player UUID. */
+    /** Position the snapshot was taken at, keyed by player UUID. */
     private static final Map<UUID, BlockPos> CONTAINER_SNAPSHOT_POS = new ConcurrentHashMap<>();
-    /** Recent-RC window for matching RC->Open. */
+    /** Wall-clock time (ms) of the snapshot, keyed by player UUID. */
+    private static final Map<UUID, Long> CONTAINER_SNAPSHOT_AT = new ConcurrentHashMap<>();
+    /** Recent-RC window for matching right-click -> open. */
     private static final long CONTAINER_RC_WINDOW_MS = 500L;
+    /** Timeout for abandoned container snapshots (disconnect/crash/no close event). */
+    private static final long CONTAINER_SNAPSHOT_TTL_MS = 5 * 60 * 1000L;
+    /** Hard cap on simultaneously retained snapshots. */
+    private static final int MAX_CONTAINER_SNAPSHOTS = 512;
+    /** Hard cap on per-container slots retained to keep modded mega-containers bounded. */
+    private static final int MAX_CONTAINER_SLOTS = 216;
 
     private ForgeEvents() {
         // utility
@@ -203,7 +211,7 @@ public final class ForgeEvents {
             s.submitEntityChangeBlock(attr.actorUuid(), attr.actorName(),
                     WorldKey.of(e.level()),
                     pos.getX(), pos.getY(), pos.getZ(),
-                    oldId, "minecraft:air", SourceTagger.tag(e));
+                    oldId, "minecraft:air", attr.entitySentinel());
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onLivingDestroyBlock failed", t);
         }
@@ -227,7 +235,9 @@ public final class ForgeEvents {
             for (BlockPos p : affected) {
                 if (sb.length() > cap) break;
                 if (count++ > 0) sb.append(',');
-                sb.append(p.getX()).append(' ').append(p.getY()).append(' ').append(p.getZ());
+                BlockState oldState = ev.getLevel().getBlockState(p);
+                sb.append(p.getX()).append(':').append(p.getY()).append(':').append(p.getZ())
+                        .append('=').append(blockId(oldState));
             }
             Entity source = ev.getExplosion().getDirectSourceEntity();
             Attribution attr = (source != null && ForgeBootstrap.resolver != null)
@@ -519,6 +529,28 @@ public final class ForgeEvents {
         }
     }
 
+    /** Generic right-click entity interactions: audit-only ENTITY_INTERACT, gated by logInteractions. */
+    @SubscribeEvent
+    public static void onEntityInteract(PlayerInteractEvent.EntityInteract ev) {
+        try {
+            EventSubmitter s = sub();
+            GuardianConfig c = cfg();
+            if (s == null || c == null) return;
+            if (!c.actions().logInteractions()) return;
+            Player p = ev.getEntity();
+            Entity target = ev.getTarget();
+            if (p == null || target == null) return;
+            String type = EntitySentinel.of(target);
+            BlockPos pos = target.blockPosition();
+            s.submitEntityInteract(p.getUUID(), p.getName().getString(),
+                    WorldKey.of(p.level()),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    type, SourceTagger.tag(target));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onEntityInteract failed", t);
+        }
+    }
+
     @SubscribeEvent
     public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock ev) {
         try {
@@ -557,6 +589,46 @@ public final class ForgeEvents {
         }
     }
 
+
+    private static void cleanupContainerSnapshots() {
+        long cutoff = System.currentTimeMillis() - CONTAINER_SNAPSHOT_TTL_MS;
+        CONTAINER_SNAPSHOT_AT.entrySet().removeIf(e -> {
+            Long ts = e.getValue();
+            if (ts != null && ts >= cutoff) return false;
+            UUID id = e.getKey();
+            CONTAINER_SNAPSHOT.remove(id);
+            CONTAINER_SNAPSHOT_POS.remove(id);
+            LAST_CONTAINER_RC.remove(id);
+            LAST_CONTAINER_RC_AT.remove(id);
+            return true;
+        });
+        while (CONTAINER_SNAPSHOT.size() > MAX_CONTAINER_SNAPSHOTS) {
+            evictOldestContainerSnapshot();
+        }
+    }
+
+    private static void evictOldestContainerSnapshot() {
+        UUID oldest = null;
+        long oldestTs = Long.MAX_VALUE;
+        for (Map.Entry<UUID, Long> e : CONTAINER_SNAPSHOT_AT.entrySet()) {
+            long ts = e.getValue() != null ? e.getValue() : Long.MIN_VALUE;
+            if (ts < oldestTs) {
+                oldestTs = ts;
+                oldest = e.getKey();
+            }
+        }
+        if (oldest == null && !CONTAINER_SNAPSHOT.isEmpty()) {
+            oldest = CONTAINER_SNAPSHOT.keySet().iterator().next();
+        }
+        if (oldest != null) {
+            CONTAINER_SNAPSHOT.remove(oldest);
+            CONTAINER_SNAPSHOT_POS.remove(oldest);
+            CONTAINER_SNAPSHOT_AT.remove(oldest);
+            LAST_CONTAINER_RC.remove(oldest);
+            LAST_CONTAINER_RC_AT.remove(oldest);
+        }
+    }
+
     // ====================================================================== containers
 
     /** Container opened -> if a recent RC at a Container BE matches, snapshot contents for close-time diff. */
@@ -564,19 +636,29 @@ public final class ForgeEvents {
     public static void onContainerOpen(PlayerContainerEvent.Open ev) {
         try {
             if (!(ev.getEntity() instanceof ServerPlayer sp)) return;
+            cleanupContainerSnapshots();
             UUID id = sp.getUUID();
             Long ts = LAST_CONTAINER_RC_AT.get(id);
             BlockPos pos = LAST_CONTAINER_RC.get(id);
             if (ts == null || pos == null) return;
-            if (System.currentTimeMillis() - ts > CONTAINER_RC_WINDOW_MS) return;
+            if (System.currentTimeMillis() - ts > CONTAINER_RC_WINDOW_MS) {
+                LAST_CONTAINER_RC.remove(id);
+                LAST_CONTAINER_RC_AT.remove(id);
+                return;
+            }
             BlockEntity be = sp.level().getBlockEntity(pos);
             if (!(be instanceof Container c)) return;
+            if (!CONTAINER_SNAPSHOT.containsKey(id) && CONTAINER_SNAPSHOT.size() >= MAX_CONTAINER_SNAPSHOTS) {
+                evictOldestContainerSnapshot();
+            }
             Map<Integer, ItemStack> snap = new HashMap<>();
-            for (int i = 0; i < c.getContainerSize(); i++) {
+            int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
+            for (int i = 0; i < size; i++) {
                 snap.put(i, c.getItem(i).copy());
             }
             CONTAINER_SNAPSHOT.put(id, snap);
-            CONTAINER_SNAPSHOT_POS.put(id, pos);
+            CONTAINER_SNAPSHOT_POS.put(id, pos.immutable());
+            CONTAINER_SNAPSHOT_AT.put(id, System.currentTimeMillis());
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onContainerOpen failed", t);
         }
@@ -590,15 +672,17 @@ public final class ForgeEvents {
             UUID id = sp.getUUID();
             Map<Integer, ItemStack> snap = CONTAINER_SNAPSHOT.remove(id);
             BlockPos pos = CONTAINER_SNAPSHOT_POS.remove(id);
+            CONTAINER_SNAPSHOT_AT.remove(id);
             LAST_CONTAINER_RC.remove(id);
             LAST_CONTAINER_RC_AT.remove(id);
             if (snap == null || pos == null) return;
             BlockEntity be = sp.level().getBlockEntity(pos);
             if (!(be instanceof Container c)) return;
+            String worldId = WorldKey.of(sp.level());
             EventSubmitter s = sub();
             if (s == null) return;
-            String worldId = WorldKey.of(sp.level());
-            for (int slot = 0; slot < c.getContainerSize(); slot++) {
+            int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
+            for (int slot = 0; slot < size; slot++) {
                 ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
                 ItemStack after = c.getItem(slot);
                 int beforeCount = before.isEmpty() ? 0 : before.getCount();

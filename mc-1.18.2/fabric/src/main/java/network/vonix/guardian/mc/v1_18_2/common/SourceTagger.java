@@ -76,8 +76,6 @@ public final class SourceTagger {
             EntityType<?> type = e.getType();
             ResourceLocation rl = Registry.ENTITY_TYPE.getKey(type);
             if (rl == null) return null;
-            String ns = rl.getNamespace();
-            if (!"minecraft".equals(ns)) return "#modded:" + ns;
             return "#mob:" + rl.toString();
         } catch (Throwable t) {
             return null;

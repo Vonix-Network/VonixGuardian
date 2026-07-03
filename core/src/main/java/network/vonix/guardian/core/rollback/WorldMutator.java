@@ -62,4 +62,21 @@ public interface WorldMutator {
      * @param targetMeta optional entity NBT JSON; may be {@code null}
      */
     void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta);
+
+    /**
+     * Remove one matching entity near the given block position.
+     *
+     * <p>Used for rollback/restore of hanging entity place/break actions. The
+     * default implementation is a no-op so older test doubles and external
+     * integrations remain source-compatible; real loader cells override it.</p>
+     *
+     * @param worldId    world / dimension key
+     * @param x          block x
+     * @param y          block y
+     * @param z          block z
+     * @param entityType entity type registry id (e.g. {@code "minecraft:item_frame"})
+     */
+    default void removeEntity(String worldId, int x, int y, int z, String entityType) {
+        // no-op by default
+    }
 }

@@ -1,0 +1,21 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "network.vonix.guardian.mc.v1_21_1.neoforge.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "refmap": "vg-neoforge.refmap.json",
+  "mixins": [
+    "BucketItemMixin",
+    "DispenserBlockMixin",
+    "FireBlockMixin",
+    "IceBlockMixin",
+    "LeavesBlockMixin",
+    "MilkBucketItemMixin",
+    "SpreadingSnowyDirtBlockMixin"
+  ],
+  "server": [],
+  "client": [],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

@@ -172,6 +172,32 @@ class RollbackEngineTest {
     }
 
     @Test
+    void rollbackHangingPlaceRemovesEntity() throws Exception {
+        Action place = action(61L, 100L, ActionType.HANGING_PLACE,
+            "w", 4, 65, 6, "minecraft:item_frame", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+
+        engine.rollback(filter, false);
+
+        assertThat(mutator.calls).containsExactly(
+            "removeEntity|w|4|65|6|minecraft:item_frame"
+        );
+    }
+
+    @Test
+    void restoreHangingBreakRemovesEntity() throws Exception {
+        Action brk = action(62L, 100L, ActionType.HANGING_BREAK,
+            "w", 4, 65, 6, "minecraft:painting", null, 1, true);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(brk));
+
+        engine.restore(filter, false);
+
+        assertThat(mutator.calls).containsExactly(
+            "removeEntity|w|4|65|6|minecraft:painting"
+        );
+    }
+
+    @Test
     void rollbackSkipsNonRollbackableAndWarns() throws Exception {
         Action chat = action(7L, 100L, ActionType.CHAT,
             "w", 0, 0, 0, "hello", null, 0, false);
@@ -263,6 +289,90 @@ class RollbackEngineTest {
         assertThat(r.mode()).isEqualTo(RollbackResult.Mode.ROLLBACK);
     }
 
+    @Test
+    void rollbackPlansInPagesAndPublishesProgressWithoutFullMaterialization() throws Exception {
+        Action newest = action(31L, 300L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 0, "minecraft:stone", null, 1, false);
+        Action olderSamePos = action(30L, 100L, ActionType.BLOCK_BREAK,
+            "w", 1, 64, 0, "minecraft:diamond_ore", null, 1, false);
+        Action other = action(32L, 200L, ActionType.BLOCK_PLACE,
+            "w", 2, 64, 0, "minecraft:dirt", null, 1, false);
+        when(dao.query(any(), eq(0), eq(2))).thenReturn(List.of(olderSamePos, newest));
+        when(dao.query(any(), eq(2), eq(2))).thenReturn(List.of(other));
+
+        List<RollbackProgress> progress = new ArrayList<>();
+        RollbackOptions options = new RollbackOptions(2, 10, 10, () -> false, progress::add);
+        RollbackResult r = engine.rollback(filter, true, options);
+
+        assertThat(r.preview()).isTrue();
+        assertThat(r.affectedIds()).containsExactly(31L, 32L);
+        assertThat(progress).hasSize(2);
+        assertThat(progress.get(1).pagesFetched()).isEqualTo(2);
+        assertThat(progress.get(1).scannedActions()).isEqualTo(3);
+        assertThat(progress.get(1).plannedSteps()).isEqualTo(2);
+        verify(dao).query(any(), eq(0), eq(2));
+        verify(dao).query(any(), eq(2), eq(2));
+        verify(dao, never()).query(any(), eq(0), eq(RollbackEngine.PAGE_SIZE));
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void rollbackAbortsWhenScanCapWouldNeedMoreRows() throws Exception {
+        Action a = action(41L, 300L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 0, "minecraft:stone", null, 1, false);
+        Action b = action(42L, 200L, ActionType.BLOCK_PLACE,
+            "w", 2, 64, 0, "minecraft:dirt", null, 1, false);
+        Action extra = action(43L, 100L, ActionType.BLOCK_PLACE,
+            "w", 3, 64, 0, "minecraft:oak_planks", null, 1, false);
+        when(dao.query(any(), eq(0), eq(2))).thenReturn(List.of(a, b));
+        when(dao.query(any(), eq(2), eq(1))).thenReturn(List.of(extra));
+
+        List<RollbackProgress> progress = new ArrayList<>();
+        RollbackOptions options = new RollbackOptions(2, 2, 10, () -> false, progress::add);
+
+        assertThatThrownBy(() -> engine.rollback(filter, false, options))
+            .isInstanceOf(RollbackLimitExceededException.class)
+            .hasMessageContaining("scan cap");
+        assertThat(progress).isNotEmpty();
+        assertThat(progress.get(progress.size() - 1).scanLimitReached()).isTrue();
+        verify(dao, never()).openRollbackBatch(any(), anyInt(), any(), any());
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void rollbackAbortsWhenMutationCapIsExceeded() throws Exception {
+        Action a = action(51L, 300L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 0, "minecraft:stone", null, 1, false);
+        Action b = action(52L, 200L, ActionType.BLOCK_PLACE,
+            "w", 2, 64, 0, "minecraft:dirt", null, 1, false);
+        when(dao.query(any(), eq(0), eq(2))).thenReturn(List.of(a, b));
+
+        List<RollbackProgress> progress = new ArrayList<>();
+        RollbackOptions options = new RollbackOptions(2, 10, 1, () -> false, progress::add);
+
+        assertThatThrownBy(() -> engine.rollback(filter, false, options))
+            .isInstanceOf(RollbackLimitExceededException.class)
+            .hasMessageContaining("mutation cap");
+        assertThat(progress).isNotEmpty();
+        assertThat(progress.get(progress.size() - 1).plannedLimitReached()).isTrue();
+        verify(dao, never()).openRollbackBatch(any(), anyInt(), any(), any());
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void rollbackCanBeCancelledBeforeDaoFetch() throws Exception {
+        List<RollbackProgress> progress = new ArrayList<>();
+        RollbackOptions options = new RollbackOptions(2, 10, 10, () -> true, progress::add);
+
+        assertThatThrownBy(() -> engine.rollback(filter, false, options))
+            .isInstanceOf(RollbackCancelledException.class)
+            .hasMessageContaining("cancelled");
+        assertThat(progress).hasSize(1);
+        assertThat(progress.get(0).cancelled()).isTrue();
+        verify(dao, never()).query(any(), anyInt(), anyInt());
+        verify(dao, never()).openRollbackBatch(any(), anyInt(), any(), any());
+    }
+
     // ---------------------------------------------------------- restore path
 
     @Test
@@ -334,6 +444,11 @@ class RollbackEngineTest {
         @Override
         public void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
             calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);
+        }
+
+        @Override
+        public void removeEntity(String worldId, int x, int y, int z, String entityType) {
+            calls.add("removeEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType);
         }
     }
 

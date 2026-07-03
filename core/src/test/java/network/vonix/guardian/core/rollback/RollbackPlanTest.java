@@ -78,6 +78,22 @@ class RollbackPlanTest {
     }
 
     @Test
+    void planPreservesWorldEditPlayerWhenNormalizingRolledBackState() throws Exception {
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of());
+        UUID worldEditPlayer = UUID.randomUUID();
+        QueryFilter weFilter = QueryFilter.builder()
+            .sinceMillis(System.currentTimeMillis() - 86_400_000L)
+            .worldEditPlayer(worldEditPlayer)
+            .build();
+
+        RollbackPlan rollback = engine.plan(weFilter, RollbackResult.Mode.ROLLBACK, null);
+        RollbackPlan restore = engine.plan(weFilter, RollbackResult.Mode.RESTORE, null);
+
+        assertThat(rollback.originalFilter().worldEditPlayer()).isEqualTo(worldEditPlayer);
+        assertThat(restore.originalFilter().worldEditPlayer()).isEqualTo(worldEditPlayer);
+    }
+
+    @Test
     void planIsPureNoBatchOpenedNoMutatorCalledNoMarkings() throws Exception {
         Action place = action(1L, 100L, ActionType.BLOCK_PLACE,
             "w", 0, 64, 0, "minecraft:stone", null, 1, false);

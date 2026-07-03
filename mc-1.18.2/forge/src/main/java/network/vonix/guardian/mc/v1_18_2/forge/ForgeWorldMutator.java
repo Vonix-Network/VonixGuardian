@@ -20,6 +20,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.rollback.WorldMutator;
 import org.slf4j.Logger;
@@ -128,6 +129,28 @@ public final class ForgeWorldMutator implements WorldMutator {
             level.addFreshEntity(e);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "respawnEntity failed at {} {},{},{}", worldId, x, y, z, t);
+        }
+    }
+
+
+    @Override
+    public void removeEntity(String worldId, int x, int y, int z, String entityType) {
+        try {
+            ServerLevel level = level(worldId);
+            if (level == null) return;
+            ResourceLocation rl = ResourceLocation.tryParse(entityType);
+            if (rl == null) return;
+            EntityType<?> type = Registry.ENTITY_TYPE.get(rl);
+            if (type == null) return;
+            BlockPos pos = new BlockPos(x, y, z);
+            AABB box = new AABB(x - 1.0, y - 1.0, z - 1.0, x + 2.0, y + 2.0, z + 2.0);
+            for (Entity e : level.getEntitiesOfClass(Entity.class, box,
+                    e -> e.getType() == type && e.blockPosition().equals(pos))) {
+                e.discard();
+                return;
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "removeEntity failed at {} {},{},{}", worldId, x, y, z, t);
         }
     }
 

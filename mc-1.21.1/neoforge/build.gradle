@@ -66,6 +66,12 @@ dependencies {
     // sqlite-jdbc has JNI native code; relocating Java classes breaks JNI symbol lookup.
     // Ship it as a JarInJar nested jar (NeoForge's official multi-mod-conflict resolution).
     shaded project(':core')
+    // ModDevGradle dev runs only load dependencies that are mods/libraries on
+    // additionalRuntimeClasspath. Production jars still get core via Shadow.
+    additionalRuntimeClasspath project(':core')
+    additionalRuntimeClasspath libs.hikaricp
+    additionalRuntimeClasspath libs.gson
+    additionalRuntimeClasspath libs.sqlite.jdbc
     shaded(libs.hikaricp) {
         // Hikari pulls slf4j-api transitively. We DO NOT want it in the outer jar
         // because NeoForge already exports an org.slf4j module — leaking it here

@@ -3,6 +3,9 @@ loaderVersion = "[4,)"
 license = "${mod_license}"
 issueTrackerURL = "${mod_issue_tracker}"
 
+[[mixins]]
+config = "vg-neoforge.mixins.json"
+
 [[mods]]
 modId = "${mod_id}"
 version = "${mod_version}"

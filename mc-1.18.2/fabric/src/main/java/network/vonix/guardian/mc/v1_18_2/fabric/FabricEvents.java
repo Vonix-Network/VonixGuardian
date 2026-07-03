@@ -11,6 +11,7 @@ import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
@@ -96,6 +97,7 @@ public final class FabricEvents {
 
         // ---- interaction (hanging break — player-caused)
         AttackEntityCallback.EVENT.register(FabricEvents::onAttackEntity);
+        UseEntityCallback.EVENT.register(FabricEvents::onUseEntity);
 
         // ---- sessions
         ServerPlayConnectionEvents.JOIN.register(FabricEvents::onJoin);
@@ -410,6 +412,31 @@ public final class FabricEvents {
             LOG.warn(Guardian.MARKER, "onAttackEntity failed", t);
         }
         return InteractionResult.PASS; // observe only — do not cancel damage
+    }
+
+    /** Generic right-click entity interactions: audit-only ENTITY_INTERACT, gated by logInteractions. */
+    private static InteractionResult onUseEntity(Player player,
+                                                Level world,
+                                                net.minecraft.world.InteractionHand hand,
+                                                Entity target,
+                                                net.minecraft.world.phys.EntityHitResult hit) {
+        try {
+            EventSubmitter s = sub();
+            GuardianConfig c = cfg();
+            if (s == null || c == null || player == null || world == null || target == null) {
+                return InteractionResult.PASS;
+            }
+            if (!c.actions().logInteractions()) return InteractionResult.PASS;
+            String type = EntitySentinel.of(target);
+            BlockPos pos = target.blockPosition();
+            s.submitEntityInteract(player.getUUID(), player.getName().getString(),
+                    WorldKey.of(world),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    type, SourceTagger.tag(target));
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "onUseEntity failed", t);
+        }
+        return InteractionResult.PASS;
     }
 
     // ====================================================================== sessions

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-07-02
+
+### Added
+
+- **Fabric world-event parity mixins** — wired FireBlock, IceBlock, LeavesBlock, SpreadingSnowyDirtBlock, ConcretePowderBlock, and DispenserBlock mixins across 1.18.2, 1.19.2, 1.20.1, and 1.21.1 Fabric cells so BURN/IGNITE/FADE/FORM/SPREAD/LEAVES_DECAY/DISPENSE producers are no longer Forge-only.
+- **Bounded rollback controls** — rollback/restore now support scan and mutation caps, cancellation, and progress callbacks; `/vg rollback` and `/vg restore` surface live progress/cap/cancel state instead of silently materializing unbounded result sets.
+- **NeoForge 1.21.1 live smoke coverage** — the dev run classpath now includes shaded runtime libraries so `:mc-1.21.1:neoforge:runServer` can be used as a real boot smoke for the restored mixin config.
+
+### Fixed
+
+- **Rollback expansion reachability** — rollback planning now treats engine-supported world expansion actions (burn, ignite, fade, form, spread, leaves decay, buckets, hopper moves, structure grow, portals, entity block changes) as rollbackable while leaving audit-only/unsafe actions skipped.
+- **Explosion rollback fidelity** — Fabric, Forge, and NeoForge explosion producers now store affected blocks as rollback-restorable `x:y:z=block` entries instead of audit-only coordinates, matching the core rollback parser.
+- **Container snapshot bounds** — Fabric, Forge, and NeoForge container diff snapshots now have TTL, global cap, and slot cap cleanup to avoid retaining full modded mega-container copies indefinitely.
+- **Entity interaction parity** — Fabric `UseEntityCallback` and Forge/NeoForge `EntityInteract` now emit audit-only `ENTITY_INTERACT` rows behind `actions.logInteractions`, aligning right-click entity behavior across loaders.
+- **Hanging entity rollback fidelity** — rollback/restore now remove or respawn hanging entities for place/break actions through a loader `WorldMutator.removeEntity` implementation instead of treating them as audit-only.
+- **Modded entity attribution policy** — player-attributed modded entity block changes now still require the entity source allowlist unless `entityChangeLogAllEntities` is enabled, preserving fail-closed behavior across Fabric and Forge/NeoForge.
+- **WorldEdit rollback context preservation** — rollback/restore filter normalization now preserves the WorldEdit player context used by `r:#we` selections.
+- **Entity block coalescer hard cap** — high-cardinality entity block changes now fail closed at the configured cap and report `capDrops` in `/vg status`, avoiding heap growth under modded flood conditions.
+
 ## [1.2.4] - 2026-07-02
 
 ### Fixed

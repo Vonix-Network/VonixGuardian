@@ -5,6 +5,7 @@ import network.vonix.guardian.core.query.QueryFilter;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -134,6 +135,63 @@ public final class RollbackPlan {
         return new RollbackPlan(ordered, skipped, originalFilter, mode, actorUuid);
     }
 
+    /**
+     * Start an incremental plan builder for large rollback/restore operations.
+     *
+     * <p>The DAO emits rows in canonical newest-first order
+     * ({@code ts DESC, id DESC}). This builder consumes one page at a time,
+     * only retaining the bounded final plan/skipped lists plus the positional
+     * de-dupe set; it never needs the full raw DAO match set in memory.</p>
+     */
+    static StreamingBuilder streaming(QueryFilter originalFilter,
+                                      RollbackResult.Mode mode,
+                                      UUID actorUuid) {
+        return new StreamingBuilder(originalFilter, mode, actorUuid);
+    }
+
+    static final class StreamingBuilder {
+        private final QueryFilter originalFilter;
+        private final RollbackResult.Mode mode;
+        private final UUID actorUuid;
+        private final List<Action> ordered = new ArrayList<>();
+        private final List<Action> skipped = new ArrayList<>();
+        private final HashSet<PosKey> seen = new HashSet<>();
+
+        private StreamingBuilder(QueryFilter originalFilter,
+                                 RollbackResult.Mode mode,
+                                 UUID actorUuid) {
+            this.originalFilter = originalFilter;
+            this.mode = mode;
+            this.actorUuid = actorUuid;
+        }
+
+        void add(Action a) {
+            Objects.requireNonNull(a, "action");
+            if (!isRollbackable(a)) {
+                skipped.add(a);
+                return;
+            }
+            if (a.isPositional()) {
+                PosKey k = new PosKey(a.worldId(), a.x(), a.y(), a.z());
+                if (!seen.add(k)) {
+                    return;
+                }
+            }
+            ordered.add(a);
+        }
+
+        int plannedSteps() { return ordered.size(); }
+        int skippedActions() { return skipped.size(); }
+
+        RollbackPlan build() {
+            if (ordered.isEmpty() && skipped.isEmpty()) {
+                return RollbackPlan.empty(originalFilter, mode, actorUuid);
+            }
+            return new RollbackPlan(new ArrayList<>(ordered), new ArrayList<>(skipped),
+                originalFilter, mode, actorUuid);
+        }
+    }
+
     // -- new record-style accessors (W2-01) --
 
     /** IDs of actions this plan will touch, in dispatch order. */
@@ -172,18 +230,7 @@ public final class RollbackPlan {
     public int size() { return ordered.size(); }
 
     static boolean isRollbackable(Action a) {
-        return switch (a.type()) {
-            case BLOCK_PLACE, BLOCK_BREAK,
-                 CONTAINER_DEPOSIT, CONTAINER_WITHDRAW,
-                 ITEM_DROP, ITEM_PICKUP,
-                 ENTITY_KILL, EXPLOSION -> true;
-            case CHAT, COMMAND, SIGN,
-                 SESSION_JOIN, SESSION_LEAVE,
-                 USERNAME_CHANGE -> false;
-            // v0.1.0 expansion (15-39) lands in a follow-up wave; until the loader bridges
-            // wire mutators for them, treat as not-rollbackable so the engine refuses cleanly.
-            default -> false;
-        };
+        return RollbackEngine.isRollbackable(a.type());
     }
 
     private record PosKey(String worldId, int x, int y, int z) {}

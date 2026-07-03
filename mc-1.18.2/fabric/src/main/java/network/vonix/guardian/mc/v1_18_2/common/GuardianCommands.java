@@ -31,6 +31,8 @@ import network.vonix.guardian.core.perms.PermissionNode;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.query.QueryParseException;
 import network.vonix.guardian.core.query.QueryParser;
+import network.vonix.guardian.core.rollback.RollbackOptions;
+import network.vonix.guardian.core.rollback.RollbackProgress;
 import network.vonix.guardian.core.rollback.RollbackResult;
 import network.vonix.guardian.core.storage.dbmigrate.MigrateDbCommand;
 import org.slf4j.Logger;
@@ -235,6 +237,27 @@ public final class GuardianCommands {
         return src.getEntity() instanceof ServerPlayer p ? p.getUUID() : null;
     }
 
+    private static RollbackOptions rollbackOptions(MinecraftServer server, CommandSourceStack src) {
+        return new RollbackOptions(
+                RollbackOptions.DEFAULT_PAGE_SIZE,
+                RollbackOptions.DEFAULT_MAX_SCANNED_ACTIONS,
+                RollbackOptions.DEFAULT_MAX_PLANNED_STEPS,
+                () -> Thread.currentThread().isInterrupted(),
+                progress -> {
+                    if (!shouldReportRollbackProgress(progress)) return;
+                    server.execute(() -> send(src, ChatRenderer.muted(null,
+                            "[VonixGuardian] Rollback planning: scanned=" + progress.scannedActions()
+                                    + " planned=" + progress.plannedSteps()
+                                    + " skipped=" + progress.skippedActions())));
+                }
+        );
+    }
+
+    private static boolean shouldReportRollbackProgress(RollbackProgress progress) {
+        return progress.scanLimitReached() || progress.plannedLimitReached() || progress.cancelled()
+                || progress.pagesFetched() == 1 || progress.pagesFetched() % 10 == 0;
+    }
+
     /**
      * Returns a copy of {@code qf} with a default radius of {@code 10} centered
      * on the caller, if the caller did not supply a radius selector. Mirrors
@@ -257,7 +280,8 @@ public final class GuardianCommands {
                 qf.centerY() != null ? qf.centerY() : (int) v.y,
                 qf.centerZ() != null ? qf.centerZ() : (int) v.z,
                 qf.actions(), qf.include(), qf.exclude(),
-                qf.rolledBack(), qf.countOnly(), qf.preview(), qf.verbose(), qf.silent(), qf.optimize()
+                qf.rolledBack(), qf.countOnly(), qf.preview(), qf.verbose(), qf.silent(), qf.optimize(),
+                qf.worldEditPlayer()
         );
     }
 
@@ -408,7 +432,8 @@ public final class GuardianCommands {
             final boolean preview = previewForced || filter.preview();
             WORKER.submit(() -> {
                 try {
-                    RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor);
+                    RollbackOptions options = rollbackOptions(server, src);
+                    RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor, options);
                     g.undoStack().push(actor != null ? actor
                             : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
                     server.execute(() -> send(src, ChatRenderer.success(g.theme(),
@@ -447,7 +472,8 @@ public final class GuardianCommands {
             final QueryFilter filter = qf;
             WORKER.submit(() -> {
                 try {
-                    RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor);
+                    RollbackOptions options = rollbackOptions(server, src);
+                    RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
                     g.undoStack().push(actor != null ? actor
                             : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
                     server.execute(() -> send(src, ChatRenderer.success(g.theme(),

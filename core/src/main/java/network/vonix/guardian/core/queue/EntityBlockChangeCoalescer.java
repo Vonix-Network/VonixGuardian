@@ -52,6 +52,7 @@ public final class EntityBlockChangeCoalescer {
     private final AtomicLong hits = new AtomicLong();
     private final AtomicLong misses = new AtomicLong();
     private final AtomicLong evictions = new AtomicLong();
+    private final AtomicLong capDrops = new AtomicLong();
 
     public EntityBlockChangeCoalescer() {
         this(DEFAULT_WINDOW_MS, DEFAULT_MAX_ENTRIES);
@@ -99,11 +100,18 @@ public final class EntityBlockChangeCoalescer {
             return true;
         }
 
-        // Cap check before insert. Not a hard cap — we allow slight overshoot
-        // (racing producers) because a strict cap would need synchronized
-        // access. Overshoot bounded by producer thread count.
+        // Hard cap before insert. Under high-cardinality bursts (many fresh
+        // unique coords inside the coalesce window) old best-effort eviction
+        // could remove zero entries and still insert, letting the map grow
+        // unbounded. If no slot can be freed, fail closed and drop the new
+        // event rather than trading a grief log row for heap pressure.
         if (lastSeen.size() >= maxEntries) {
-            evictOldestSlice(now);
+            int evicted = evictOldestSlice(now);
+            if (evicted == 0 && lastSeen.size() >= maxEntries) {
+                capDrops.incrementAndGet();
+                hits.incrementAndGet();
+                return false;
+            }
         }
 
         AtomicLong prior = lastSeen.putIfAbsent(k, new AtomicLong(now));
@@ -123,7 +131,7 @@ public final class EntityBlockChangeCoalescer {
      * at steady state this fires rarely because window-expired entries get
      * overwritten in place by the {@code slot.set(now)} branch above.
      */
-    private void evictOldestSlice(long nowNs) {
+    private int evictOldestSlice(long nowNs) {
         int targetEvict = Math.max(1, maxEntries / 16);
         long threshold = nowNs - windowNs;
         int evicted = 0;
@@ -136,6 +144,7 @@ public final class EntityBlockChangeCoalescer {
             }
         }
         evictions.addAndGet(evicted);
+        return evicted;
     }
 
     /** @return count of events suppressed since construction */
@@ -147,6 +156,9 @@ public final class EntityBlockChangeCoalescer {
     /** @return count of entries evicted due to cap pressure since construction */
     public long evictions() { return evictions.get(); }
 
+    /** @return count of fresh unique events dropped because the hard cap was reached */
+    public long capDrops() { return capDrops.get(); }
+
     /** @return current live entry count in the coalescer map */
     public int size() { return lastSeen.size(); }
 
@@ -156,6 +168,7 @@ public final class EntityBlockChangeCoalescer {
         hits.set(0);
         misses.set(0);
         evictions.set(0);
+        capDrops.set(0);
     }
 
     /** Composite key. {@code record} gives us equals/hashCode/toString for free. */
