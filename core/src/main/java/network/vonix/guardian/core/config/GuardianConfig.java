@@ -41,13 +41,49 @@ public record GuardianConfig(
     Privacy privacy,
     Purge purge,
     Storage storage,
+    Rollback rollback,
     String theme,
     String language
 ) {
 
     /**
+     * Compact canonical constructor — defensively backfills {@link #rollback} when
+     * a legacy on-disk config predates the field (Gson deserialises absent JSON
+     * keys to {@code null}). Every other section is left as-is because
+     * {@link ConfigLoader#migrateForwardCompat} already handles them; this covers
+     * the X8 addition without requiring a companion loader change.
+     * @since 1.3.1 X8
+     */
+    public GuardianConfig {
+        if (rollback == null) rollback = Rollback.defaults();
+    }
+
+    /**
+     * Backward-compat constructor for callers/tests written before {@code rollback} existed.
+     * Defaults {@code rollback} to {@link Rollback#defaults()}.
+     * @since 1.3.1 X8
+     */
+    public GuardianConfig(
+        Database database,
+        Queue queue,
+        LogFile logFile,
+        Actions actions,
+        Permissions permissions,
+        Lookup lookup,
+        Privacy privacy,
+        Purge purge,
+        Storage storage,
+        String theme,
+        String language
+    ) {
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
+             storage, Rollback.defaults(), theme, language);
+    }
+
+    /**
      * Backward-compat constructor for callers/tests written before {@code storage} existed.
-     * Defaults {@code storage} to {@link Storage#defaults()}.
+     * Defaults {@code storage} to {@link Storage#defaults()} and {@code rollback} to
+     * {@link Rollback#defaults()}.
      * @since 1.3.1
      */
     public GuardianConfig(
@@ -63,12 +99,13 @@ public record GuardianConfig(
         String language
     ) {
         this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
-             Storage.defaults(), theme, language);
+             Storage.defaults(), Rollback.defaults(), theme, language);
     }
 
     /**
      * Backward-compat constructor for callers/tests written before {@code language} existed.
-     * Defaults {@code language} to {@code "en_us"} and {@code storage} to {@link Storage#defaults()}.
+     * Defaults {@code language} to {@code "en_us"}, {@code storage} to {@link Storage#defaults()},
+     * and {@code rollback} to {@link Rollback#defaults()}.
      */
     public GuardianConfig(
         Database database,
@@ -82,7 +119,7 @@ public record GuardianConfig(
         String theme
     ) {
         this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
-             Storage.defaults(), theme, "en_us");
+             Storage.defaults(), Rollback.defaults(), theme, "en_us");
     }
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianConfig.class);
@@ -481,6 +518,37 @@ public record GuardianConfig(
     }
 
     /**
+     * Rollback engine tuning knobs.
+     *
+     * @param explosionSupplementalReach block-radius padding added to the primary spatial
+     *                                   predicate when the {@link
+     *                                   network.vonix.guardian.core.rollback.RollbackEngine}
+     *                                   W5 supplemental EXPLOSION scan runs. The primary
+     *                                   scan filters EXPLOSION rows by blast-center coord
+     *                                   against the caller's radius; the supplemental scan
+     *                                   catches blasts whose center sits outside the radius
+     *                                   but whose affected-list reaches into it. Instead of
+     *                                   dropping the spatial predicate entirely (which
+     *                                   turned the supplemental into an unbounded
+     *                                   "every EXPLOSION row in this world in the time
+     *                                   window" scan on griefing-storm servers), the DAO
+     *                                   predicate stays but is padded outward by this many
+     *                                   blocks. 16 mirrors vanilla's TNT reach; raise it
+     *                                   for modded mega-explosives whose affected radius
+     *                                   can exceed vanilla. Row admission still uses
+     *                                   {@code ExplosionAffectedList.anyWithinRadius},
+     *                                   so widening this only relaxes the pre-filter — it
+     *                                   never over-admits rows.
+     * @since 1.3.1 X8
+     */
+    public record Rollback(int explosionSupplementalReach) {
+        /** Canonical default: 16 blocks (matches vanilla TNT reach). */
+        public static Rollback defaults() {
+            return new Rollback(16);
+        }
+    }
+
+    /**
      * Build the canonical default config matching README &sect; Configuration.
      *
      * @return a freshly-populated default config
@@ -527,6 +595,7 @@ public record GuardianConfig(
             new Privacy(false, DEFAULT_PRIVACY_SALT),
             new Purge(86_400L, 2_592_000L, 0L, "03:30"),
             Storage.defaults(),
+            Rollback.defaults(),
             "aqua",
             "en_us"
         );
@@ -741,6 +810,20 @@ public record GuardianConfig(
 
         if (storage == null) {
             errors.add("storage: section missing");
+        }
+
+        if (rollback == null) {
+            errors.add("rollback: section missing");
+        } else {
+            if (rollback.explosionSupplementalReach < 0) {
+                errors.add("rollback.explosionSupplementalReach: must be >= 0 (got "
+                    + rollback.explosionSupplementalReach + ")");
+            } else if (rollback.explosionSupplementalReach > 1024) {
+                // 1024 is a sanity cap — beyond that the supplemental scan becomes
+                // effectively unbounded again, which is exactly what X8 fixes.
+                errors.add("rollback.explosionSupplementalReach: must be <= 1024 (got "
+                    + rollback.explosionSupplementalReach + ")");
+            }
         }
 
         if (language == null || !KNOWN_LANGUAGES.contains(language)) {
