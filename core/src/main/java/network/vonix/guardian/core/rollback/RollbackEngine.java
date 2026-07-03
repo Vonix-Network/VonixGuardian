@@ -293,7 +293,152 @@ public final class RollbackEngine {
             }
             offset += page.size();
         }
+
+        // W5 (v1.3.0): supplemental EXPLOSION scan — the primary DAO query filters
+        // by center coord against the caller's radius, so it misses TNT whose center
+        // is outside the box but whose affected-list reaches into it. Match
+        // CoreProtect: loop through the affected-list at rollback time and admit
+        // the row if ANY block in it falls within the caller's radius.
+        supplementExplosions(filter, builder, options, pages, scanned);
         return builder.build();
+    }
+
+    /**
+     * W5 — after the primary paged scan, sweep EXPLOSION rows whose center is
+     * OUTSIDE the caller's radius but whose affected-list reaches into it.
+     *
+     * <p>The supplemental filter clones {@code base} but drops the spatial
+     * predicate and restricts to EXPLOSION rows, so rows already picked up by
+     * the primary scan (center inside radius) are re-checked with a cheap
+     * "center inside box?" test and skipped instead of double-added. Rows
+     * whose center is outside the box are then filtered by
+     * {@link ExplosionAffectedList#anyWithinRadius}.</p>
+     *
+     * <p>Skipped when the filter has no spatial constraint ({@code radius==null}
+     * or {@code #global}), when no center is set, or when the filter's action
+     * list excludes EXPLOSION.</p>
+     */
+    private void supplementExplosions(QueryFilter base,
+                                      RollbackPlan.StreamingBuilder builder,
+                                      RollbackOptions options,
+                                      int pages,
+                                      int scanned) throws Exception {
+        Integer r = base.radius();
+        if (r == null || r < 0) return;                       // no spatial predicate to widen
+        if (base.centerX() == null || base.centerZ() == null) return;
+        if (!filterAdmitsExplosion(base)) return;
+
+        QueryFilter supp = withExplosionOnlyNoSpatial(base);
+        int centerX = base.centerX();
+        Integer centerY = base.centerY();
+        int centerZ = base.centerZ();
+        int minX = centerX - r, maxX = centerX + r;
+        int minZ = centerZ - r, maxZ = centerZ + r;
+        Integer minY = centerY == null ? null : centerY - r;
+        Integer maxY = centerY == null ? null : centerY + r;
+
+        int offset = 0;
+        while (true) {
+            if (options.isCancelRequested()) {
+                RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                options.publish(progress);
+                throw new RollbackCancelledException(progress);
+            }
+            int remainingScanBudget = options.maxScannedActions() - scanned;
+            if (remainingScanBudget <= 0) {
+                if (hasMoreRows(supp, offset)) {
+                    RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
+                    options.publish(progress);
+                    throw new RollbackLimitExceededException(
+                        "Rollback planning exceeded scan cap of " + options.maxScannedActions() + " action(s)",
+                        progress);
+                }
+                break;
+            }
+            int limit = Math.min(options.pageSize(), remainingScanBudget);
+            List<Action> page = dao.query(supp, offset, limit);
+            if (page == null || page.isEmpty()) break;
+            pages++;
+
+            List<Action> orderedPage = new ArrayList<>(page);
+            orderedPage.sort((a, b) -> {
+                int c = Long.compare(b.timestamp(), a.timestamp());
+                return c != 0 ? c : Long.compare(b.id(), a.id());
+            });
+
+            for (Action action : orderedPage) {
+                if (options.isCancelRequested()) {
+                    RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                    options.publish(progress);
+                    throw new RollbackCancelledException(progress);
+                }
+                scanned++;
+                // Skip if center is already inside the box — the primary scan
+                // already added this row.
+                boolean centerInside = action.x() >= minX && action.x() <= maxX
+                    && action.z() >= minZ && action.z() <= maxZ
+                    && (minY == null || (action.y() >= minY && action.y() <= maxY));
+                if (centerInside) continue;
+
+                ExplosionAffectedList list = ExplosionAffectedList.parse(action.targetId());
+                if (list.isEmpty()) continue;
+                if (!list.anyWithinRadius(centerX, centerY, centerZ, r)) continue;
+
+                builder.add(action);
+                if (builder.plannedSteps() > options.maxPlannedSteps()) {
+                    RollbackProgress progress = progress(pages, scanned, builder, false, true, false);
+                    options.publish(progress);
+                    throw new RollbackLimitExceededException(
+                        "Rollback planning exceeded mutation cap of " + options.maxPlannedSteps() + " step(s)",
+                        progress);
+                }
+            }
+
+            boolean fullPage = page.size() == limit;
+            RollbackProgress progress = progress(pages, scanned, builder, false, false, false);
+            options.publish(progress);
+            if (!fullPage) break;
+            offset += page.size();
+        }
+    }
+
+    /**
+     * Whether the caller's action filter admits EXPLOSION rows. Returns
+     * {@code true} when {@code actions} is empty (= all types) OR contains an
+     * explicit {@code EXPLOSION} entry.
+     */
+    private static boolean filterAdmitsExplosion(QueryFilter f) {
+        if (f.actions() == null || f.actions().isEmpty()) return true;
+        for (QueryFilter.ActionSelect a : f.actions()) {
+            if (a.type() == ActionType.EXPLOSION) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Copy of {@code base} with (a) the spatial predicate cleared and
+     * (b) the action list forced to EXPLOSION only. Used by the W5
+     * supplemental scan.
+     */
+    private static QueryFilter withExplosionOnlyNoSpatial(QueryFilter base) {
+        return new QueryFilter(
+            base.users(),
+            base.sinceMillis(),
+            base.untilMillis(),
+            null,                 // radius cleared
+            base.worldSel(),
+            null, null, null,     // center cleared
+            List.of(new QueryFilter.ActionSelect(ActionType.EXPLOSION, QueryFilter.ActionSelect.Sign.ANY)),
+            base.include(),
+            base.exclude(),
+            base.rolledBack(),
+            base.countOnly(),
+            base.preview(),
+            base.verbose(),
+            base.silent(),
+            base.optimize(),
+            null                  // worldEditPlayer cleared — we handle spatial matching in-Java
+        );
     }
 
     private boolean hasMoreRows(QueryFilter filter, int offset) throws Exception {
@@ -532,64 +677,20 @@ public final class RollbackEngine {
     }
 
     private void restoreExplosion(Action a) {
-        String target = a.targetId();
-        if (target == null || target.isEmpty()) {
-            return;
-        }
-        for (String entry : target.split(",")) {
-            ExplosionEntry e = parseExplosionEntry(entry);
-            if (e == null) {
-                continue;
-            }
-            mutator.setBlock(a.worldId(), e.x, e.y, e.z, e.id, e.meta);
+        ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
+        if (list.isEmpty()) return;
+        for (ExplosionAffectedList.Entry e : list.entries()) {
+            // Restore the pre-blast block state at each affected coord.
+            mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
         }
     }
 
     private void clearExplosionBlocks(Action a) {
-        String target = a.targetId();
-        if (target == null || target.isEmpty()) {
-            return;
-        }
-        for (String entry : target.split(",")) {
-            ExplosionEntry e = parseExplosionEntry(entry);
-            if (e == null) {
-                continue;
-            }
-            mutator.setBlock(a.worldId(), e.x, e.y, e.z, AIR, null);
-        }
-    }
-
-    private static ExplosionEntry parseExplosionEntry(String entry) {
-        if (entry == null || entry.isBlank()) {
-            return null;
-        }
-        try {
-            int eq = entry.indexOf('=');
-            if (eq <= 0 || eq == entry.length() - 1) {
-                return null;
-            }
-            String pos = entry.substring(0, eq);
-            String rest = entry.substring(eq + 1);
-            String id;
-            String meta = null;
-            int pipe = rest.indexOf('|');
-            if (pipe >= 0) {
-                id = rest.substring(0, pipe);
-                meta = rest.substring(pipe + 1);
-            } else {
-                id = rest;
-            }
-            String[] xyz = pos.split(":");
-            if (xyz.length != 3) {
-                return null;
-            }
-            int x = Integer.parseInt(xyz[0].trim());
-            int y = Integer.parseInt(xyz[1].trim());
-            int z = Integer.parseInt(xyz[2].trim());
-            return new ExplosionEntry(x, y, z, id.trim(), meta);
-        } catch (NumberFormatException e) {
-            LOG.warn("RollbackEngine: malformed explosion entry '{}'", entry);
-            return null;
+        ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
+        if (list.isEmpty()) return;
+        for (ExplosionAffectedList.Entry e : list.entries()) {
+            // Restore direction: re-clear the affected area (re-apply the blast).
+            mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), AIR, null);
         }
     }
 
@@ -614,6 +715,4 @@ public final class RollbackEngine {
                  CHUNK_POPULATE, CLICK -> false;
         };
     }
-
-    private record ExplosionEntry(int x, int y, int z, String id, String meta) {}
 }
