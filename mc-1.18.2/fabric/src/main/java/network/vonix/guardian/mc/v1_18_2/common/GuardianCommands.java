@@ -718,21 +718,43 @@ public final class GuardianCommands {
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
-            Guardian.ReloadResult r = g.reloadConfig(g.configPath());
-            String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
-            String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
-            String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
-            send(src, ChatRenderer.primary(g.theme(),
-                    "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
-            send(src, ChatRenderer.warning(g.theme(),
-                    "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
-            if (r.errors().isEmpty()) {
-                send(src, ChatRenderer.muted(g.theme(),
-                        "[VonixGuardian] Errors: 0 (none)"));
-            } else {
-                send(src, ChatRenderer.error(g.theme(),
-                        "[VonixGuardian] Errors: " + r.errors().size() + " " + err));
-            }
+            // v1.3.7 EE1 (round-8 P1): route the actual reload off the server thread.
+            // reloadConfig now enters CONFIG_MUTATION_LOCK; a WORKER-thread /vg config
+            // set already holding the monitor across ConfigLoader.save (unbounded disk
+            // IO on slow/NFS storage) would otherwise stall the server tick. Result
+            // reporting hops back to the server thread so chat rendering (which
+            // touches Level/theme state) stays single-threaded.
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            send(src, ChatRenderer.muted(g.theme(),
+                    "[VonixGuardian] Reloading configuration..."));
+            WORKER.submit(() -> {
+                try {
+                    Guardian.ReloadResult r = g.reloadConfig(g.configPath());
+                    if (server == null) return;
+                    server.execute(() -> {
+                        String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
+                        String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
+                        String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
+                        send(src, ChatRenderer.primary(g.theme(),
+                                "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
+                        send(src, ChatRenderer.warning(g.theme(),
+                                "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
+                        if (r.errors().isEmpty()) {
+                            send(src, ChatRenderer.muted(g.theme(),
+                                    "[VonixGuardian] Errors: 0 (none)"));
+                        } else {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Errors: " + r.errors().size() + " " + err));
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "/vg reload failed off-thread", t);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Reload failed: " + t.getMessage())));
+                    }
+                }
+            });
             return 1;
         }
     }
@@ -788,15 +810,6 @@ public final class GuardianCommands {
             // tick until the write returned. All result reporting hops back to
             // the server thread via server.execute so the theme/chat pipeline
             // stays single-threaded (theme resolution touches Level state).
-            try {
-                next.validate();
-            } catch (Exception e) {
-                LOG.warn(Guardian.MARKER, "Config set validation failed", e);
-                send(src, ChatRenderer.error(g.theme(),
-                        "[VonixGuardian] Config update failed: " + e.getMessage()));
-                return 0;
-            }
-            final GuardianConfig finalNext = next;
             final java.nio.file.Path finalPath = path;
             final String finalKey = key;
             final String finalValue = value;

@@ -9,13 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.7] - 2026-07-03
 
-**Round-7 review close-out (inline DD1 sweep).** Small, focused pass in response to the round-7 review agents' converged findings — no subagent waves needed. Closes the reload-and-config-set race window that CC2's WORKER offload introduced, plus three sister thread-safety gates on `onCommandFillSetblock`.
+**Round-7 + Round-8 review close-out (DD1 + EE1 inline sweeps).** Small, focused pass in response to the review agents' converged findings — no subagent waves needed. Closes the reload/config-set race window that CC2's WORKER offload introduced, plus three sister thread-safety gates on `onCommandFillSetblock`, plus the tick-freeze regression DD1 itself introduced by taking `CONFIG_MUTATION_LOCK` on the server thread.
 
 ### Fixed
 
 - **DD1-P1-1: `onCommandFillSetblock` missing `isSameThread()` gate.** All 3 Forge cells (mc-1.18.2 / mc-1.19.2 / mc-1.20.1) now short-circuit when the CommandEvent dispatches off the server thread — previously only the `getLevel() == null` half of the CC2 P1-5 fix landed, leaving Sinytra Connector / integrated-server cases free to run up to 32,768 `getBlockState` reads off-tick. NeoForge cell has no `onCommandFillSetblock` handler by design.
-- **DD1-P1-2: `Guardian.reloadConfig` not internally serialized.** New `Guardian.CONFIG_MUTATION_LOCK` static monitor + `withConfigMutationLock` convenience + `reloadConfigUnlocked` variant. `reloadConfig` now enters the monitor before any state mutation — prevents two WORKER-thread `/vg config set` calls or a WORKER-thread set racing a server-thread `/vg reload` from interleaving the read-old / build-merged / publish-new sequence.
-- **DD1-P1-3: `/vg config set` lost-update.** All 8 loader cells' `Config.set` critical section now re-reads the current live config *inside* `CONFIG_MUTATION_LOCK` before calling `withValue` — no more clobbering a sibling set command with a stale `finalNext` computed pre-lock. Persist + reload happen inside the same critical section via `reloadConfigUnlocked`.
+- **DD1-P1-2: `Guardian.reloadConfig` not internally serialized.** New `Guardian.CONFIG_MUTATION_LOCK` static monitor + `reloadConfigUnlocked` variant. `reloadConfig` now enters the monitor before any state mutation — prevents two WORKER-thread `/vg config set` calls or a WORKER-set racing a server-thread `/vg reload` from clobbering `gate` / `config` / `perWorldStore` / `rollbackEngine` / `autoPurgeScheduler` updates.
+- **DD1-P1-3: `/vg config set` lost-update.** All 8 loader cells' `Config.set` critical section now re-reads the live config *inside* `CONFIG_MUTATION_LOCK` before calling `withValue`, then validates + saves + reloads (via `reloadConfigUnlocked`) under the same monitor. No more lost-update on concurrent sets.
+- **EE1-P1: `/vg reload` tick-freeze regression from DD1.** Routing DD1 hoisted `/vg reload` off the server thread onto WORKER — same pattern CC2 introduced for `/vg config set`. A concurrent WORKER-thread config-set holding `CONFIG_MUTATION_LOCK` across `ConfigLoader.save` (unbounded disk IO on slow / NFS storage) no longer stalls the server tick when an operator subsequently runs `/vg reload`. Result reporting hops back via `server.execute` for chat rendering.
+
+### Removed (cleanup)
+
+- **EE1-P3: dead `final GuardianConfig finalNext = next;` locals in all 8 loader cells.** DD1 recomputed `freshNext` inside the lock, obviating `next` entirely; local was unused post-DD1.
+- **EE1-P3: pre-lock `next.validate()` in all 8 loader cells.** `freshNext.validate()` inside the lock is authoritative and identical.
+- **EE1-P3: `Guardian.withConfigMutationLock(Runnable)`.** Public API added by DD1 but never invoked by any cell. Removed before locking the API surface for v1.4.0.
 
 ### Notes
 

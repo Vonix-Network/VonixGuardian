@@ -466,21 +466,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * /vg config set implementations MUST hold this monitor while performing the
      * read-current-config / build-merged / persist-to-disk / reloadConfig sequence
      * to prevent lost updates when concurrent set commands race on WORKER.
-     * <p>Use {@link #withConfigMutationLock(Runnable)} rather than exposing the
-     * monitor object across module boundaries.</p>
+     * <p>Cells use an explicit {@code synchronized (Guardian.CONFIG_MUTATION_LOCK)}
+     * block around their critical section rather than a Runnable wrapper because
+     * they need to short-circuit on validation failure with a chat error.</p>
      */
     public static final Object CONFIG_MUTATION_LOCK = new Object();
-
-    /**
-     * v1.3.7 DD1: convenience for loader cells to run a config-mutation critical
-     * section under the shared monitor. Wraps read-current-config / build-merged /
-     * ConfigLoader.save / reloadConfig so no interleaving is possible.
-     */
-    public static void withConfigMutationLock(Runnable r) {
-        synchronized (CONFIG_MUTATION_LOCK) {
-            r.run();
-        }
-    }
 
     /**
      * v1.3.7 DD1: reload variant for callers that already hold
