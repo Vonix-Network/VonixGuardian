@@ -55,9 +55,8 @@ public final class FabricWorldMutator implements WorldMutator {
             if (rl == null) return;
             Block block = BuiltInRegistries.BLOCK.get(rl);
             if (block == null) return;
-            BlockState state = block.defaultBlockState();
+            BlockState state = applyMeta(block.defaultBlockState(), targetMeta);
             level.setBlock(new BlockPos(x, y, z), state, Block.UPDATE_ALL);
-            // TODO: parse targetMeta (block-state properties JSON) when NbtCodec lands.
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "setBlock failed at {} {},{},{}", worldId, x, y, z, t);
         }
@@ -189,4 +188,53 @@ public final class FabricWorldMutator implements WorldMutator {
         }
         return false;
     }
+
+    /**
+     * Best-effort apply of {@code targetMeta} block-state properties. Accepts
+     * either a bare {@code key=value,key=value} list or a JSON object of
+     * {@code {"key":"value"}} pairs; unrecognised properties/values are
+     * silently skipped so a mismatched meta blob never blocks rollback.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static BlockState applyMeta(BlockState base, String meta) {
+        if (meta == null || meta.isEmpty()) return base;
+        String body = meta.trim();
+        if (body.startsWith("{")) {
+            // Strip outer braces; tolerate quoted or bare tokens.
+            body = body.substring(1, body.endsWith("}") ? body.length() - 1 : body.length());
+        }
+        BlockState state = base;
+        for (String kv : body.split(",")) {
+            int eq = kv.indexOf('=');
+            if (eq <= 0 || eq >= kv.length() - 1) {
+                int colon = kv.indexOf(':');
+                if (colon <= 0 || colon >= kv.length() - 1) continue;
+                eq = colon;
+            }
+            String key = unquote(kv.substring(0, eq).trim());
+            String val = unquote(kv.substring(eq + 1).trim());
+            if (key.isEmpty() || val.isEmpty()) continue;
+            net.minecraft.world.level.block.state.properties.Property property =
+                    state.getBlock().getStateDefinition().getProperty(key);
+            if (property == null) continue;
+            java.util.Optional value = property.getValue(val);
+            if (value.isEmpty()) continue;
+            try {
+                state = state.setValue((net.minecraft.world.level.block.state.properties.Property) property,
+                        (Comparable) value.get());
+            } catch (Throwable ignored) {
+                // property applied to wrong block after registry drift — skip
+            }
+        }
+        return state;
+    }
+
+    private static String unquote(String s) {
+        if (s.length() >= 2 && ((s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"')
+                || (s.charAt(0) == '\'' && s.charAt(s.length() - 1) == '\''))) {
+            return s.substring(1, s.length() - 1);
+        }
+        return s;
+    }
+
 }

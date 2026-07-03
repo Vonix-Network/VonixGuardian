@@ -169,6 +169,32 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void pendingSnapshotReturnsQueuedItemsWithoutDraining() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        BatchSink blockingSink = batch -> {
+            entered.countDown();
+            release.await();
+        };
+
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 1, blockingSink, DAEMON);
+        try {
+            q.submit(action(0));
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            q.submit(action(10));
+            q.submit(action(11));
+
+            List<Action> pending = q.pendingSnapshot();
+
+            assertThat(pending).extracting(Action::x).containsExactly(10, 11);
+            assertThat(q.depth()).isEqualTo(2);
+        } finally {
+            release.countDown();
+            q.drainAndFlush(2_000L);
+        }
+    }
+
+    @Test
     void close_terminatesWorkerThread() throws Exception {
         CapturingSink sink = new CapturingSink(0);
         List<Thread> spawned = new ArrayList<>();

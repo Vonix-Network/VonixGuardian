@@ -16,7 +16,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * CONTAINER — mixin on {@link ChestBlockEntity} start/stop open. Only covers
  * chests + trapped chests + ender chests (via inheritance). Barrels/shulkers
  * use RandomizableContainerBlockEntity; for v1.2.0 we ship chest coverage only —
- * TODO(v1.2.1): add BarrelBlockEntity / ShulkerBoxBlockEntity mixins.
+ * NOTE(v1.2.6): non-chest container coverage (barrel, shulker, hopper) is
+ * handled via the slot-level AbstractContainerMenuMixin path so this chest
+ * mixin intentionally stays scoped to chest / trapped / ender chest.
  */
 @Mixin(ChestBlockEntity.class)
 public abstract class ContainerMixin {

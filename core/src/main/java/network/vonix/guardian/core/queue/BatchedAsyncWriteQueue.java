@@ -191,6 +191,19 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         return java.util.Collections.unmodifiableMap(snap);
     }
 
+    /**
+     * Immutable, non-draining snapshot of actions still waiting in the in-memory
+     * ring buffer. This is intentionally a best-effort diagnostic/API view: it
+     * does not include the worker's currently-held batch and may race with the
+     * worker flushing items immediately after the snapshot is taken.
+     *
+     * @return queued actions in queue iteration order
+     * @since 1.2.6
+     */
+    public List<Action> pendingSnapshot() {
+        return List.copyOf(queue);
+    }
+
     @Override
     public void close() {
         drainAndFlush(30_000L);
@@ -198,7 +211,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
 
     @Override
     public void setPaused(boolean p) {
+        boolean wasPaused = this.paused;
         this.paused = p;
+        // When transitioning into paused state, wake the worker so it exits any
+        // in-flight poll() and observes the flag before draining more items.
+        // Without this an item submitted immediately after setPaused(true) can
+        // still race the worker's already-armed poll() and get pulled out of
+        // the ring buffer, breaking the `paused = pipeline frozen` contract
+        // pendingSnapshot() / queueLookup() rely on.
+        if (p && !wasPaused && !shutdown) {
+            worker.interrupt();
+        }
     }
 
     @Override
@@ -228,6 +251,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 long pollMs = remainingNs > 0
                         ? Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNs))
                         : 1L;
+                // When paused, don't drain the ring buffer — leaving items in
+                // `queue` preserves the diagnostic contract of pendingSnapshot()
+                // (so operators using `/vg consumer pause` + queueLookup see the
+                // in-flight tail) and matches the "paused = pipeline frozen"
+                // intuition. shutdown always overrides paused so drainAndFlush()
+                // still completes.
+                if (paused && !shutdown) {
+                    try { Thread.sleep(pollMs); } catch (InterruptedException ignored) {}
+                    if (shutdown) break;
+                    continue;
+                }
                 Action head = queue.poll(pollMs, TimeUnit.MILLISECONDS);
                 if (head != null) {
                     batch.add(head);

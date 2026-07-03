@@ -188,8 +188,17 @@ class GuardianAPIExtendedTest {
     }
 
     @Test
-    void queueLookup_returns_empty_stub() {
-        assertThat(guardian.api().queueLookup("minecraft:overworld", 0, 0, 0)).isEmpty();
+    void queueLookup_filters_pending_queue_snapshot() {
+        Action queued = new Action(-1L, 100L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "Alice",
+                "minecraft:overworld", 10, 65, 20, "minecraft:stone", null, 1, false, null);
+        Action other = new Action(-1L, 100L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "Bob",
+                "minecraft:overworld", 11, 65, 20, "minecraft:dirt", null, 1, false, null);
+        guardian.queue().setPaused(true);
+        guardian.queue().submit(queued);
+        guardian.queue().submit(other);
+
+        assertThat(guardian.api().queueLookup("minecraft:overworld", 10, 65, 20))
+            .containsExactly(queued);
     }
 
     @Test

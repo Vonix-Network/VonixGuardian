@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-07-03
+
+### Added
+
+- **Blockstate rollback fidelity** — `WorldMutator.setBlock` on all Fabric and Forge/NeoForge cells now parses `targetMeta` block-state properties (`facing=`, `waterlogged=`, `half=`, `axis=`, etc.) so rollback and restore reapply the actual pre-mutation blockstate instead of the block's default state. Unknown properties are silently skipped so mismatched meta blobs never block rollback.
+- **Position-anchored query token** — the shared `QueryParser` now recognises `p:x,y,z`, letting inspector-style callers pin a lookup to a specific block regardless of caller position. `/vg` inspector lookups across all 8 loader cells now use `p:` instead of relying on caller radius, matching CoreProtect inspector semantics.
+- **Async queue introspection** — `BatchedAsyncWriteQueue.pendingSnapshot()` exposes an immutable non-draining view of still-buffered actions, backing a real `VonixGuardianAPI.queueLookup(worldId, x, y, z)` implementation for third-party mods that need the pre-flush tail.
+
+### Changed
+
+- **VonixGuardianAPI.queueLookup** now returns pending queue rows filtered by `(worldId, x, y, z)` instead of always returning an empty list.
+- **Stale TODO cleanup** — retired stale `TODO(v1.2.0/W4-04/W4-06/A9-style)` labels in FabricEvents / ForgeEvents / NeoForgeEvents that were already resolved by shipped mixin waves (W5-08). Comment text was relabelled `HISTORY(...)` so future audits distinguish live follow-up from wave history.
+- **ContainerMixin scope note** — non-chest container coverage (barrel, shulker, hopper) is served by the slot-level `AbstractContainerMenu` mixin path; the chest ContainerMixin now documents its intentional scope instead of implying missing coverage.
+
 ## [1.2.5] - 2026-07-02
 
 ### Added

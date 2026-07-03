@@ -735,7 +735,7 @@ public final class NeoForgeEvents {
 
     // ====================================================================== buckets
 
-    // TODO(1.0.5): NeoForge 21.1 removed the public FillBucketEvent that 1.20.1 Forge
+    // HISTORY(1.0.5): NeoForge 21.1 removed the public FillBucketEvent that 1.20.1 Forge
     // exposes — the bucket fill/empty path is now handled internally by BucketItem /
     // CommonHooks#onFillBucket without a fire-able event. CoreProtect-parity bucket
     // logging here requires either (a) a Mixin into BucketItem#use, or (b) listening
@@ -782,7 +782,7 @@ public final class NeoForgeEvents {
      * <p>{@link AttackEntityEvent} fires the tick a player hits an entity; if the
      * target is a {@link HangingEntity} vanilla will remove it on that same swing.
      * We log the break here with the attacking player as actor.
-     * <p>TODO(A9-style): arrow / explosion / mob-caused hanging breaks need a mixin
+     * <p>HISTORY(A9-style): arrow / explosion / mob-caused hanging breaks need a mixin
      * on {@code HangingEntity#kill()} or {@code HangingEntity#hurt}; NeoForge
      * exposes no direct event for those paths. Deferred to the A9-mixin wave.
      */
@@ -807,7 +807,7 @@ public final class NeoForgeEvents {
 
     // ====================================================================== vanilla block-state changes (Burn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay)
 
-    // TODO(A9-style, W2-02): NeoForge exposes NO fire-able events for
+    // HISTORY(A9-style, W2-02): NeoForge exposes NO fire-able events for
     //   BlockBurnEvent / BlockIgniteEvent / BlockFadeEvent / BlockFormEvent /
     //   BlockSpreadEvent / BlockDispenseEvent / LeavesDecayEvent — those are
     //   Bukkit/Spigot APIs; NeoForge only patches the underlying vanilla classes

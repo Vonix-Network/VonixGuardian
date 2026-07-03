@@ -420,10 +420,9 @@ public final class RollbackEngine {
             case EXPLOSION ->
                 restoreExplosion(a);
             // --- v0.1.0 expansion: block events ---
-            // ENTITY_CHANGE_BLOCK: targetMeta carries oldBlockId (per EventSubmitter.submitEntityChangeBlock).
+            // ENTITY_CHANGE_BLOCK: targetId carries oldBlockId; targetMeta carries newBlockId.
             case ENTITY_CHANGE_BLOCK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetMeta() != null ? a.targetMeta() : AIR, null);
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
             // Block was destroyed/changed-away — inverse is to restore the original block.
             case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
@@ -488,9 +487,10 @@ public final class RollbackEngine {
             case EXPLOSION ->
                 clearExplosionBlocks(a);
             // --- v0.1.0 expansion: block events ---
-            // ENTITY_CHANGE_BLOCK: re-apply the newBlockId carried in targetId.
+            // ENTITY_CHANGE_BLOCK: re-apply the newBlockId carried in targetMeta.
             case ENTITY_CHANGE_BLOCK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetMeta() != null ? a.targetMeta() : AIR, null);
             // Block was originally destroyed/changed-away — restoring means re-destroying.
             case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);

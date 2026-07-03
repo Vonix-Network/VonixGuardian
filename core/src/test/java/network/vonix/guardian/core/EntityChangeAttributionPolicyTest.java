@@ -1,6 +1,8 @@
 package network.vonix.guardian.core;
 
+import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.rollback.WorldMutator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -54,6 +56,27 @@ class EntityChangeAttributionPolicyTest {
 
             assertThat(g.submitted()).isEqualTo(1L);
             assertThat(g.gated()).isZero();
+        } finally {
+            g.close();
+        }
+    }
+
+    @Test
+    void recordedEntityChangeCarriesOldAndNewBlocksSeparatelyForRollback(@TempDir Path tmp) throws Exception {
+        Guardian g = Guardian.boot(config(tmp, List.of("isleofberk:night_fury"), false), tmp, NOOP_MUTATOR, uuid -> 0, SYNC, DAEMONS);
+        try {
+            UUID owner = UUID.randomUUID();
+            g.submitEntityChangeBlock(owner, "Alice", "minecraft:overworld", 1, 64, 1,
+                    "minecraft:grass_block", "minecraft:air", "#mob:isleofberk:night_fury");
+            g.queue().drainAndFlush(5_000L);
+
+            List<Action> rows = g.dao().query(QueryFilter.empty(), 0, 10);
+
+            assertThat(rows).hasSize(1);
+            Action row = rows.get(0);
+            assertThat(row.targetId()).isEqualTo("minecraft:grass_block");
+            assertThat(row.targetMeta()).isEqualTo("minecraft:air");
+            assertThat(row.sourceTag()).isEqualTo("#mob:isleofberk:night_fury");
         } finally {
             g.close();
         }

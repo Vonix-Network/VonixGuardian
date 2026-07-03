@@ -132,6 +132,7 @@ public final class QueryParser {
             case "u" -> parseUserTok(tok, value, b);
             case "t" -> parseTimeTok(tok, value, b);
             case "r" -> parseRadiusTok(tok, value, b, ctx);
+            case "p" -> parsePositionTok(tok, value, b);
             case "a" -> parseActionTok(tok, value, b);
             case "i" -> parseIdentList(tok, value, b, /*include*/ true);
             case "e" -> parseIdentList(tok, value, b, /*include*/ false);
@@ -330,7 +331,31 @@ public final class QueryParser {
             throw bad(tok, Messages.get("query.error.radius_no_position"));
         }
         b.radius(r);
-        b.center(ctx.x(), ctx.y(), ctx.z());
+        if (b.centerX() == null || b.centerY() == null || b.centerZ() == null) {
+            b.center(ctx.x(), ctx.y(), ctx.z());
+        }
+    }
+
+    // --- p: -----------------------------------------------------------------
+
+    /**
+     * Explicit center position for inspector/API paths that know the clicked
+     * block. Syntax is {@code p:x,y,z}. It intentionally only sets the center;
+     * callers still choose the radius with {@code r:<n>}.
+     */
+    private void parsePositionTok(String tok, String value, QueryFilter.Builder b) {
+        String[] parts = splitComma(value);
+        if (parts.length != 3) {
+            throw bad(tok, "position token must be p:x,y,z");
+        }
+        try {
+            int x = Integer.parseInt(parts[0].trim());
+            int y = Integer.parseInt(parts[1].trim());
+            int z = Integer.parseInt(parts[2].trim());
+            b.center(x, y, z);
+        } catch (NumberFormatException e) {
+            throw bad(tok, "position token must contain integer x,y,z coordinates");
+        }
     }
 
     // --- a: -----------------------------------------------------------------

@@ -46,7 +46,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
     public static final int API_VERSION = 1;
 
     /** Plugin display version — mirrors {@code gradle.properties#mod_version}. */
-    public static final String PLUGIN_VERSION = "1.2.5";
+    public static final String PLUGIN_VERSION = "1.2.6";
 
     private final Guardian guardian;
 
@@ -255,11 +255,21 @@ public final class GuardianAPI implements VonixGuardianAPI {
     @Override
     public List<Action> queueLookup(String worldId, int x, int y, int z) {
         Objects.requireNonNull(worldId, "worldId");
-        // TODO(v1.2.x): BatchedAsyncWriteQueue does not currently expose a
-        // pendingSnapshot() method. When queue introspection is added, filter
-        // its snapshot by (worldId, x, y, z) here. Until then this always
-        // returns empty — the javadoc contract permits that.
-        return List.of();
+        // Filter the async queue's in-memory snapshot by (worldId, x, y, z).
+        // pendingSnapshot() is a copy — safe to iterate without draining the
+        // queue. Rows that have already flushed to storage are visible through
+        // the normal DAO lookups; this method is intentionally scoped to the
+        // still-buffered tail.
+        List<Action> pending = guardian.queue().pendingSnapshot();
+        if (pending.isEmpty()) return List.of();
+        List<Action> out = new ArrayList<>();
+        for (Action a : pending) {
+            if (a == null) continue;
+            if (!worldId.equals(a.worldId())) continue;
+            if (a.x() != x || a.y() != y || a.z() != z) continue;
+            out.add(a);
+        }
+        return out;
     }
 
     private List<Action> userLookup(UUID user, long withinSeconds, int limit, ActionType... kinds) {

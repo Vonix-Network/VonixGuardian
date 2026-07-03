@@ -6,6 +6,7 @@ package network.vonix.guardian.core;
 
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.event.PreLogEventHook;
 import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.rollback.WorldMutator;
 import org.junit.jupiter.api.DisplayName;
@@ -179,6 +180,29 @@ class GuardianReloadTest {
             assertThat(r.errors()).isEmpty();
             assertThat(r.hotSwapped()).isEmpty();
             assertThat(r.requiresRestart()).isEmpty();
+        } finally {
+            g.close();
+        }
+    }
+
+    @Test
+    @DisplayName("reload preserves the terminal PreLogEvent hook")
+    void reloadPreservesPreLogHook(@TempDir Path tmp) throws Exception {
+        Path cfgPath = tmp.resolve("config.json");
+        GuardianConfig initial = minimalCfg(tmp, "aqua", 7, false, 86_400L);
+        ConfigLoader.save(cfgPath, initial);
+
+        Guardian g = Guardian.boot(ConfigLoader.load(cfgPath), tmp, NOOP_MUTATOR, ZERO_OP, SYNC, DAEMONS);
+        try {
+            g.setConfigPath(cfgPath);
+            assertThat(g.gate().hooks()).anyMatch(PreLogEventHook.class::isInstance);
+
+            Guardian.ReloadResult r = g.reloadConfig(cfgPath);
+
+            assertThat(r.errors()).isEmpty();
+            assertThat(g.gate().hooks()).anyMatch(PreLogEventHook.class::isInstance);
+            assertThat(g.gate().hooks().get(g.gate().hooks().size() - 1))
+                .isInstanceOf(PreLogEventHook.class);
         } finally {
             g.close();
         }

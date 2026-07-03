@@ -60,7 +60,7 @@ import java.util.concurrent.Executors;
  * container open/close, fill bucket, item toss/pickup/craft, sign edit, fire/ice
  * ticks, dispense, leaves decay, universal mob-griefing) require mixins and are
  * scheduled for W4-04 / W4-06. Each gap is marked with an explicit
- * {@code TODO(v1.2.0): mixin — W4-04/W4-06} block below so the audit surface stays
+ * {@code HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08)} block below so the audit surface stays
  * honest.
  */
 public final class FabricEvents {
@@ -146,8 +146,8 @@ public final class FabricEvents {
         //     currently covers ChestBlockEntity only)
         //   - Non-player hanging break (arrow/explosion/mob)
         //
-        // (original TODO block, kept for history) ================================================================== Fabric-API gaps
-        // TODO(v1.2.0): mixin — W4-04/W4-06
+        // (original wave-note block, kept for history) ================================================================== Fabric-API gaps
+        // HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08)
         //   Fabric API has NO native event for the following. Each requires a
         //   dedicated mixin; wiring is intentionally left off so the audit stays
         //   honest (nothing "kind of" logs these).
@@ -397,7 +397,7 @@ public final class FabricEvents {
      * damage-history resolver so a player-placed frame gets the placer as actor;
      * synthetic sources fall back to {@link Sentinel#UNKNOWN}.
      *
-     * <p>TODO(v1.2.0): mixin — W4-04/W4-06. Without ENTITY_LOAD exposing a
+     * <p>HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08). Without ENTITY_LOAD exposing a
      * loaded-from-disk flag we cannot suppress chunk-reload replays; a mixin on
      * {@code HangingEntity#(BlockPos)} or {@code Level#addFreshEntity} lets us
      * filter properly.
@@ -428,7 +428,7 @@ public final class FabricEvents {
      * {@link AttackEntityCallback} fires the tick a player left-clicks an entity;
      * if the target is a {@link HangingEntity} vanilla removes it on that swing.
      *
-     * <p>TODO(v1.2.0): mixin — W4-04/W4-06 — arrow / explosion / mob-caused
+     * <p>HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08) — arrow / explosion / mob-caused
      * hanging breaks need a mixin on {@code HangingEntity#kill()} or
      * {@code HangingEntity#hurt}; no Fabric API surface for those paths.
      */

@@ -112,7 +112,7 @@ class RollbackExpansionParityTest {
         assertThat(mutator.calls).containsExactly(
             "setBlock|w|1|64|1|target-BURN|meta-BURN",
             "setBlock|w|2|64|2|minecraft:air|null",
-            "setBlock|w|3|64|3|meta-ENTITY_CHANGE_BLOCK|null",
+            "setBlock|w|3|64|3|target-ENTITY_CHANGE_BLOCK|null",
             "removeFromContainer|w|4|64|4|target-HOPPER_PUSH|4",
             "giveOrDrop|w|5|64|5|target-HOPPER_PULL|5|meta-HOPPER_PULL"
         );

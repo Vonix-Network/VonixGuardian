@@ -226,6 +226,25 @@ class QueryParserTest {
     }
 
     @Test
+    void parsesExplicitPositionTokenForInspectorLookups() {
+        QueryFilter f = parser.parse("p:-12,70,345 r:1", CTX);
+        assertThat(f.centerX()).isEqualTo(-12);
+        assertThat(f.centerY()).isEqualTo(70);
+        assertThat(f.centerZ()).isEqualTo(345);
+        assertThat(f.radius()).isEqualTo(1);
+    }
+
+    @Test
+    void rejectsMalformedPositionToken() {
+        assertThatThrownBy(() -> parser.parse("p:1,2", CTX))
+            .isInstanceOf(QueryParseException.class)
+            .hasMessageContaining("position");
+        assertThatThrownBy(() -> parser.parse("p:1,two,3", CTX))
+            .isInstanceOf(QueryParseException.class)
+            .hasMessageContaining("position");
+    }
+
+    @Test
     void numericRadiusFromConsoleFails() {
         assertThatThrownBy(() -> parser.parse("r:20", null))
             .isInstanceOf(QueryParseException.class)

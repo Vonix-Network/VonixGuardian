@@ -139,8 +139,8 @@ public final class FabricEvents {
         //     currently covers ChestBlockEntity only)
         //   - Non-player hanging break (arrow/explosion/mob)
         //
-        // (original TODO block, kept for history) ================================================================== Fabric-API gaps
-        // TODO(v1.2.0): mixin — W4-04/W4-06
+        // (original wave-note block, kept for history) ================================================================== Fabric-API gaps
+        // HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08)
         //   Fabric API 0.77.0+1.18.2 has NO native event for the following. Each
         //   requires a dedicated mixin.
         //
@@ -284,7 +284,7 @@ public final class FabricEvents {
     /**
      * Fires only when the killer is a non-null {@link Entity} (covers PvP, mob
      * kills, and projectile kills). Natural deaths (fall, drown, lava, etc.) are
-     * NOT covered here — they need a Mixin (see W4-04 TODO block above).
+     * NOT covered here — they need a Mixin (see W4-04 HISTORY block above).
      */
     private static void onAfterKilledOther(net.minecraft.server.level.ServerLevel level,
                                            Entity killer,
@@ -361,7 +361,7 @@ public final class FabricEvents {
      * damage-history resolver so a player-placed frame gets the placer as actor;
      * synthetic sources fall back to {@link Sentinel#UNKNOWN}.
      *
-     * <p>TODO(v1.2.0): mixin — W4-04/W4-06 — without ENTITY_LOAD exposing a
+     * <p>HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08) — without ENTITY_LOAD exposing a
      * loaded-from-disk flag we cannot suppress chunk-reload replays.
      */
     private static void onHangingLoad(Entity e, net.minecraft.server.level.ServerLevel level) {
@@ -390,7 +390,7 @@ public final class FabricEvents {
      * {@link AttackEntityCallback} fires the tick a player left-clicks an entity;
      * if the target is a {@link HangingEntity} vanilla removes it on that swing.
      *
-     * <p>TODO(v1.2.0): mixin — W4-04/W4-06 — arrow / explosion / mob-caused
+     * <p>HISTORY(v1.2.0): mixin — W4-04/W4-06 (delivered W5-08) — arrow / explosion / mob-caused
      * hanging breaks need a mixin on {@code HangingEntity#kill()}.
      */
     private static InteractionResult onAttackEntity(Player player,

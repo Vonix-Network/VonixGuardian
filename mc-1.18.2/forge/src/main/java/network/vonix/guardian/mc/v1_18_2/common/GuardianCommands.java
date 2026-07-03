@@ -343,9 +343,13 @@ public final class GuardianCommands {
 
         /** Run a lookup at a specific block position (used by the inspector). */
         public static void atPos(Guardian g, int x, int y, int z, String worldId, CommandSourceStack src) {
-            String f = "r:1 t:30d";
-            // TODO: extend QueryParser with a `p:x,y,z` token for true position lookups.
-            runWithFilter(src, g, f + " r:#world_" + worldId, 1, DEFAULT_PAGE_SIZE);
+            // Position-anchored inspector lookup. `p:x,y,z` pins the search
+            // center to the clicked block regardless of caller position,
+            // `r:0` narrows the window to that exact block, and
+            // `r:#world_<key>` scopes the query to the block's world so
+            // cross-world coord collisions don't leak in.
+            String f = "p:" + x + "," + y + "," + z + " r:0 t:30d r:#world_" + worldId;
+            runWithFilter(src, g, f, 1, DEFAULT_PAGE_SIZE);
         }
 
         /** Back-compat overload — kept for existing callers (inspector). */

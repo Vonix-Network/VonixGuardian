@@ -192,10 +192,6 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 tf);
 
         EventGate gate = new EventGate(config.actions());
-        // W3-B11: public cancellable pre-log hook. Registered LAST so that
-        // cheaper built-in hooks (per-world overrides — B5, blacklist.txt — B6)
-        // get first crack before we pay a native-bus dispatch.
-        gate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
         RollbackEngine rollback = new RollbackEngine(dao, mutator, mainThreadExec);
         PurgeEngine purgeEng = new PurgeEngine(dao);
@@ -255,6 +251,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         } catch (Exception e) {
             LOG.warn(MARKER, "blacklist.txt load failed (non-fatal)", e);
         }
+        // W3-B11: public cancellable pre-log hook. Registered LAST so that
+        // cheaper built-in hooks (per-world overrides — B5, blacklist.txt — B6)
+        // get first crack before we pay a native-bus dispatch.
+        gate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
         return g;
     }
 
@@ -543,6 +543,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             LOG.warn(MARKER, "blacklist.txt reload failed", e);
         }
 
+        // W3-B11: preserve the public cancellable pre-log hook on the rebuilt
+        // EventGate. Keep it terminal so cheaper per-world/blacklist hooks run
+        // before native event-bus dispatches after /vg reload just like at boot.
+        this.gate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
+
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
         // (build a new JsonLinesLogFile at the same directory).
         try {
@@ -818,10 +823,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 return;
             }
         }
-        String target = (oldBlockId != null ? oldBlockId : "?") + " -> "
-                + (newBlockId != null ? newBlockId : "?");
+        // RollbackEngine contract: targetId is the pre-change block, targetMeta
+        // is the post-change block. This keeps EventGate's block blacklist keyed
+        // to the affected original block (not the frequent minecraft:air result),
+        // while still giving restore enough data to re-apply the mutation.
         submit(seed(ActionType.ENTITY_CHANGE_BLOCK, actorUuid, actorName, worldId)
-                .position(x, y, z).targetId(target).sourceTag(sourceTag).build());
+                .position(x, y, z)
+                .targetId(oldBlockId != null ? oldBlockId : "minecraft:air")
+                .targetMeta(newBlockId != null ? newBlockId : "minecraft:air")
+                .sourceTag(sourceTag)
+                .build());
     }
 
     // -------------------------------------------------------------------- expansion: container/item

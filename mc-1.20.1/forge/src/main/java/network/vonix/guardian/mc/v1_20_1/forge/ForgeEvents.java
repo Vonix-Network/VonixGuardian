@@ -814,7 +814,7 @@ public final class ForgeEvents {
      * <p>{@link AttackEntityEvent} fires the tick a player hits an entity; if the
      * target is a {@link HangingEntity} vanilla will remove it on that same swing.
      * We log the break here with the attacking player as actor.
-     * <p>TODO(A9-style): arrow / explosion / mob-caused hanging breaks need a mixin
+     * <p>HISTORY(A9-style): arrow / explosion / mob-caused hanging breaks need a mixin
      * on {@code HangingEntity#kill()} or on {@code HangingEntity#hurt}; Forge/NeoForge
      * expose no direct event for those paths. Deferred to the A9-mixin wave.
      */
@@ -839,7 +839,7 @@ public final class ForgeEvents {
 
     // ====================================================================== vanilla block-state changes (Burn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay)
 
-    // TODO(A9-style, W2-02): Forge exposes NO fire-able events for
+    // HISTORY(A9-style, W2-02): Forge exposes NO fire-able events for
     //   BlockBurnEvent / BlockIgniteEvent / BlockFadeEvent / BlockFormEvent /
     //   BlockSpreadEvent / BlockDispenseEvent / LeavesDecayEvent — those are
     //   Bukkit/Spigot APIs; Forge/NeoForge only patch the underlying vanilla
