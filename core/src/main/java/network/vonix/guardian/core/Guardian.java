@@ -14,7 +14,6 @@ import network.vonix.guardian.core.blacklist.BlacklistMatcher;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.PerWorldConfigStore;
-import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 import network.vonix.guardian.core.event.BlacklistFileHook;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
@@ -582,8 +581,38 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         return name != null ? name : Sentinel.UNKNOWN;
     }
 
+    /**
+     * Per-server-thread scratch {@link ActionBuilder} used by {@link #seed} on the hot path.
+     *
+     * <p>v1.3.0 W2 allocation cut: at hot rates (piston farm, fire spread, entity spam,
+     * hoppers) the old {@code new ActionBuilder()} in {@code seed()} was allocating a fresh
+     * 16-field mutable builder + object header per event on the server thread — MB/s of
+     * short-lived garbage feeding GC pressure. This {@code ThreadLocal} keeps one builder
+     * per producer thread and calls {@link ActionBuilder#reset()} to hand it back cleared.
+     * Immutable {@link Action} objects produced by {@link ActionBuilder#build()} are still
+     * fresh per submit (the DAO holds the reference in a batch); we only recycle the
+     * mutable scratch, which is the amortizable half of the pair.</p>
+     *
+     * <p>Tradeoff: Each unique producer thread parks its {@code ActionBuilder} for the
+     * lifetime of the thread; on a Minecraft server that means one instance for the server
+     * thread plus at most one per worker on any thread pool that routes into
+     * {@link EventSubmitter}. In practice: server thread + optional AI-executor + a handful
+     * of async producers. The steady-state memory cost is 8 * &lt; 200 bytes.</p>
+     */
+    private static final ThreadLocal<ActionBuilder> SCRATCH_BUILDER =
+            ThreadLocal.withInitial(ActionBuilder::new);
+
+    /**
+     * Package-visible accessor for regression tests that need to assert the scratch builder
+     * is stable per thread (see {@code ActionBuilderPoolingTest}). Not part of the public
+     * API surface.
+     */
+    static ActionBuilder scratchBuilderForCurrentThread() {
+        return SCRATCH_BUILDER.get();
+    }
+
     private ActionBuilder seed(ActionType type, UUID actorUuid, String actorName, String worldId) {
-        return new ActionBuilder()
+        return SCRATCH_BUILDER.get().reset()
                 .type(type)
                 .actorUuid(actorUuid)
                 .actorName(orUnknown(actorName))
@@ -595,18 +624,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         if (a == null) {
             return;
         }
-        // ---- v1.3.0 W4: mixin hot-event kill-switch ----
-        // When actions.mixinHotEvents=false, bypass any action whose sourceTag was tagged
-        // by a hot-tick mixin ("#fire", "#natural", "#dispenser" prefixes agreed with W1a/b/c).
-        // This lets operators disable the mixin pipeline under load without an EventGate rebuild.
-        // NOTE(W2): move this predicate into EventGate as a short-circuiting built-in check so
-        // shouldLog(a) can bail before any hook chain work. Keeping it here for W4 keeps the
-        // change surface small and doesn't touch EventGate wiring (W2 owns Guardian.java and
-        // will fold this into a proper gate step during its allocation-cut pass).
-        if (!config.actions().mixinHotEvents() && MixinHotEventFilter.isMixinSourced(a.sourceTag())) {
-            gated.incrementAndGet();
-            return;
-        }
+        // v1.3.0 W2: mixin hot-event kill-switch is now folded into EventGate.shouldLog
+        // (see EventGate.mixinHotEventsEnabled + MixinHotEventFilter). Keeps Guardian.submit
+        // free of gate-adjacent policy checks and lets the gate short-circuit before any
+        // hook chain traversal work.
         if (!gate.shouldLog(a)) {
             gated.incrementAndGet();
             return;
