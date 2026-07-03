@@ -7,6 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-07-03
+
+**Wave-Y integration close-out.** Every X-series (v1.3.1) knob and producer
+that shipped as validated-but-partially-unwired is now end-to-end live.
+Round-2 post-1.3.1 audit surfaced three regressions where the boot / reload
+paths never actually plumbed the operator knob into the running engine
+(P0-1, P1-1, P2-4); Y3 closes all of them and pins the fix with regression
+tests. Y1 activates the X1 NBT surface all the way from producer to
+migration; Y2 restores Forge cell event-bus parity and drops the last
+orphan mixins; Y5 amortises attribution-memory eviction so it can't stall
+the server thread on Berk-scale traffic.
+
+### Added
+
+- **Y1 — NBT surface activation end-to-end.** X1 (v1.3.1) shipped the
+  Schema V5 columns, the `config.storage.persistNbt` toggle, and the
+  producer-side setters — but nothing on the loader side actually captured
+  NBT into a live event. Y1 wires the capture on every producer path
+  (block placements, block breaks, entity kills, container operations,
+  item drops), lands the `V5NbtFidelity` migration under the coreonly and
+  all three mc-1.21.1 loader profiles, and pins the round-trip through
+  rollback with new regression coverage. When `storage.persistNbt=true`,
+  a diamond-sword-with-Sharpness-V now round-trips through
+  `/vg rollback`; when the toggle is off, the hot path stays
+  allocation-free.
+- **Y2 — Forge cell event-bus parity + orphan mixin cleanup.** The Forge
+  loader cells (`mc-1.21.1/forge` etc.) now dispatch producer events
+  through the same event-bus contract the NeoForge cells use, closing a
+  loader-specific gap where certain block-change events fired on
+  NeoForge/Fabric but not Forge. Also drops the last three orphan
+  mixins retained during v1.3.1's parallel waves that had been superseded
+  by X2 and X9's dedicated mixins.
+- **Y3 — Reload + boot config plumbing (this section is the P0-1 / P1-1 /
+  P2-4 close-out).**
+  - `Guardian.reloadConfig` now builds its merged config via the canonical
+    **12-arg** `GuardianConfig(...)` constructor. Pre-Y3 it used the 9-arg
+    backward-compat overload which silently backfilled `storage`, `rollback`,
+    and `language` with `defaults()` — meaning every `/vg reload` reverted
+    operator-configured `storage.persistNbt=true` to `false`, snapped
+    `rollback.explosionSupplementalReach` back to 16, and forced
+    `language` back to `"en_us"`.
+  - `Guardian.boot` now passes `config.rollback().explosionSupplementalReach()`
+    into a 4-arg `new RollbackEngine(...)`. Pre-Y3 the 3-arg constructor
+    hard-coded `MAX_TNT_REACH=16`, so the X8 config knob was validated but
+    ignored at runtime.
+  - `RollbackEngine.explosionSupplementalReach` is now `volatile`, with a
+    `setExplosionSupplementalReach(int)` setter and a
+    `getExplosionSupplementalReach()` accessor. `Guardian.reloadConfig`
+    calls the setter after every merge, so the running engine picks up the
+    new reach without a restart and without a torn read racing a concurrent
+    `/vg rollback`.
+  - `AutoPurgeScheduler.applyConfig(GuardianConfig)` (new). Cancels the
+    pending `nextTask`, updates `retentionSeconds` / `runTime` /
+    `enabled` (all now `volatile`), and reschedules under the fresh
+    `HH:mm`. `Guardian.reloadConfig` invokes it when
+    `cfg.purge()` changed — pre-Y3 the daemon kept its boot-time schedule
+    until server restart even though `/vg status` reported the new value.
+  - `/vg reload` now records `storage.persistNbt`,
+    `rollback.explosionSupplementalReach`, and `language` in the
+    hot-swapped diff so operators get the same feedback for these knobs
+    as for `theme` or `purge`.
+- **Y5 — Attribution memory amortization.** `TntPrimeMemory.hardEvict` and
+  `FluidSourceMemory.lookup` now use the DamageHistory-style
+  `evictCounter % STRIDE` gate, capping the second-pass scan and letting
+  the map overshoot the cap by a bounded slice. Removes the two remaining
+  O(n) scans on the server thread called out in the round-2 audit; keeps
+  memory ceilings unchanged.
+
+### Changed
+
+- Boot: `Guardian.boot` line 226 uses the 4-arg `RollbackEngine`
+  constructor (see Y3 P1-1 close-out).
+- Reload: `Guardian.reloadConfig` uses the 12-arg canonical
+  `GuardianConfig` constructor (see Y3 P0-1 close-out).
+- `AutoPurgeScheduler`: `retentionSeconds`, `runTime`, and `enabled`
+  fields changed from `final` to `volatile` to support `applyConfig`.
+- `RollbackEngine.explosionSupplementalReach` changed from `final int` to
+  `volatile int` to support hot-swap on `/vg reload`.
+- Version bump `1.3.1 → 1.3.2` (`gradle.properties#mod_version`,
+  `GuardianAPI.PLUGIN_VERSION`).
+
+### Fixed
+
+- **P0-1 (round-2 audit)** — `/vg reload` no longer silently drops
+  `storage`, `rollback`, and `language` on every reload.
+- **P1-1 (round-2 audit)** — `rollback.explosionSupplementalReach` is now
+  actually applied to the running engine, at boot and on reload. Modded
+  servers running mega-TNT mods whose affected-list reaches more than 16
+  blocks no longer silently miss rows in rollback.
+- **P2-4 (round-2 audit)** — `/vg reload` now reschedules the running
+  auto-purge daemon under the new `autoPurgeTime` /
+  `autoPurgeSeconds`. Operators editing the config to move the nightly
+  run out of a raid window no longer have to restart to pick it up.
+
+### Regression tests
+
+- `ReloadPreservesSectionsTest` — pins `storage.persistNbt`,
+  `rollback.explosionSupplementalReach`, and `language` across
+  `/vg reload`.
+- `ReloadRebuildsAutoPurgeTest` — pins `applyConfig` reschedule /
+  disable / no-op paths against the same live `AutoPurgeScheduler`.
+- `ReloadUpdatesRollbackReachAtomicTest` — pins the `volatile`
+  publication contract on `RollbackEngine.explosionSupplementalReach`
+  under a hot writer / hot reader race and the setter's `< 0`
+  validation.
+
+### Deferred to v1.3.3
+
+- P1-2 / P1-3 shape-only findings in `TntPrimeMemory` (dead constructor
+  argument, second-pass sweep bounds) — non-regression, filed for the
+  next v1.3.3 wave.
+- P1-4 `FluidSourceMemory` empty-map fast-path (`byPos.isEmpty()` short
+  circuit) — bounded impact at 1.3.2 traffic scale, deferred with Y5's
+  amortisation absorbing the current hot path.
+
 ## [1.3.1] - 2026-07-03
 
 **Parity + perf close-out.** Closes v1.3.0's audit findings across nine parallel

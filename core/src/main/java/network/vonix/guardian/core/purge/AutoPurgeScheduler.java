@@ -74,11 +74,15 @@ public final class AutoPurgeScheduler {
 
     private final PurgeEngine purgeEngine;
     private final GuardianDao dao;
-    private final long retentionSeconds;
-    private final LocalTime runTime;
+    // v1.3.2 Y3: retentionSeconds / runTime / enabled were final in 1.3.1. They
+    // are now volatile so applyConfig(...) can hot-swap them without rebuilding
+    // the scheduler on /vg reload. zone + clock stay final — swapping timezone
+    // mid-run is a restart concern (nightly cadence would smear).
+    private volatile long retentionSeconds;
+    private volatile LocalTime runTime;
     private final ZoneId zone;
     private final Clock clock;
-    private final boolean enabled;
+    private volatile boolean enabled;
 
     private final AtomicLong totalPurgedSinceRestart = new AtomicLong();
     private final AtomicLong lastRunDeleted = new AtomicLong(-1L);
@@ -238,6 +242,102 @@ public final class AutoPurgeScheduler {
         } finally {
             mutex.unlock();
         }
+    }
+
+    /**
+     * Hot-swap the running scheduler's retention window and daily run time
+     * (v1.3.2 Y3, P2-4 close-out).
+     *
+     * <p>Called from {@code Guardian.reloadConfig} when
+     * {@code cfg.purge().autoPurgeSeconds()} or
+     * {@code cfg.purge().autoPurgeTime()} changed. The previous behaviour
+     * (pre-1.3.2) enters the new value into the merged config record but leaves
+     * the running daemon on its original schedule until server restart — an
+     * operator who edits {@code autoPurgeTime} to move the nightly run out of
+     * a raid window would silently keep hitting the old window.
+     *
+     * <h3>Semantics</h3>
+     * <ul>
+     *   <li>If the scheduler was disabled (retention=0) and the new config
+     *       enables it: build the executor and schedule the first run.</li>
+     *   <li>If the scheduler was enabled and the new config disables it:
+     *       cancel the next task and shut the executor down.</li>
+     *   <li>Otherwise: cancel {@code nextTask} and reschedule under the new
+     *       {@link #runTime}.</li>
+     * </ul>
+     *
+     * <p>{@code retentionSeconds} is captured atomically for the next run —
+     * an in-flight {@link #runNow()} continues under the old cutoff and the
+     * next scheduled run picks up the new one. This avoids splitting a chunked
+     * purge across two retention windows.
+     *
+     * @param cfg reloaded config; must not be {@code null}
+     * @return {@code true} if the schedule was actually changed (nothing was
+     *         a-no-op)
+     * @throws IllegalArgumentException if {@code cfg.purge().autoPurgeTime()}
+     *         is not a valid {@code HH:mm} value
+     * @since 1.3.2 Y3
+     */
+    public synchronized boolean applyConfig(GuardianConfig cfg) {
+        Objects.requireNonNull(cfg, "cfg");
+        long newRetention = cfg.purge().autoPurgeSeconds();
+        String hhmm = cfg.purge().autoPurgeTime();
+        LocalTime newRunTime;
+        try {
+            newRunTime = LocalTime.parse(hhmm);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(
+                "purge.autoPurgeTime is not a valid HH:mm value: " + hhmm, e);
+        }
+        boolean newEnabled = newRetention > 0L;
+
+        boolean sameRetention = newRetention == this.retentionSeconds;
+        boolean sameTime = newRunTime.equals(this.runTime);
+        boolean sameEnabled = newEnabled == this.enabled;
+        if (sameRetention && sameTime && sameEnabled) {
+            return false;
+        }
+
+        // Update state under the sync monitor so a concurrent start()/shutdown()
+        // observes the new values consistently.
+        this.retentionSeconds = newRetention;
+        this.runTime = newRunTime;
+        this.enabled = newEnabled;
+
+        if (!newEnabled) {
+            // Disable path: cancel + tear down executor. Match shutdown() semantics
+            // but leave stopRequested false so a subsequent applyConfig(true) can
+            // re-enable.
+            if (nextTask != null) {
+                nextTask.cancel(false);
+                nextTask = null;
+            }
+            if (exec != null) {
+                exec.shutdown();
+                exec = null;
+            }
+            LOG.info("AutoPurgeScheduler DISABLED via /vg reload (retention set to 0)");
+            return true;
+        }
+
+        // Enabled path — either transition to enabled OR reschedule under new time.
+        if (exec == null) {
+            exec = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "VonixGuardian-AutoPurge");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        if (nextTask != null) {
+            nextTask.cancel(false);
+            nextTask = null;
+        }
+        ZonedDateTime now = ZonedDateTime.now(clock.withZone(zone));
+        ZonedDateTime next = nextRunOf(runTime, zone, now);
+        LOG.info("AutoPurgeScheduler RESCHEDULED via /vg reload (retention={}s, runAt={}, nextRun={})",
+                retentionSeconds, runTime, LOG_FMT.format(next));
+        scheduleAt(next);
+        return true;
     }
 
     /** Graceful shutdown; blocks up to {@code awaitMillis} for in-flight tasks. */

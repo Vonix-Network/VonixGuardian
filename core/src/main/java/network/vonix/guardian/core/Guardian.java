@@ -219,7 +219,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
         EventGate gate = new EventGate(config.actions());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
-        RollbackEngine rollback = new RollbackEngine(dao, mutator, mainThreadExec);
+        RollbackEngine rollback = new RollbackEngine(
+                dao, mutator, mainThreadExec,
+                // v1.3.2 Y3, P1-1 close-out: wire the X8 supplemental-scan reach
+                // knob into the engine at boot. Prior to Y3 this call used the
+                // 3-arg constructor and hard-coded MAX_TNT_REACH=16, so operators
+                // editing rollback.explosionSupplementalReach in config.json got
+                // no effect even though ConfigLoader passed validation.
+                config.rollback().explosionSupplementalReach());
         PurgeEngine purgeEng = new PurgeEngine(dao);
         try {
             rollback.recoverIncompleteBatches();
@@ -509,14 +516,22 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         //      subsections from the OLD instance (they weren't applied) and takes
         //      everything else from FRESH. Then atomically swap the volatile ref
         //      and rebuild dependent state.
+        //
+        // v1.3.2 Y3 (P0-1 close-out): the previous form of this call used the
+        // 9-arg backward-compat GuardianConfig(...) overload, which fills
+        // {@code storage}, {@code rollback}, and {@code language} with defaults
+        // — meaning /vg reload silently reverted storage.persistNbt=true to
+        // false, rollback.explosionSupplementalReach to 16, and language to
+        // "en_us". This now uses the canonical 12-arg form so every operator
+        // knob survives reload.
         GuardianConfig merged = new GuardianConfig(
             old.database(),   // restart-required — keep old
             old.queue(),      // restart-required — keep old
             new GuardianConfig.LogFile(
                 fresh.logFile().enabled(),          // HOT
                 old.logFile().directory(),          // restart
-                old.logFile().gzipRotated(),        // restart
-                old.logFile().retentionDays(),      // restart
+                old.logFile().gzipRotated(),       // restart
+                old.logFile().retentionDays(),     // restart
                 fresh.logFile().forceSyncOnFlush()  // HOT (v1.3.1 X6 P3-4)
             ),
             fresh.actions(),                        // HOT (whole subsection)
@@ -531,8 +546,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 fresh.privacy().hashIps(),          // HOT
                 old.privacy().salt()                // restart
             ),
-            fresh.purge(),                          // HOT
-            fresh.theme()                           // HOT
+            fresh.purge(),                          // HOT (Y3: applyConfig on scheduler)
+            fresh.storage(),                        // HOT (Y3: X1 persistNbt survives reload)
+            fresh.rollback(),                       // HOT (Y3: X8 reach survives reload)
+            fresh.theme(),                          // HOT
+            fresh.language()                        // HOT
         );
 
         // Track what actually changed to report as "hot-swapped".
@@ -546,6 +564,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         if (old.privacy().hashIps() != fresh.privacy().hashIps()) hot.add("privacy.hashIps");
         if (!Objects.equals(old.purge(), fresh.purge())) hot.add("purge");
         if (!Objects.equals(old.theme(), fresh.theme())) hot.add("theme");
+        // v1.3.2 Y3 (P0-1 + P2-5 close-out): storage.persistNbt, rollback.explosionSupplementalReach,
+        // and language all take effect immediately — they were silently dropped
+        // pre-Y3 (see 9-arg comment above) so the operator got no /vg reload feedback.
+        if (old.storage().persistNbt() != fresh.storage().persistNbt()) {
+            hot.add("storage.persistNbt");
+        }
+        if (old.rollback().explosionSupplementalReach() != fresh.rollback().explosionSupplementalReach()) {
+            hot.add("rollback.explosionSupplementalReach");
+        }
+        if (!Objects.equals(old.language(), fresh.language())) hot.add("language");
 
         // Swap in.
         // v1.3.1 X6 (P2-5): build the fresh EventGate on a LOCAL reference and
@@ -560,6 +588,36 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         EventGate localGate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
         network.vonix.guardian.core.i18n.Messages.setLanguage(merged.language());
+
+        // v1.3.2 Y3 (P1-1 + P2-1 close-out): hot-swap the supplemental EXPLOSION
+        // scan reach on the existing RollbackEngine without rebuilding it. The
+        // engine's field is volatile (Y3) so a concurrent /vg rollback observes
+        // either the old or new value — no torn read, no half-swapped engine.
+        try {
+            if (this.rollbackEngine != null) {
+                this.rollbackEngine.setExplosionSupplementalReach(
+                    merged.rollback().explosionSupplementalReach());
+            }
+        } catch (Exception e) {
+            errs.add("rollback.setExplosionSupplementalReach failed: " + e.getMessage());
+            LOG.warn(MARKER, "rollback reach hot-swap failed", e);
+        }
+
+        // v1.3.2 Y3 (P2-4 close-out): hot-swap the auto-purge daemon's schedule.
+        // Pre-Y3 the merged config carried the new autoPurgeTime/autoPurgeSeconds
+        // but the running daemon kept its original schedule until server restart.
+        try {
+            if (this.autoPurgeScheduler != null
+                && !Objects.equals(old.purge(), merged.purge())) {
+                boolean changed = this.autoPurgeScheduler.applyConfig(merged);
+                if (changed) {
+                    // "purge" already recorded in `hot` above — no duplicate entry.
+                }
+            }
+        } catch (Exception e) {
+            errs.add("autoPurgeScheduler.applyConfig failed: " + e.getMessage());
+            LOG.warn(MARKER, "auto-purge reload failed", e);
+        }
 
         // W3-B5: per-world overrides. Point the store at the new root, re-scan the
         // worlds/ dir (files may have been added/removed), and re-register the hook
