@@ -99,6 +99,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * the server thread. See {@link network.vonix.guardian.core.event.ExplosionJoinWorker}.
      */
     private final network.vonix.guardian.core.event.ExplosionJoinWorker explosionJoinWorker;
+    /**
+     * v1.3.1 X7: shared 5-min-TTL cache mapping (world, TNT position) →
+     * priming actor. Populated by loader-side TntBlockMixin /
+     * PrimedTntEntityMixin, consumed by the explosion-detonate handler via
+     * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveTntPrime}
+     * to close CoreProtect-parity gap G-CP-2.
+     */
+    private final network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory;
     /** Latched at boot when logFile.enabled; hot-swap of enabled flag flips this AtomicReference. */
     private final AtomicReference<JsonLinesLogFile> logFileRef;
     /** Server data-dir root, kept so reload can rebuild a JsonLinesLogFile at the same relative path. */
@@ -143,6 +151,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.entityBlockCoalescer = entityBlockCoalescer;
         this.fluidSourceMemory = new network.vonix.guardian.core.attribution.FluidSourceMemory();
         this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker();
+        this.tntPrimeMemory = new network.vonix.guardian.core.attribution.TntPrimeMemory();
         this.logFileRef = logFileRef;
         this.dataDir = dataDir;
         this.autoPurgeScheduler = autoPurgeScheduler;
@@ -303,6 +312,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     public network.vonix.guardian.core.attribution.FluidSourceMemory fluidSourceMemory() {
         return fluidSourceMemory;
+    }
+
+    /**
+     * X7: shared TNT-prime memory. Loader-side {@code TntBlockMixin} /
+     * {@code PrimedTntEntityMixin} record actor identities here at prime time;
+     * the {@code ExplosionEvent.Detonate} handler consults it via
+     * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveTntPrime}
+     * before falling back to the sentinel.
+     */
+    public network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory() {
+        return tntPrimeMemory;
     }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }
@@ -1290,6 +1310,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             dao.close();
         } catch (Exception e) {
             LOG.warn(MARKER, "DAO close raised", e);
+        }
+        try {
+            tntPrimeMemory.clear();
+        } catch (Exception e) {
+            LOG.warn(MARKER, "TntPrimeMemory clear raised", e);
         }
         LOG.info(MARKER, "VonixGuardian offline.");
     }
