@@ -45,21 +45,38 @@ class GuardianReloadTest {
     /** Build a minimal config that (a) uses a fresh temp SQLite file, (b) disables the log-file. */
     private static GuardianConfig minimalCfg(Path dbDir, String theme, int defaultPage, boolean hashIps, long consoleFloor) {
         return new GuardianConfig(
-            new GuardianConfig.Database("sqlite", dbDir.resolve("test.db").toString(), null, null, null),
+            new GuardianConfig.Database("sqlite", dbDir.resolve("test.db").toString(), null, null, null, null, GuardianConfig.Hikari.defaults()),
             new GuardianConfig.Queue(1000, 5_000L, 100),
-            new GuardianConfig.LogFile(false, "logs", true, 30),
+            new GuardianConfig.LogFile(false, "logs", true, 30, true),
             new GuardianConfig.Actions(
                 true, true, true, true, true, true, true, true, true, true, true,
                 List.of(), List.of("minecraft:air"), List.of(),
                 500L, 8192,
                 List.of(), false
-            ),
-            new GuardianConfig.Permissions(true, 3),
+            ,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+            true,
+            true,
+            false,
+            true,
+            false,
+            true),
+            new GuardianConfig.Permissions(true, 3, java.util.Map.of()),
             new GuardianConfig.Lookup(defaultPage, 10_000, 100_000, 4),
             new GuardianConfig.Privacy(hashIps, "some-16-char-salt-000000"),
             new GuardianConfig.Purge(consoleFloor, 3_600L, 0L, "03:30"),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(),
             theme
-        );
+        ,
+        "en_us");
     }
 
     @Test
@@ -95,13 +112,30 @@ class GuardianReloadTest {
                     initial.actions().entityBlockChangeMaxTracked(),
                     initial.actions().entityChangeAllowlist(),
                     initial.actions().entityChangeLogAllEntities()
-                ),
+                ,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                true,
+                false,
+                true),
                 initial.permissions(),
                 new GuardianConfig.Lookup(15, 10_000, 200_000, 4),
                 initial.privacy(),
                 new GuardianConfig.Purge(120L, 7200L, 0L, "03:30"),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(),
                 "gold"
-            );
+            ,
+            "en_us");
             ConfigLoader.save(cfgPath, mutated);
 
             Guardian.ReloadResult r = g.reloadConfig(null); // uses configPath()
@@ -142,14 +176,17 @@ class GuardianReloadTest {
                 new GuardianConfig.Queue(99_999, initial.queue().flushIntervalMs(), initial.queue().batchSize()),
                 initial.logFile(),
                 initial.actions(),
-                new GuardianConfig.Permissions(initial.permissions().useLuckPerms(), 4),
+                new GuardianConfig.Permissions(initial.permissions().useLuckPerms(), 4, java.util.Map.of()),
                 new GuardianConfig.Lookup(
                     initial.lookup().defaultPageSize(), initial.lookup().maxRadius(),
                     initial.lookup().maxResultRows(), 32),
                 initial.privacy(),
                 initial.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(),
                 initial.theme()
-            );
+            ,
+            "en_us");
             ConfigLoader.save(cfgPath, mutated);
 
             Guardian.ReloadResult r = g.reloadConfig(cfgPath);

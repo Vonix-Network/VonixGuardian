@@ -69,7 +69,10 @@ class AutoPurgeSchedulerNoDoubleScheduleTest {
     private static GuardianConfig withPurge(GuardianConfig base, GuardianConfig.Purge p) {
         return new GuardianConfig(
                 base.database(), base.queue(), base.logFile(), base.actions(),
-                base.permissions(), base.lookup(), base.privacy(), p, base.theme());
+                base.permissions(), base.lookup(), base.privacy(), p,
+                GuardianConfig.Storage.defaults(),
+                GuardianConfig.Rollback.defaults(), base.theme(),
+                "en_us");
     }
 
     private static Field field(String name) throws NoSuchFieldException {

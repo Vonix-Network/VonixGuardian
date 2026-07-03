@@ -128,7 +128,10 @@ class PermsPerNodeOverrideTest {
         GuardianConfig cfg = new GuardianConfig(
                 d.database(), d.queue(), d.logFile(), d.actions(),
                 new GuardianConfig.Permissions(false, 2, bad),
-                d.lookup(), d.privacy(), d.purge(), d.theme());
+                d.lookup(), d.privacy(), d.purge(),
+                GuardianConfig.Storage.defaults(),
+                GuardianConfig.Rollback.defaults(), d.theme(),
+                "en_us");
         assertThatThrownBy(cfg::validate)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("perNodeOpLevels");

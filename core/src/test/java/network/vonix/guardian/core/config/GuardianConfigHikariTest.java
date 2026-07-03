@@ -23,7 +23,7 @@ class GuardianConfigHikariTest {
 
     @Test
     void backwards_compat_database_ctor_fills_defaults() {
-        var db = new GuardianConfig.Database("sqlite", "vg.db", null, null, null);
+        var db = new GuardianConfig.Database("sqlite", "vg.db", null, null, null, null, GuardianConfig.Hikari.defaults());
         assertThat(db.hikari()).isNotNull();
         assertThat(db.hikari().maxPoolSize()).isEqualTo(10);
     }
@@ -38,7 +38,8 @@ class GuardianConfigHikariTest {
         var cfg = new GuardianConfig(
             badDb, bad.queue(), bad.logFile(), bad.actions(),
             bad.permissions(), bad.lookup(), bad.privacy(), bad.purge(),
-            bad.storage(), bad.theme(), bad.language()
+            bad.storage(),
+        GuardianConfig.Rollback.defaults(), bad.theme(), bad.language()
         );
         assertThatThrownBy(cfg::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -55,7 +56,8 @@ class GuardianConfigHikariTest {
         var cfg = new GuardianConfig(
             badDb, bad.queue(), bad.logFile(), bad.actions(),
             bad.permissions(), bad.lookup(), bad.privacy(), bad.purge(),
-            bad.storage(), bad.theme(), bad.language()
+            bad.storage(),
+        GuardianConfig.Rollback.defaults(), bad.theme(), bad.language()
         );
         assertThatThrownBy(cfg::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -78,6 +80,7 @@ class GuardianConfigHikariTest {
             GuardianConfig.defaults().privacy(),
             GuardianConfig.defaults().purge(),
             GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(),
             "aqua", "en_us"
         );
         cfg.validate(); // must not throw
