@@ -13,7 +13,13 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
-/** Captures actual natural leaf decay removals on Fabric. */
+/**
+ * Captures actual natural leaf decay removals on Fabric.
+ *
+ * <p>v1.3.0 W1c: Fabric cells already used the tight @Redirect discipline
+ * (submit only on actual {@code ServerLevel.removeBlock}), so no behavioral
+ * change here — verified matches Forge/NeoForge after W1c tighten.</p>
+ */
 @Mixin(LeavesBlock.class)
 public abstract class LeavesBlockMixin {
 
