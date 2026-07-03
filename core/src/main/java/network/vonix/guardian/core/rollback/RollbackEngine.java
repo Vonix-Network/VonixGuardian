@@ -609,34 +609,79 @@ public final class RollbackEngine {
 
     /** Apply the inverse of the action (used by rollback). */
     private void applyInverse(Action a) {
+        // v1.3.2 Y1: branch on a.hasNbt() and route through the NBT-aware
+        // WorldMutator overloads when the row carries any NBT fidelity payload.
+        // The default WorldMutator overload delegates to the legacy method, so
+        // impl cells that opt in override the NBT variant to reconstruct
+        // block-state / BE / ItemStack / Entity via NbtIo.read. On decode failure
+        // the cell logs at DEBUG and falls back to the legacy behaviour — never
+        // throws. When hasNbt()==false we skip the NBT overload entirely so the
+        // hot path stays allocation-free for pre-v1.3.1 rows.
+        boolean nbt = a.hasNbt();
         switch (a.type()) {
             case BLOCK_PLACE ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
-            case BLOCK_BREAK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case BLOCK_BREAK -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.oldBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case CONTAINER_DEPOSIT ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case CONTAINER_WITHDRAW ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case CONTAINER_WITHDRAW -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case ITEM_DROP ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case ITEM_PICKUP ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
-            case ENTITY_KILL ->
-                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case ITEM_PICKUP -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
+            case ENTITY_KILL -> {
+                if (nbt) {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta(), a.entityNbt());
+                } else {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case EXPLOSION ->
                 restoreExplosion(a);
             // --- v0.1.0 expansion: block events ---
             // ENTITY_CHANGE_BLOCK: targetId carries oldBlockId; targetMeta carries newBlockId.
-            case ENTITY_CHANGE_BLOCK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+            case ENTITY_CHANGE_BLOCK -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null,
+                        a.oldBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+                }
+            }
             // Block was destroyed/changed-away — inverse is to restore the original block.
-            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.oldBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             // Block was created — inverse is to clear it.
             case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
@@ -644,14 +689,26 @@ public final class RollbackEngine {
             case HOPPER_PUSH ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case HOPPER_PULL ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case HOPPER_PULL -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             // --- v0.1.0 expansion: entities ---
             case HANGING_PLACE ->
                 mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
-            case HANGING_BREAK ->
-                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case HANGING_BREAK -> {
+                if (nbt) {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta(), a.entityNbt());
+                } else {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             // --- per-action explicit refusals (replacing the silent default branch) ---
             case DISPENSE ->
                 LOG.warn("RollbackEngine: refusing to roll back DISPENSE (id={}) — container slot tracking required", a.id());
@@ -676,20 +733,44 @@ public final class RollbackEngine {
 
     /** Reapply the original action (used by restore). */
     private void applyForward(Action a) {
+        // v1.3.2 Y1: mirror applyInverse's NBT branching. Restore semantics
+        // re-apply the row's original mutation, so the NBT payload used here is
+        // the "new state" side (post-change) — newBlockState + blockEntityNbt
+        // for a BLOCK_PLACE, itemNbt for CONTAINER_DEPOSIT / ITEM_DROP /
+        // HOPPER_PUSH, entityNbt for HANGING_PLACE.
+        boolean nbt = a.hasNbt();
         switch (a.type()) {
-            case BLOCK_PLACE ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case BLOCK_PLACE -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.newBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case BLOCK_BREAK ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
-            case CONTAINER_DEPOSIT ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case CONTAINER_DEPOSIT -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case CONTAINER_WITHDRAW ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case ITEM_DROP ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case ITEM_DROP -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case ITEM_PICKUP ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
@@ -699,25 +780,49 @@ public final class RollbackEngine {
                 clearExplosionBlocks(a);
             // --- v0.1.0 expansion: block events ---
             // ENTITY_CHANGE_BLOCK: re-apply the newBlockId carried in targetMeta.
-            case ENTITY_CHANGE_BLOCK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetMeta() != null ? a.targetMeta() : AIR, null);
+            case ENTITY_CHANGE_BLOCK -> {
+                String newId = a.targetMeta() != null ? a.targetMeta() : AIR;
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null,
+                        a.newBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null);
+                }
+            }
             // Block was originally destroyed/changed-away — restoring means re-destroying.
             case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // Block was originally created — restoring means re-placing it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.newBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             // --- v0.1.0 expansion: containers ---
-            case HOPPER_PUSH ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case HOPPER_PUSH -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case HOPPER_PULL ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             // --- v0.1.0 expansion: entities ---
-            case HANGING_PLACE ->
-                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case HANGING_PLACE -> {
+                if (nbt) {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta(), a.entityNbt());
+                } else {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case HANGING_BREAK ->
                 mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
             // --- per-action explicit refusals (replacing the silent default branch) ---

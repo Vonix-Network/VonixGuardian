@@ -7,6 +7,7 @@ package network.vonix.guardian.mc.v1_21_1.neoforge;
 import com.mojang.brigadier.ParseResults;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.resources.ResourceLocation;
@@ -165,6 +166,17 @@ public final class NeoForgeEvents {
         return g == null ? null : g.config();
     }
 
+    /**
+     * v1.3.2 Y1: config-gated NBT-persist flag. When {@code false} (default),
+     * producers skip the NBT capture path entirely — no allocation, no BE
+     * lookup, no ItemStack.save. Safe to call from event handlers because
+     * the config accessor returns the last-loaded snapshot.
+     */
+    private static boolean persistNbt() {
+        GuardianConfig c = cfg();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     // ====================================================================== blocks
 
     /** {@code BlockEvent.BreakEvent}: log the break; if inspector, cancel + lookup. */
@@ -193,10 +205,20 @@ public final class NeoForgeEvents {
             BlockPos pos = ev.getPos();
             BlockState state = ev.getState();
             String blockId = blockId(state);
-            s.submitBlockBreak(p.getUUID(), p.getName().getString(),
-                    WorldKey.of((Level) ev.getLevel()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    blockId, null);
+            String worldId = WorldKey.of((Level) ev.getLevel());
+            // v1.3.2 Y1: NBT capture on the server thread BEFORE the break resolves.
+            if (persistNbt()) {
+                Level lvl = (Level) ev.getLevel();
+                String stateProps = NbtCapture.blockStateProps(state);
+                BlockEntity be = lvl.getBlockEntity(pos);
+                byte[] beNbt = be == null ? null : NbtCapture.blockEntity(be, lvl.registryAccess());
+                s.submitBlockBreak(p.getUUID(), p.getName().getString(),
+                        worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        blockId, null, stateProps, beNbt);
+            } else {
+                s.submitBlockBreak(p.getUUID(), p.getName().getString(),
+                        worldId, pos.getX(), pos.getY(), pos.getZ(), blockId, null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockBreak failed", t);
         }
@@ -369,10 +391,21 @@ public final class NeoForgeEvents {
             }
             BlockPos pos = victim.blockPosition();
             String entityType = EntitySentinel.of(victim);
-            s.submitEntityKill(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(victim.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    entityType, SourceTagger.tag(ev.getSource()));
+            // v1.3.2 Y1: capture the victim's persistent NBT BEFORE death
+            // resolves so custom names, tame owner, potion effects survive
+            // a rollback.
+            byte[] entNbt = persistNbt() ? NbtCapture.entity(victim) : null;
+            if (entNbt != null) {
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                        WorldKey.of(victim.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        entityType, SourceTagger.tag(ev.getSource()), entNbt);
+            } else {
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                        WorldKey.of(victim.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        entityType, SourceTagger.tag(ev.getSource()));
+            }
             if (NeoForgeBootstrap.damageHistory != null) {
                 NeoForgeBootstrap.damageHistory.forget(victim.getUUID());
             }
@@ -539,10 +572,18 @@ public final class NeoForgeEvents {
             if (p == null || ie == null) return;
             ItemStack stack = ie.getItem();
             BlockPos pos = ie.blockPosition();
-            s.submitItemDrop(p.getUUID(), p.getName().getString(),
-                    WorldKey.of(p.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    itemId(stack), stack.getCount(), null);
+            byte[] itemNbt = persistNbt() ? NbtCapture.itemStack(stack, p.level().registryAccess()) : null;
+            if (itemNbt != null) {
+                s.submitItemDrop(p.getUUID(), p.getName().getString(),
+                        WorldKey.of(p.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null, itemNbt);
+            } else {
+                s.submitItemDrop(p.getUUID(), p.getName().getString(),
+                        WorldKey.of(p.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onItemToss failed", t);
         }
@@ -761,6 +802,8 @@ public final class NeoForgeEvents {
             EventSubmitter s = sub();
             if (s == null) return;
             int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
+            boolean nbtOn = persistNbt();
+            HolderLookup.Provider registries = nbtOn ? sp.level().registryAccess() : null;
             for (int slot = 0; slot < size; slot++) {
                 ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
                 ItemStack after = c.getItem(slot);
@@ -770,8 +813,21 @@ public final class NeoForgeEvents {
                 if (itemId == null) continue;
                 int delta = afterCount - beforeCount;
                 if (delta == 0) continue;
-                s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                byte[] itemNbt = null;
+                if (nbtOn) {
+                    // delta > 0 means deposit — the "after" side carries the NBT
+                    // for what was added; delta < 0 means withdraw — the "before"
+                    // side carries the NBT for what was removed.
+                    ItemStack src = delta > 0 ? after : before;
+                    itemNbt = NbtCapture.itemStack(src, registries);
+                }
+                if (itemNbt != null) {
+                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
+                } else {
+                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                }
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onContainerClose failed", t);

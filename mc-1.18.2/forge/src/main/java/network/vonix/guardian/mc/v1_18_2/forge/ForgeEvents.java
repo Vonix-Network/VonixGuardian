@@ -178,6 +178,12 @@ public final class ForgeEvents {
         return g == null ? null : g.config();
     }
 
+    /** v1.3.2 Y1 config-gated NBT persist flag. */
+    private static boolean persistNbt() {
+        GuardianConfig c = cfg();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     // ====================================================================== blocks
 
     @SubscribeEvent
@@ -378,11 +384,34 @@ public final class ForgeEvents {
                 attr = Attribution.unknown(EntitySentinel.UNKNOWN);
             }
             BlockPos pos = victim.blockPosition();
+
             String entityType = EntitySentinel.of(victim);
-            s.submitEntityKill(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(victim.level),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    entityType, SourceTagger.tag(ev.getSource()));
+
+            // v1.3.2 Y1: capture the victim's persistent NBT BEFORE death resolves.
+
+            byte[] entNbt = persistNbt() ? NbtCapture.entity(victim) : null;
+
+            if (entNbt != null) {
+
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+
+                        WorldKey.of(victim.level),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        entityType, SourceTagger.tag(ev.getSource()), entNbt);
+
+            } else {
+
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+
+                        WorldKey.of(victim.level),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        entityType, SourceTagger.tag(ev.getSource()));
+
+            }
             if (ForgeBootstrap.damageHistory != null) {
                 ForgeBootstrap.damageHistory.forget(victim.getUUID());
             }
@@ -544,11 +573,34 @@ public final class ForgeEvents {
             ItemEntity ie = ev.getEntityItem();
             if (p == null || ie == null) return;
             ItemStack stack = ie.getItem();
+
             BlockPos pos = ie.blockPosition();
-            s.submitItemDrop(p.getUUID(), p.getName().getString(),
-                    WorldKey.of(p.level),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    itemId(stack), stack.getCount(), null);
+
+            // v1.3.2 Y1: item toss NBT — names/enchants/damage on drop.
+
+            byte[] itemNbt = persistNbt() ? NbtCapture.itemStack(stack) : null;
+
+            if (itemNbt != null) {
+
+                s.submitItemDrop(p.getUUID(), p.getName().getString(),
+
+                        WorldKey.of(p.level),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        itemId(stack), stack.getCount(), null, itemNbt);
+
+            } else {
+
+                s.submitItemDrop(p.getUUID(), p.getName().getString(),
+
+                        WorldKey.of(p.level),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        itemId(stack), stack.getCount(), null);
+
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onItemToss failed", t);
         }
@@ -803,6 +855,7 @@ public final class ForgeEvents {
             EventSubmitter s = sub();
             if (s == null) return;
             int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
+            boolean nbtOn = persistNbt();
             for (int slot = 0; slot < size; slot++) {
                 ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
                 ItemStack after = c.getItem(slot);
@@ -812,8 +865,19 @@ public final class ForgeEvents {
                 if (itemId == null) continue;
                 int delta = afterCount - beforeCount;
                 if (delta == 0) continue;
-                s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                byte[] itemNbt = null;
+                if (nbtOn) {
+                    // delta > 0 = deposit (after carries NBT); delta < 0 = withdraw (before carries NBT).
+                    ItemStack src = delta > 0 ? after : before;
+                    itemNbt = NbtCapture.itemStack(src);
+                }
+                if (itemNbt != null) {
+                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
+                } else {
+                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                }
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onContainerClose failed", t);
