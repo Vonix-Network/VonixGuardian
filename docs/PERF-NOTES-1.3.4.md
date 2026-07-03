@@ -66,9 +66,21 @@ It isn't.
 
 ### Non-canonical sites NOT fixed by AA1
 
-The round-4 audit verified that `Guardian.java` (Z4) and
-`ConfigLoader.java` (Y3) were already canonical. AA1 confirmed this and
-did not touch them.
+The round-4 audit verified that `Guardian.java` (Z4) was already
+canonical. AA1 confirmed this and did not touch it.
+
+> **Retraction (v1.3.5 BB1 — 2026-07-03):** the original text of this
+> section also claimed `ConfigLoader.java` (Y3) was verified canonical.
+> That claim was **incorrect**. `ConfigLoader.migrateForwardCompat` had
+> six `new GuardianConfig(...)` sites (lines 137, 150, 159, 173, 192,
+> 273) using the pre-X8 11-arg back-compat ctor, silently resetting
+> `rollback` to `Rollback.defaults()` whenever any forward-compat
+> migration path fired. The round-4 audit's "backfill-safe" check did
+> not verify that `rollback` was among the args threaded through. This
+> is the same defect class as Z1 (outer 9→12) and AA1 (sub-record
+> 4→5 / 18→32) at a boundary neither wave covered. The defect was
+> caught by the round-5 parity audit and closed by v1.3.5 BB1 — see
+> `PERF-NOTES-1.3.5.md`.
 
 Grep in the wider codebase turned up additional legacy-shim call sites,
 none of which are defects but all recorded here for future reference:
