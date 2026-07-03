@@ -10,6 +10,7 @@
     "FireBlockMixin",
     "IceBlockMixin",
     "LeavesBlockMixin",
+    "LiquidBlockMixin",
     "MilkBucketItemMixin",
     "SpreadingSnowyDirtBlockMixin"
   ],

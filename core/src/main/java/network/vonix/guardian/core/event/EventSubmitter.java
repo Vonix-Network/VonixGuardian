@@ -289,6 +289,38 @@ public interface EventSubmitter {
     void submitBucketFill(UUID actorUuid, String actorName, String worldId,
                           int x, int y, int z, String fluidOrBlockId, String sourceTag);
 
+    /**
+     * Convenience for fluid spread (v1.3.1 X3, CoreProtect parity for
+     * {@code BlockFromToEvent}).
+     *
+     * <p>Producer contract:</p>
+     * <ul>
+     *   <li>{@code actorUuid} — resolved via
+     *       {@link network.vonix.guardian.core.attribution.FluidSourceMemory}
+     *       when a bucket-empty ancestor is within the 2-min / 8-block window;
+     *       otherwise {@code null}.</li>
+     *   <li>{@code actorName} — the emptying player's name when
+     *       {@code actorUuid != null}; otherwise
+     *       {@link network.vonix.guardian.core.event.Sentinel#FLUID}
+     *       ({@code "#fluid"}).</li>
+     *   <li>{@code fluidBlockId} — the flowing block registry id
+     *       ({@code minecraft:water} / {@code minecraft:lava}) that will now
+     *       occupy {@code (x,y,z)}. Rollback of the row clears the cell to
+     *       {@code minecraft:air}.</li>
+     *   <li>{@code sourceTag} — always begins with
+     *       {@link network.vonix.guardian.core.diagnostics.MixinHotEventFilter#PREFIX_FLUID}
+     *       so the mixin-hot-events kill-switch can short-circuit spam.</li>
+     * </ul>
+     *
+     * @since 1.3.1
+     */
+    default void submitFluidFlow(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String fluidBlockId, String sourceTag) {
+        // Default delegates so third-party fakes without an override still work.
+        // Real implementation on Guardian overrides.
+        submitBucketEmpty(actorUuid, actorName, worldId, x, y, z, fluidBlockId, sourceTag);
+    }
+
     /** Convenience for {@code LeavesDecayEvent}. */
     void submitLeavesDecay(UUID actorUuid, String actorName, String worldId,
                            int x, int y, int z, String blockId, String sourceTag);

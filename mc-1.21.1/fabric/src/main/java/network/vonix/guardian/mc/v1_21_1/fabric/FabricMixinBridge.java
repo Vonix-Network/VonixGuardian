@@ -305,6 +305,16 @@ public final class FabricMixinBridge {
                         : (heldItemId != null ? heldItemId : "minecraft:water");
                 s.submitBucketEmpty(player.getUUID(), player.getName().getString(), worldId,
                         pos.getX(), pos.getY(), pos.getZ(), fluid, null);
+                // v1.3.1 X3: seed the 2-min traceback so downstream FLUID_FLOW rows attribute back.
+                Guardian g = VonixGuardianFabric.guardian();
+                if (g != null) {
+                    network.vonix.guardian.core.attribution.FluidSourceMemory mem = g.fluidSourceMemory();
+                    if (mem != null) {
+                        mem.recordBucketEmpty(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                                player.getUUID(), player.getName().getString(),
+                                System.currentTimeMillis());
+                    }
+                }
             } else {
                 String fluidId = blockId(level.getBlockState(pos));
                 s.submitBucketFill(player.getUUID(), player.getName().getString(), worldId,
@@ -312,6 +322,52 @@ public final class FabricMixinBridge {
             }
         } catch (Throwable t) {
             warn("bucketUse", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X3: fluid-flow producer entry
+     * (parity with CoreProtect {@code BlockFromToListener}).
+     *
+     * @param level        the server level (spread cell world)
+     * @param pos          the destination cell that will now hold the flowing fluid
+     * @param flowingFluid the fluid that is spreading
+     */
+    public static void fluidFlow(net.minecraft.server.level.ServerLevel level, BlockPos pos,
+                                 net.minecraft.world.level.material.FlowingFluid flowingFluid) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || flowingFluid == null) return;
+            Guardian g = VonixGuardianFabric.guardian();
+            if (g == null) return;
+            String worldId = WorldKey.of(level);
+            String path;
+            try {
+                ResourceLocation rl = BuiltInRegistries.FLUID.getKey(flowingFluid);
+                path = rl == null ? "water" : rl.getPath();
+            } catch (Throwable t) {
+                path = "water";
+            }
+            String kind = path.contains("lava") ? "lava" : "water";
+            String fluidBlockId = "minecraft:" + kind;
+            String sourceTag =
+                    network.vonix.guardian.core.diagnostics.MixinHotEventFilter.PREFIX_FLUID + ":" + kind;
+
+            network.vonix.guardian.core.attribution.FluidSourceMemory mem = g.fluidSourceMemory();
+            UUID actorUuid = null;
+            String actorName = Sentinel.FLUID;
+            if (mem != null) {
+                network.vonix.guardian.core.attribution.FluidSourceMemory.Record rec =
+                        mem.lookup(worldId, pos.getX(), pos.getY(), pos.getZ(), System.currentTimeMillis());
+                if (rec != null && rec.actorUuid != null) {
+                    actorUuid = rec.actorUuid;
+                    actorName = rec.actorName != null ? rec.actorName : Sentinel.FLUID;
+                }
+            }
+            s.submitFluidFlow(actorUuid, actorName, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), fluidBlockId, sourceTag);
+        } catch (Throwable t) {
+            warn("fluidFlow", t);
         }
     }
 

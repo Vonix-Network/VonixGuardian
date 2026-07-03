@@ -15,6 +15,8 @@ package network.vonix.guardian.core.diagnostics;
  *                               {@code IceBlockMixin},
  *                               {@code ConcretePowderBlockMixin}</li>
  *   <li>{@code "#dispenser"}  — {@code DispenserBlockMixin} (W1c)</li>
+ *   <li>{@code "#fluid"}      — {@code LiquidBlockMixin} (v1.3.1 X3):
+ *                               water/lava spread</li>
  * </ul>
  *
  * <p>When {@code actions.mixinHotEvents=false}, {@code Guardian.submit(Action)}
@@ -37,6 +39,12 @@ public final class MixinHotEventFilter {
     /** Reserved sourceTag prefix for W1c {@code DispenserBlockMixin} events. */
     public static final String PREFIX_DISPENSER = "#dispenser";
 
+    /**
+     * Reserved sourceTag prefix for v1.3.1 X3 {@code LiquidBlockMixin} events
+     * (water/lava natural spread).
+     */
+    public static final String PREFIX_FLUID     = "#fluid";
+
     private MixinHotEventFilter() {}
 
     /**
@@ -49,6 +57,7 @@ public final class MixinHotEventFilter {
         }
         return sourceTag.startsWith(PREFIX_FIRE)
             || sourceTag.startsWith(PREFIX_NATURAL)
-            || sourceTag.startsWith(PREFIX_DISPENSER);
+            || sourceTag.startsWith(PREFIX_DISPENSER)
+            || sourceTag.startsWith(PREFIX_FLUID);
     }
 }

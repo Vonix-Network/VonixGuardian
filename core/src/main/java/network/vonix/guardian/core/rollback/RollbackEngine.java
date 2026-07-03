@@ -630,7 +630,7 @@ public final class RollbackEngine {
             case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
             // Block was created — inverse is to clear it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE ->
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH ->
@@ -698,7 +698,7 @@ public final class RollbackEngine {
             case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // Block was originally created — restoring means re-placing it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE ->
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH ->
@@ -763,7 +763,7 @@ public final class RollbackEngine {
                  BUCKET_EMPTY, BUCKET_FILL, ENTITY_CHANGE_BLOCK,
                  HOPPER_PUSH, HOPPER_PULL,
                  HANGING_PLACE, HANGING_BREAK,
-                 STRUCTURE_GROW, PORTAL_CREATE -> true;
+                 STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> true;
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE,

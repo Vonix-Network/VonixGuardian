@@ -35,6 +35,16 @@ public final class Sentinel {
     public static final String SKELETON       = "#skeleton";
     public static final String ENDERMAN       = "#enderman";
     public static final String EXPLOSION      = "#explosion";
+    /**
+     * Fluid-flow sentinel (v1.3.1 X3). Used as {@code actorName} on a
+     * {@code FLUID_FLOW} row when the {@link
+     * network.vonix.guardian.core.attribution.FluidSourceMemory} 2-min
+     * traceback expires and no bucket-empty ancestor is recorded. Also used
+     * as a {@code sourceTag} prefix ({@code #fluid:water} / {@code #fluid:lava})
+     * on natural-flow producer submissions from the {@code LiquidBlockMixin}
+     * pipeline.
+     */
+    public static final String FLUID          = "#fluid";
     public static final String UNKNOWN        = "#unknown";
 
     /** Unmodifiable view of every sentinel string, in declaration order. */
@@ -61,6 +71,7 @@ public final class Sentinel {
         s.add(SKELETON);
         s.add(ENDERMAN);
         s.add(EXPLOSION);
+        s.add(FLUID);
         s.add(UNKNOWN);
         ALL = Collections.unmodifiableSet(s);
     }

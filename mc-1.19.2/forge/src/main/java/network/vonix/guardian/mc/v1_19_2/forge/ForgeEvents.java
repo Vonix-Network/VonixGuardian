@@ -863,6 +863,18 @@ public final class ForgeEvents {
                         : heldId;
                 s.submitBucketEmpty(p.getUUID(), p.getName().getString(), worldId,
                         pos.getX(), pos.getY(), pos.getZ(), fluid, null);
+                // v1.3.1 X3: seed the 2-min traceback so downstream FLUID_FLOW rows attribute back.
+                try {
+                    Guardian gg = g();
+                    if (gg != null) {
+                        network.vonix.guardian.core.attribution.FluidSourceMemory mem = gg.fluidSourceMemory();
+                        if (mem != null) {
+                            mem.recordBucketEmpty(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                                    p.getUUID(), p.getName().getString(),
+                                    System.currentTimeMillis());
+                        }
+                    }
+                } catch (Throwable ignored) {}
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onFillBucket failed", t);

@@ -15,6 +15,7 @@
     "FireBlockMixin",
     "IceBlockMixin",
     "LeavesBlockMixin",
+    "LiquidBlockMixin",
     "SpreadingSnowyDirtBlockMixin",
     "ConcretePowderBlockMixin",
     "DispenserBlockMixin",
