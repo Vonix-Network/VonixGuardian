@@ -86,6 +86,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private volatile Theme theme;
     private final EntityBlockChangeCoalescer entityBlockCoalescer;
     /**
+     * v1.3.1 X3: short-term memory used to attribute fluid-flow rows produced
+     * by the {@code LiquidBlockMixin} pipeline back to the player whose
+     * bucket-empty seeded the source. Non-null; loader mixin bridges read this
+     * via {@link #fluidSourceMemory()}.
+     */
+    private final network.vonix.guardian.core.attribution.FluidSourceMemory fluidSourceMemory;
+    /**
      * v1.3.0 W3: shared off-thread joiner for explosion affected-block lists.
      * Loader-side event handlers hand pre-captured pos/id arrays here and the
      * per-affected-block {@link StringBuilder} join + queue enqueue moves off
@@ -134,6 +141,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.undoStack = undoStack;
         this.theme = theme;
         this.entityBlockCoalescer = entityBlockCoalescer;
+        this.fluidSourceMemory = new network.vonix.guardian.core.attribution.FluidSourceMemory();
         this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker();
         this.logFileRef = logFileRef;
         this.dataDir = dataDir;
@@ -283,6 +291,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     public network.vonix.guardian.core.event.ExplosionJoinWorker explosionJoinWorker() {
         return explosionJoinWorker;
+    }
+    /**
+     * v1.3.1 X3: short-term bucket-empty → fluid-spread traceback memory.
+     * Loader mixin bridges use this from both the bucket-use TAIL inject
+     * ({@link network.vonix.guardian.core.attribution.FluidSourceMemory#recordBucketEmpty})
+     * and the {@code LiquidBlockMixin} spread inject
+     * ({@link network.vonix.guardian.core.attribution.FluidSourceMemory#lookup}).
+     * Never {@code null}.
+     */
+    public network.vonix.guardian.core.attribution.FluidSourceMemory fluidSourceMemory() {
+        return fluidSourceMemory;
     }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }
@@ -832,6 +851,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                                  int x, int y, int z, String fluidOrBlockId, String sourceTag) {
         submit(seed(ActionType.BUCKET_FILL, actorUuid, actorName, worldId)
                 .position(x, y, z).targetId(fluidOrBlockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitFluidFlow(UUID actorUuid, String actorName, String worldId,
+                                int x, int y, int z, String fluidBlockId, String sourceTag) {
+        submit(seed(ActionType.FLUID_FLOW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(fluidBlockId).sourceTag(sourceTag).build());
     }
 
     @Override

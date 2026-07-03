@@ -7,13 +7,19 @@ package network.vonix.guardian.mc.v1_21_1.neoforge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FlowingFluid;
+import net.minecraft.world.level.material.Fluid;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.attribution.FluidSourceMemory;
+import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 import network.vonix.guardian.core.event.EventSubmitter;
+import network.vonix.guardian.core.event.Sentinel;
 import network.vonix.guardian.mc.v1_21_1.common.WorldKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -132,11 +138,84 @@ public final class NeoForgeMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || player == null || pos == null) return;
+            String worldId = WorldKey.of(player.level());
             s.submitBucketEmpty(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(player.level()), pos.getX(), pos.getY(), pos.getZ(),
+                    worldId, pos.getX(), pos.getY(), pos.getZ(),
                     fluidId == null ? "minecraft:water" : fluidId, null);
+            // v1.3.1 X3: seed the 2-min traceback so downstream fluid-flow
+            // rows within radius can attribute back to this player.
+            Guardian g = VonixGuardianNeoForge.guardian();
+            if (g != null) {
+                FluidSourceMemory mem = g.fluidSourceMemory();
+                if (mem != null) {
+                    mem.recordBucketEmpty(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                            player.getUUID(), player.getName().getString(),
+                            System.currentTimeMillis());
+                }
+            }
         } catch (Throwable t) {
             warn("bucketEmpty", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X3: fluid-flow producer entry.
+     *
+     * @param level        the server level (spread cell world)
+     * @param pos          the destination position that will now hold the
+     *                     flowing fluid
+     * @param flowingFluid the fluid that is spreading; used to resolve the
+     *                     water/lava registry id
+     */
+    public static void fluidFlow(ServerLevel level, BlockPos pos, FlowingFluid flowingFluid) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || flowingFluid == null) return;
+            Guardian g = VonixGuardianNeoForge.guardian();
+            if (g == null) return;
+            String worldId = WorldKey.of(level);
+            String fluidBlockId = fluidBlockId(flowingFluid);
+            String kind = fluidKind(flowingFluid); // "water" or "lava"
+            String sourceTag = MixinHotEventFilter.PREFIX_FLUID + ":" + kind;
+
+            // Attribution: try 2-min bucket traceback first.
+            FluidSourceMemory mem = g.fluidSourceMemory();
+            java.util.UUID actorUuid = null;
+            String actorName = Sentinel.FLUID;
+            if (mem != null) {
+                FluidSourceMemory.Record rec = mem.lookup(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        System.currentTimeMillis());
+                if (rec != null && rec.actorUuid != null) {
+                    actorUuid = rec.actorUuid;
+                    actorName = rec.actorName != null ? rec.actorName : Sentinel.FLUID;
+                }
+            }
+            s.submitFluidFlow(actorUuid, actorName, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), fluidBlockId, sourceTag);
+        } catch (Throwable t) {
+            warn("fluidFlow", t);
+        }
+    }
+
+    private static String fluidBlockId(Fluid fluid) {
+        try {
+            ResourceLocation rl = BuiltInRegistries.FLUID.getKey(fluid);
+            if (rl == null) return "minecraft:water";
+            String path = rl.getPath();
+            if (path.contains("lava")) return "minecraft:lava";
+            return "minecraft:water";
+        } catch (Throwable t) {
+            return "minecraft:water";
+        }
+    }
+
+    private static String fluidKind(Fluid fluid) {
+        try {
+            ResourceLocation rl = BuiltInRegistries.FLUID.getKey(fluid);
+            if (rl == null) return "water";
+            return rl.getPath().contains("lava") ? "lava" : "water";
+        } catch (Throwable t) {
+            return "water";
         }
     }
 

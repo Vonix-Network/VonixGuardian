@@ -44,7 +44,8 @@ class RollbackExpansionParityTest {
             ActionType.HANGING_PLACE,
             ActionType.HANGING_BREAK,
             ActionType.STRUCTURE_GROW,
-            ActionType.PORTAL_CREATE
+            ActionType.PORTAL_CREATE,
+            ActionType.FLUID_FLOW
         );
         List<Action> actions = new ArrayList<>();
         long id = 1;

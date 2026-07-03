@@ -78,7 +78,18 @@ public enum ActionType {
     PORTAL_CREATE           (37, "portal",      Category.WORLD,     Sign.PLACE),
     CHUNK_POPULATE          (38, "populate",    Category.WORLD,     Sign.PLACE),
     // --- v0.1.0 expansion: generic interaction (39) ---
-    CLICK                   (39, "click",       Category.INTERACT,  Sign.NEUTRAL);
+    CLICK                   (39, "click",       Category.INTERACT,  Sign.NEUTRAL),
+    // --- v1.3.1 X3: fluid-flow attribution producer (40) ---
+    /**
+     * Water/lava spread from a source block into an adjacent air/replaceable
+     * cell. CoreProtect parity: {@code BlockFromToListener} queues a
+     * {@code queueBlockPlace} for water/lava spread respecting
+     * {@code WATER_FLOW}/{@code LAVA_FLOW} config. On modded loaders the
+     * equivalent surface is {@code LiquidBlock#shouldSpreadLiquid} intercepted
+     * via mixin. Rollback of this row clears the spread cell back to
+     * {@code minecraft:air}.
+     */
+    FLUID_FLOW              (40, "fluid",       Category.BLOCK,     Sign.PLACE);
 
     /** Coarse family classification — drives gating + {@code a:&lt;family&gt;} expansion. */
     public enum Category { BLOCK, CONTAINER, ITEM, ENTITY, WORLD, MESSAGE, SESSION, INTERACT }
