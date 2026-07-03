@@ -10,6 +10,7 @@
     "ExplosionMixin",
     "PistonMixin",
     "ContainerMixin",
+    "BaseContainerBlockEntityMixin",
     "BucketItemMixin",
     "FireBlockMixin",
     "IceBlockMixin",

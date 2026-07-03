@@ -108,3 +108,86 @@ on any backend.
   Track for v1.3.1 X6.
 - The eight `WorldMutator` cells will need per-cell overrides in X-β; the
   interface default keeps them source-compatible until then.
+
+## X9 — Container coverage widening (Ledger parity)
+
+**Ships:** `BaseContainerBlockEntityMixin` + `LocationalInventory` marker
+interface in the four fabric cells (mc-1.18.2, mc-1.19.2, mc-1.20.1,
+mc-1.21.1); `ContainerMixin` scope widened from `@Mixin(ChestBlockEntity.class)`
+to `@Mixin({ChestBlockEntity.class, BarrelBlockEntity.class,
+ShulkerBoxBlockEntity.class})`; each cell's `vg.mixins.json` registers the new
+mixin.
+
+**Rationale — Ledger parity.** Ledger's `BaseContainerBlockEntityMixin`
+(https://github.com/QuiltServerTools/Ledger, `src/main/java/.../mixin/
+BaseContainerBlockEntityMixin.java` lines 12–22) makes every
+`BaseContainerBlockEntity` implement `LocationalInventory`, giving slot-level
+callers a way to recover the on-world position from any `Container`
+reference. Before X9, VG fabric's `ContainerMixin` was intentionally scoped to
+`ChestBlockEntity` only (the `NOTE(v1.2.6)` block explained this and
+suggested slot-level `AbstractContainerMenuMixin` for the rest — a path that
+was never actually wired). Result: barrels and shulker boxes on fabric got
+zero open/close diff logging, breaking `/vg lookup` on barrel deposits and
+`/vg rollback` on shulker box withdrawals. Forge/NeoForge cells were never
+affected — `PlayerContainerEvent.Open` + `be instanceof Container` catches all
+container-block-entities at the player-event layer.
+
+**Why `@Mixin({Chest, Barrel, Shulker})` instead of
+`@Mixin(BaseContainerBlockEntity.class)`?** `startOpen(Player)` and
+`stopOpen(Player)` are declared on the `Container` interface as `default`
+no-ops (see `Container.class` javap). `BaseContainerBlockEntity` does NOT
+override them — only concrete subclasses (chest, barrel, shulker) do, and
+only those three do. An `@Inject(method = "startOpen(...)")` against the
+abstract base silently fails to bind (descriptor not present on the class).
+The correct spongepowered pattern is to name the concrete subclasses that
+override the target method.
+
+**Not covered (intentional):** hoppers, dispensers, droppers, furnaces
+(regular / smoker / blast), and brewing stands do not override
+`startOpen` / `stopOpen`. Their contents are mutated at the slot level via
+`AbstractContainerMenu#clicked` (which the forge/neoforge cells already
+capture through the PlayerContainerEvent path) or via specialized transfer
+mixins (hopper push/pull lands in X4). This matches Ledger's own coverage
+model — Ledger's `BaseContainerBlockEntityMixin` is a marker interface for
+slot-position lookups, not an open/close hook. Compound (double) chests are
+covered because the mixin fires on each half-chest `BlockEntity`
+independently; the forge/neoforge PlayerContainerEvent path already merges
+them by pos-window at the bridge layer.
+
+**Cell scope: 4 fabric cells only.** The 3 forge cells (mc-1.18.2/forge,
+mc-1.19.2/forge, mc-1.20.1/forge) and the 1 neoforge cell (mc-1.21.1/neoforge)
+use `PlayerContainerEvent.Open` / `PlayerContainerEvent.Close` handlers in
+`ForgeEvents.java` / `NeoForgeEvents.java` that already gate on
+`be instanceof Container` — i.e. they already catch every `BaseContainerBlockEntity`
+subtype (barrels, shulkers, furnaces, brewing stands, hoppers via
+right-click) with no code changes. Widening the fabric mixin brings fabric
+to loader-parity, not the other way around.
+
+**Hot-path allocation cost.** Zero delta from pre-X9. Open takes the same
+snapshot copy (`getContainerSize()` bounded by `MAX_CONTAINER_SLOTS = 216`);
+close does the same slot-by-slot diff. `LocationalInventory.vg$getLocation()`
+returns the mixin's pre-existing `worldPosition` field — no allocation, no
+copy.
+
+**Ledger parity notes.** VG's marker method is named `vg$getLocation()` (with
+the `vg$` prefix required by mixin conventions to avoid method-name clashes
+with modded BEs that might already declare a `getLocation()`). Ledger uses
+`getLocation()` without a prefix; VG's choice is intentional and matches the
+`vg$` prefix used by every other injected VG mixin method (see
+`FireBlockMixin.vg$submitBurn`, etc.).
+
+**Regression tests.** `core/src/test/java/network/vonix/guardian/core/event/`:
+
+- `ContainerOpenCloseDiffTest` — pure-Java model of the open/close diff
+  pipeline, five scenarios: chest / barrel / shulker per-slot delta, compound
+  chest independence, empty-delta skip.
+- `FabricContainerMixinRegistrationTest` — verifies the mixin JSON in all
+  four fabric cells registers both `ContainerMixin` and
+  `BaseContainerBlockEntityMixin`, and that `ContainerMixin.java` names all
+  three widened targets (guards against a silent revert to the pre-X9
+  chest-only scope).
+
+**Followups.** None open. Ledger's slot-level `SlotMixin` +
+`AbstractContainerMenuMixin` remain a future parity target (per-click
+attribution instead of per-open-close diff) but are a separate design and
+not part of X9.
