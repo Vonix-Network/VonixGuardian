@@ -19,7 +19,21 @@ class PerWorldConfigStoreTest {
             List.of(),
             500L, 8192,
             List.of(), false
-        );
+        ,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        true,
+        false,
+        true);
     }
 
     @Test

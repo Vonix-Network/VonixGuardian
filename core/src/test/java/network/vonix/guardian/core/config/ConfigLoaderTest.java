@@ -186,19 +186,28 @@ class ConfigLoaderTest {
     private static GuardianConfig with(GuardianConfig d,
                                        GuardianConfig.Lookup lookup) {
         return new GuardianConfig(d.database(), d.queue(), d.logFile(), d.actions(),
-            d.permissions(), lookup, d.privacy(), d.purge(), d.theme());
+            d.permissions(), lookup, d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us");
     }
 
     private static GuardianConfig with(GuardianConfig d,
                                        GuardianConfig.Privacy privacy) {
         return new GuardianConfig(d.database(), d.queue(), d.logFile(), d.actions(),
-            d.permissions(), d.lookup(), privacy, d.purge(), d.theme());
+            d.permissions(), d.lookup(), privacy, d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us");
     }
 
     private static GuardianConfig with(GuardianConfig d,
                                        GuardianConfig.Purge purge) {
         return new GuardianConfig(d.database(), d.queue(), d.logFile(), d.actions(),
-            d.permissions(), d.lookup(), d.privacy(), purge, d.theme());
+            d.permissions(), d.lookup(), d.privacy(), purge,
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us");
     }
 
     static Stream<Arguments> invalidConfigs() {
@@ -206,60 +215,90 @@ class ConfigLoaderTest {
         return Stream.of(
             Arguments.of("bad theme",
                 new GuardianConfig(d.database(), d.queue(), d.logFile(), d.actions(),
-                    d.permissions(), d.lookup(), d.privacy(), d.purge(), "rainbow"),
+                    d.permissions(), d.lookup(), d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), "rainbow",
+            "en_us"),
                 "theme"),
             Arguments.of("unknown db type",
                 new GuardianConfig(
-                    new GuardianConfig.Database("oracle", "x", null, null, null),
+                    new GuardianConfig.Database("oracle", "x", null, null, null, null, GuardianConfig.Hikari.defaults()),
                     d.queue(), d.logFile(), d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+                    GuardianConfig.Storage.defaults(),
+                    GuardianConfig.Rollback.defaults(), d.theme(),
+                    "en_us"),
                 "database.type"),
             Arguments.of("sqlite missing file",
                 new GuardianConfig(
-                    new GuardianConfig.Database("sqlite", "  ", null, null, null),
+                    new GuardianConfig.Database("sqlite", "  ", null, null, null, null, GuardianConfig.Hikari.defaults()),
                     d.queue(), d.logFile(), d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+                    GuardianConfig.Storage.defaults(),
+                    GuardianConfig.Rollback.defaults(), d.theme(),
+                    "en_us"),
                 "database.file"),
             Arguments.of("mysql missing jdbc url",
                 new GuardianConfig(
-                    new GuardianConfig.Database("mysql", null, null, "u", "p"),
+                    new GuardianConfig.Database("mysql", null, null, "u", "p", null, GuardianConfig.Hikari.defaults()),
                     d.queue(), d.logFile(), d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+                    GuardianConfig.Storage.defaults(),
+                    GuardianConfig.Rollback.defaults(), d.theme(),
+                    "en_us"),
                 "database.jdbcUrl"),
             Arguments.of("queue.maxSize zero",
                 new GuardianConfig(d.database(),
                     new GuardianConfig.Queue(0, 1000, 10),
                     d.logFile(), d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "queue.maxSize"),
             Arguments.of("queue.batchSize > maxSize",
                 new GuardianConfig(d.database(),
                     new GuardianConfig.Queue(10, 1000, 100),
                     d.logFile(), d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "queue.batchSize"),
             Arguments.of("queue.flushIntervalMs zero",
                 new GuardianConfig(d.database(),
                     new GuardianConfig.Queue(100, 0, 10),
                     d.logFile(), d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "queue.flushIntervalMs"),
             Arguments.of("logFile.retentionDays negative",
                 new GuardianConfig(d.database(), d.queue(),
-                    new GuardianConfig.LogFile(true, "logs", true, -1),
+                    new GuardianConfig.LogFile(true, "logs", true, -1, true),
                     d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "logFile.retentionDays"),
             Arguments.of("logFile enabled but blank directory",
                 new GuardianConfig(d.database(), d.queue(),
-                    new GuardianConfig.LogFile(true, "", true, 0),
+                    new GuardianConfig.LogFile(true, "", true, 0, true),
                     d.actions(), d.permissions(), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "logFile.directory"),
             Arguments.of("defaultOpLevel out of range",
                 new GuardianConfig(d.database(), d.queue(), d.logFile(), d.actions(),
-                    new GuardianConfig.Permissions(true, 9), d.lookup(),
-                    d.privacy(), d.purge(), d.theme()),
+                    new GuardianConfig.Permissions(true, 9, java.util.Map.of()), d.lookup(),
+                    d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "permissions.defaultOpLevel"),
             Arguments.of("lookup.defaultPageSize too high",
                 with(d, new GuardianConfig.Lookup(99, 100, 100_000, 4)),
@@ -299,8 +338,25 @@ class ConfigLoaderTest {
                     new GuardianConfig.Actions(
                         true, true, true, true, true, true, true, true, true, true, true,
                         new ArrayList<>(), nullableList("minecraft:air", null), new ArrayList<>(),
-                        60_000L, 512, new ArrayList<>(), false),
-                    d.permissions(), d.lookup(), d.privacy(), d.purge(), d.theme()),
+                        60_000L, 512, new ArrayList<>(), false,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        true,
+                        false,
+                        false,
+                        true,
+                        true,
+                        false,
+                        true,
+                        false,
+                        true),
+                    d.permissions(), d.lookup(), d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), d.theme(),
+            "en_us"),
                 "actions.blockBlacklist[1]")
         );
     }
@@ -326,16 +382,19 @@ class ConfigLoaderTest {
     @DisplayName("validate() aggregates multiple errors in a single exception")
     void validateAggregatesErrors() {
         GuardianConfig bad = new GuardianConfig(
-            new GuardianConfig.Database("oracle", null, null, null, null),
+            new GuardianConfig.Database("oracle", null, null, null, null, null, GuardianConfig.Hikari.defaults()),
             new GuardianConfig.Queue(-1, -1, -1),
-            new GuardianConfig.LogFile(true, "", true, -5),
+            new GuardianConfig.LogFile(true, "", true, -5, true),
             GuardianConfig.defaults().actions(),
-            new GuardianConfig.Permissions(false, 17),
+            new GuardianConfig.Permissions(false, 17, java.util.Map.of()),
             new GuardianConfig.Lookup(0, 0, 50, 0),
             new GuardianConfig.Privacy(true, "x"),
             new GuardianConfig.Purge(1L, 1L, 0L, "03:30"),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(),
             "neon-pink"
-        );
+        ,
+        "en_us");
         assertThatThrownBy(bad::validate)
             .isInstanceOf(IllegalStateException.class)
             .satisfies(t -> {
@@ -361,7 +420,10 @@ class ConfigLoaderTest {
         Path p = tmp.resolve("config.json");
         GuardianConfig d = GuardianConfig.defaults();
         GuardianConfig bad = new GuardianConfig(d.database(), d.queue(), d.logFile(),
-            d.actions(), d.permissions(), d.lookup(), d.privacy(), d.purge(), "neon-pink");
+            d.actions(), d.permissions(), d.lookup(), d.privacy(), d.purge(),
+            GuardianConfig.Storage.defaults(),
+            GuardianConfig.Rollback.defaults(), "neon-pink",
+            "en_us");
         ConfigLoader.save(p, bad);
 
         assertThatThrownBy(() -> ConfigLoader.load(p))

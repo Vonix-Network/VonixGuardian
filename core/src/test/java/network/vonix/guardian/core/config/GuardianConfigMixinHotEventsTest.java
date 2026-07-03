@@ -50,7 +50,9 @@ class GuardianConfigMixinHotEventsTest {
         );
         var c2 = new GuardianConfig(
             c.database(), c.queue(), c.logFile(), flipped, c.permissions(),
-            c.lookup(), c.privacy(), c.purge(), c.theme(), c.language()
+            c.lookup(), c.privacy(), c.purge(),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(), c.theme(), c.language()
         );
         c2.validate();
         assertThat(c2.actions().mixinHotEvents()).isFalse();
@@ -165,7 +167,9 @@ class GuardianConfigMixinHotEventsTest {
         GuardianConfig toSave = new GuardianConfig(
             defaults.database(), defaults.queue(), defaults.logFile(), flipped,
             defaults.permissions(), defaults.lookup(), defaults.privacy(),
-            defaults.purge(), defaults.theme(), defaults.language()
+            defaults.purge(),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(), defaults.theme(), defaults.language()
         );
         ConfigLoader.save(cfgPath, toSave);
 
@@ -179,7 +183,9 @@ class GuardianConfigMixinHotEventsTest {
         GuardianConfig c = GuardianConfig.defaults();
         var broken = new GuardianConfig(
             c.database(), c.queue(), c.logFile(), c.actions(), c.permissions(),
-            c.lookup(), c.privacy(), c.purge(), "not-a-theme", c.language()
+            c.lookup(), c.privacy(), c.purge(),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(), "not-a-theme", c.language()
         );
         assertThatThrownBy(broken::validate)
             .isInstanceOf(IllegalStateException.class)

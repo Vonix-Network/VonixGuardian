@@ -31,7 +31,8 @@ class EventGateFastPathTest {
             List.of(), false,
             true, true, true, true, true, false, false, true, true, false, true, false,
             true
-        );
+        ,
+        true);
     }
 
     private static Action action(ActionType type, String sourceTag) {

@@ -94,16 +94,19 @@ class EntityChangeAttributionPolicyTest {
                 a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(),
                 a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(),
                 a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(),
-                a.logDuplicateSuppression(), a.logCancelledChat());
+                a.logDuplicateSuppression(), a.logCancelledChat(),
+                true);
         return new GuardianConfig(
-                new GuardianConfig.Database("sqlite", tmp.resolve("entity-policy.db").toString(), null, null, null),
+                new GuardianConfig.Database("sqlite", tmp.resolve("entity-policy.db").toString(), null, null, null, null, GuardianConfig.Hikari.defaults()),
                 new GuardianConfig.Queue(100, 5_000L, 10),
-                new GuardianConfig.LogFile(false, "logs", true, 30),
+                new GuardianConfig.LogFile(false, "logs", true, 30, true),
                 actions,
                 base.permissions(),
                 base.lookup(),
                 base.privacy(),
                 new GuardianConfig.Purge(86_400L, 2_592_000L, 0L, "03:30"),
+                GuardianConfig.Storage.defaults(),
+                GuardianConfig.Rollback.defaults(),
                 base.theme(),
                 base.language());
     }

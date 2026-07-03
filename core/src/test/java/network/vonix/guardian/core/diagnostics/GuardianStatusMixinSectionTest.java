@@ -63,14 +63,16 @@ class GuardianStatusMixinSectionTest {
             mixinHotEvents
         );
         return new GuardianConfig(
-            new GuardianConfig.Database("sqlite", tmp.resolve("status-mixin.db").toString(), null, null, null),
+            new GuardianConfig.Database("sqlite", tmp.resolve("status-mixin.db").toString(), null, null, null, null, GuardianConfig.Hikari.defaults()),
             new GuardianConfig.Queue(1000, 5_000L, 100),
-            new GuardianConfig.LogFile(false, "logs", true, 30),
+            new GuardianConfig.LogFile(false, "logs", true, 30, true),
             flippedActions,
             d.permissions(),
             d.lookup(),
             d.privacy(),
             d.purge(),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(),
             d.theme(),
             d.language()
         );

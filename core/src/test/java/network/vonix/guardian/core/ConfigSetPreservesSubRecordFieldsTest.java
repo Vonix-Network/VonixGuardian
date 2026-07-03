@@ -91,11 +91,11 @@ class ConfigSetPreservesSubRecordFieldsTest {
 
     private static GuardianConfig hotCfg() {
         return new GuardianConfig(
-            new GuardianConfig.Database("sqlite", "test.db", null, null, null),
+            new GuardianConfig.Database("sqlite", "test.db", null, null, null, null, GuardianConfig.Hikari.defaults()),
             new GuardianConfig.Queue(1000, 5_000L, 100),
             hotLogFile(),
             hotActions(),
-            new GuardianConfig.Permissions(true, 3),
+            new GuardianConfig.Permissions(true, 3, java.util.Map.of()),
             new GuardianConfig.Lookup(7, 10_000, 100_000, 4),
             new GuardianConfig.Privacy(false, "some-16-char-salt-000000"),
             new GuardianConfig.Purge(86_400L, 3_600L, 0L, "03:30"),

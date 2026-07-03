@@ -27,7 +27,21 @@ class EventGateTest {
                 all, all, all, all, all, all, all, all, all,
                 all, all,
                 worlds, blocks, sources,
-                60_000L, 512, List.of(), false);
+                60_000L, 512, List.of(), false,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                true,
+                false,
+                true);
     }
 
     private static GuardianConfig.Actions allOn() {
@@ -59,7 +73,21 @@ class EventGateTest {
         GuardianConfig.Actions c = new GuardianConfig.Actions(
                 true, true, true, true, true, true, true, true, true, true, true,
                 null, null, null,
-                60_000L, 512, List.of(), false);
+                60_000L, 512, List.of(), false,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                true,
+                false,
+                true);
         EventGate g = new EventGate(c);
         assertThat(g.shouldLog(action(ActionType.BLOCK_BREAK, "minecraft:overworld", "minecraft:stone", null)))
                 .isTrue();
@@ -115,7 +143,21 @@ class EventGateTest {
         GuardianConfig.Actions c = new GuardianConfig.Actions(
                 false, true, true, true, true, true, true, true, true, true, true,
                 List.of(), List.of(), List.of(),
-                60_000L, 512, List.of(), false);
+                60_000L, 512, List.of(), false,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                true,
+                true,
+                false,
+                true,
+                false,
+                true);
         EventGate g = new EventGate(c);
         assertThat(g.shouldLog(action(ActionType.BLOCK_BREAK, "w", "minecraft:stone", null))).isFalse();
         assertThat(g.shouldLog(action(ActionType.BLOCK_PLACE, "w", "minecraft:stone", null))).isFalse();

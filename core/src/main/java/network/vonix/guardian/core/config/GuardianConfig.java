@@ -61,8 +61,14 @@ public record GuardianConfig(
     /**
      * Backward-compat constructor for callers/tests written before {@code rollback} existed.
      * Defaults {@code rollback} to {@link Rollback#defaults()}.
+     *
      * @since 1.3.1 X8
+     * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree caller/test to the
+     *     12-arg canonical constructor. Kept for one release cycle for out-of-tree consumers;
+     *     slated for removal in a subsequent minor. Prefer the canonical 12-arg constructor
+     *     or {@link #defaults()} + {@code with*} helpers.
      */
+    @Deprecated(since = "1.3.6", forRemoval = true)
     public GuardianConfig(
         Database database,
         Queue queue,
@@ -84,8 +90,12 @@ public record GuardianConfig(
      * Backward-compat constructor for callers/tests written before {@code storage} existed.
      * Defaults {@code storage} to {@link Storage#defaults()} and {@code rollback} to
      * {@link Rollback#defaults()}.
+     *
      * @since 1.3.1
+     * @deprecated since 1.3.6 — see the 11-arg overload's deprecation note. Prefer the canonical
+     *     12-arg constructor.
      */
+    @Deprecated(since = "1.3.6", forRemoval = true)
     public GuardianConfig(
         Database database,
         Queue queue,
@@ -106,7 +116,11 @@ public record GuardianConfig(
      * Backward-compat constructor for callers/tests written before {@code language} existed.
      * Defaults {@code language} to {@code "en_us"}, {@code storage} to {@link Storage#defaults()},
      * and {@code rollback} to {@link Rollback#defaults()}.
+     *
+     * @deprecated since 1.3.6 — see the 11-arg overload's deprecation note. Prefer the canonical
+     *     12-arg constructor.
      */
+    @Deprecated(since = "1.3.6", forRemoval = true)
     public GuardianConfig(
         Database database,
         Queue queue,
@@ -161,12 +175,23 @@ public record GuardianConfig(
     public record Database(String type, String file, String jdbcUrl, String user, String password,
                            MigrationTarget migrationTarget, Hikari hikari) {
 
-        /** Backward-compat constructor for callers/tests written before {@code migrationTarget} existed. */
+        /**
+         * Backward-compat constructor for callers/tests written before {@code migrationTarget} existed.
+         *
+         * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree call site to the 7-arg
+         *     canonical constructor. Kept for one release cycle for out-of-tree consumers.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password) {
             this(type, file, jdbcUrl, user, password, null, Hikari.defaults());
         }
 
-        /** Backward-compat constructor for callers/tests written before {@code hikari} existed (v1.3.1 X6). */
+        /**
+         * Backward-compat constructor for callers/tests written before {@code hikari} existed (v1.3.1 X6).
+         *
+         * @deprecated since 1.3.6 — see the 5-arg overload's deprecation note.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password,
                         MigrationTarget migrationTarget) {
             this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults());
@@ -232,7 +257,13 @@ public record GuardianConfig(
     public record LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays,
                           boolean forceSyncOnFlush) {
 
-        /** Backward-compat constructor pre-X6 (defaults forceSyncOnFlush=true). */
+        /**
+         * Backward-compat constructor pre-X6 (defaults forceSyncOnFlush=true).
+         *
+         * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree call site to the 5-arg
+         *     canonical constructor. Kept for one release cycle for out-of-tree consumers.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
         public LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays) {
             this(enabled, directory, gzipRotated, retentionDays, true);
         }
@@ -480,7 +511,13 @@ public record GuardianConfig(
         int defaultOpLevel,
         java.util.Map<String, Integer> perNodeOpLevels
     ) {
-        /** Backward-compat constructor for callers/tests written before {@code perNodeOpLevels} existed. */
+        /**
+         * Backward-compat constructor for callers/tests written before {@code perNodeOpLevels} existed.
+         *
+         * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree call site to the 3-arg
+         *     canonical constructor. Kept for one release cycle for out-of-tree consumers.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
         public Permissions(boolean useLuckPerms, int defaultOpLevel) {
             this(useLuckPerms, defaultOpLevel, java.util.Map.of());
         }
