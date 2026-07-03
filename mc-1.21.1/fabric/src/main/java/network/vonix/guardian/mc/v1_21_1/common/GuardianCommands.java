@@ -824,6 +824,9 @@ public final class GuardianCommands {
                 case "actions.entityBlockChangeMaxTracked" -> Integer.toString(c.actions().entityBlockChangeMaxTracked());
                 case "actions.entityChangeLogAllEntities" -> Boolean.toString(c.actions().entityChangeLogAllEntities());
                 case "actions.mixinHotEvents" -> Boolean.toString(c.actions().mixinHotEvents());
+                case "storage.persistNbt" -> Boolean.toString(c.storage().persistNbt());
+                case "rollback.explosionSupplementalReach" -> Integer.toString(c.rollback().explosionSupplementalReach());
+                case "language" -> c.language();
                 default -> null;
             };
         }
@@ -835,16 +838,16 @@ public final class GuardianCommands {
             GuardianConfig.Privacy pr = c.privacy();
             GuardianConfig.Purge pu = c.purge();
             return switch (key) {
-                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, value);
-                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays()), a, c.permissions(), l, pr, pu, c.theme());
-                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.theme());
-                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.theme());
-                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.theme());
-                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.theme());
-                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.theme());
-                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.theme());
-                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.theme());
-                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.theme());
+                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), value, c.language());
+                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays()), a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.storage(), c.rollback(), c.theme(), c.language());
                 case "actions.logBlocks" -> withActions(c, new GuardianConfig.Actions(parseBool(value, key), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
                 case "actions.logContainers" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), parseBool(value, key), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
                 case "actions.logItems" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), parseBool(value, key), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
@@ -860,12 +863,15 @@ public final class GuardianCommands {
                 case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
                 case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key)));
                 case "actions.mixinHotEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), parseBool(value, key)));
+                case "storage.persistNbt" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, new GuardianConfig.Storage(parseBool(value, key)), c.rollback(), c.theme(), c.language());
+                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key)), c.theme(), c.language());
+                case "language" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), value);
                 default -> null;
             };
         }
 
         private static GuardianConfig withActions(GuardianConfig c, GuardianConfig.Actions a) {
-            return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.theme());
+            return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.storage(), c.rollback(), c.theme(), c.language());
         }
 
         private static boolean parseBool(String value, String key) {

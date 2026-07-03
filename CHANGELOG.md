@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-07-03
+
+**Round-3 audit close-out.** v1.3.2 shipped clean reload+boot plumbing for
+the X1/X8/Y3 widened sections, but round-3 parity + perf audits surfaced
+one P0 and three P1 defects that survived Y3 because the audits inspected
+call sites Y3 didn't own. Z1 closes the last widened-config plumbing hole
+(the `/vg config set` write path drops every widened section on every
+call, silently reverting operator overrides to defaults). Z2 + Z3 restore
+Forge cell action-type parity via the event bus for the 15 mixin classes
+that compile but never load on Forge. Z4 tightens reload swap order and
+guards the AutoPurgeScheduler reschedule race.
+
+### Fixed
+
+- **Z1 — `/vg config set` canonical 12-arg ctor across all 8 cells (P0-A).**
+  Every `/vg config set <key> <value>` in all 8 loader cells routed through
+  the per-cell `withValue(...)` / `withActions(...)` helpers, both of which
+  rebuilt `GuardianConfig` via the 9-arg backward-compat constructor. That
+  overload defaults `storage`, `rollback` and `language` to their
+  `defaults()`, so an operator who had set `storage.persistNbt=true` (the
+  entire Y1 NBT fidelity pipeline!) or `rollback.explosionSupplementalReach`
+  or `language` lost the setting the first time they ran any `/vg config
+  set` command, including sets on completely unrelated keys like `theme`.
+  Z1 refactors all 88 call sites (11 cases × 8 cells) plus the
+  `withActions` helper in every cell to use the canonical 12-arg constructor
+  form threading `c.storage()`, `c.rollback()` and `c.language()` through
+  unchanged. Adds first-class `/vg config set` cases for
+  `storage.persistNbt` (boolean), `rollback.explosionSupplementalReach`
+  (int 0-1024), and `language` (validated string) so operators can toggle
+  those knobs from in-game; matching `readValue` cases surface the current
+  values via `/vg config get`. Regression pin:
+  `ConfigSetPreservesSectionsTest` (6 cases covering storage/rollback/
+  language preservation on unrelated `set theme` / `set actions.*`,
+  save+load round-trip, and end-to-end `persistNbt` toggle activation
+  through `Guardian.reloadConfig`).
+
+- **Z2 — Forge cell natural-block event-bus parity fallback (P1-A).**
+  15 Forge mixin classes for Fire / Ice / Leaves / SpreadingSnowyDirt /
+  Dispenser exist on disk in the mc-1.18.2, mc-1.19.2 and mc-1.20.1
+  Forge cells but no `vg.mixins.json` + no `mods.toml [[mixins]]` block
+  wires them — they compile but never load at runtime, leaving Forge with
+  zero coverage for BURN / IGNITE / FADE / FORM / SPREAD / LEAVES_DECAY /
+  DISPENSE action types. Z2 routes the same event surface through Forge's
+  public event bus (`BlockEvent.NeighborNotifyEvent`, `BlockEvent.FluidPlaceBlockEvent`,
+  fire/ice/leaf tick handlers, `DispenserEvent`) and deletes the 15 dormant
+  mixin files.
+
+- **Z3 — Forge cell hopper + `/fill` + `/setblock` event-bus parity (P1-B, P1-C).**
+  Same dormancy pattern as Z2 for hopper-push/pull (via `TickEvent.LevelTickEvent`
+  hopper polling) and command-driven per-block writes (via `CommandEvent`
+  interception for `/fill` and `/setblock`). Deletes the remaining dormant
+  mixin files.
+
+- **Z4 — Reload swap order + AutoPurgeScheduler finally guard (P2 / G-Y3-1 /
+  G-Y3-2).** `Guardian.reloadConfig` swapped the config field before rebuilding
+  the `EventGate`, opening a ~microsecond window on the tick thread where
+  submits saw the new config but the old hook chain, causing a stale kill-switch
+  short-circuit decision. Z4 rebuilds the gate first, then swaps atomically.
+  `AutoPurgeScheduler.runOnce` computed the next-fire time from an interior
+  snapshot outside its lock, so a concurrent `applyConfig` reschedule could
+  race and produce a double-schedule window. Z4 synchronizes the terminal
+  `scheduleAt` under the scheduler's monitor.
+
+### Migration notes
+
+- No schema change. No config-file migration.
+- Operator-visible: `/vg config get storage.persistNbt` /
+  `/vg config get rollback.explosionSupplementalReach` /
+  `/vg config get language` and their `/vg config set` counterparts are now
+  wired. Setting any unrelated key no longer resets these three sections.
+- Loader parity: Forge cells (1.18.2 / 1.19.2 / 1.20.1) now cover the same
+  action-type surface as Fabric and NeoForge for natural blocks, hoppers,
+  and `/fill` `/setblock`. Effective on next server restart.
+
 ## [1.3.2] - 2026-07-03
 
 **Wave-Y integration close-out.** Every X-series (v1.3.1) knob and producer
