@@ -213,6 +213,14 @@ public final class ConfigLoader {
         boolean vHopperMetaFilter    = w5_07AllFalse ? false : a.logHopperMetaFilter();
         boolean vDuplicateSuppression= w5_07AllFalse ? true  : a.logDuplicateSuppression();
         boolean vCancelledChat       = w5_07AllFalse ? false : a.logCancelledChat();
+        // v1.3.0 W4: mixinHotEvents defaults ON. If the config predates W4, the field is
+        // absent → Gson deserialises to false → we backfill to true. Heuristic: a config that
+        // ALSO has every W5-07 toggle false almost certainly predates W4 (W5-07 shipped in
+        // v1.2.6, W4 in v1.3.0). We conservatively only backfill mixinHotEvents to true when
+        // we're already convinced this is a pre-W5-07 (and therefore pre-W4) config; otherwise
+        // we honor the explicit operator value. An operator who intentionally disables the
+        // kill-switch on a modern config keeps their setting.
+        boolean vMixinHotEvents      = w5_07AllFalse ? true  : a.mixinHotEvents();
         var newActions = new GuardianConfig.Actions(
                 a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(),
                 a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(),
@@ -223,7 +231,8 @@ public final class ConfigLoader {
                 vNaturalBreaks, vTreeGrowth, vMushroomGrowth, vVineGrowth,
                 vSculkSpread, vPortals, vWaterFlow, vLavaFlow,
                 vFireExtinguish, vCampfireStart, vHopperMetaFilter,
-                vDuplicateSuppression, vCancelledChat
+                vDuplicateSuppression, vCancelledChat,
+                vMixinHotEvents
         );
         return new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), newActions,
