@@ -41,8 +41,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     private static final String INSERT_ACTION_SQL =
         "INSERT INTO vg_actions("
         + "ts, type, user_id, world_id, x, y, z, target, meta, amount, rolled_back, source_tag, "
-        + "sign_side, sign_dye_color, sign_waxed"
-        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        + "sign_side, sign_dye_color, sign_waxed, "
+        + "old_block_state, new_block_state, block_entity_nbt, item_nbt, entity_nbt"
+        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     /** uuid-string -> id, only populated for real (non-null UUID) users. */
     private final ConcurrentHashMap<String, Integer> userIdByUuid = new ConcurrentHashMap<>();
@@ -149,6 +150,35 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                     } else {
                         ps.setBoolean(15, a.signWaxed());
                     }
+                    // v1.3.1 X1 — NBT fidelity columns. All nullable; producers only
+                    // populate them when config.storage.persistNbt=true. The DAO reads
+                    // whatever it finds regardless so historical rows survive a toggle
+                    // flip.
+                    if (a.oldBlockState() == null) {
+                        ps.setNull(16, java.sql.Types.VARCHAR);
+                    } else {
+                        ps.setString(16, a.oldBlockState());
+                    }
+                    if (a.newBlockState() == null) {
+                        ps.setNull(17, java.sql.Types.VARCHAR);
+                    } else {
+                        ps.setString(17, a.newBlockState());
+                    }
+                    if (a.blockEntityNbt() == null) {
+                        ps.setNull(18, java.sql.Types.VARBINARY);
+                    } else {
+                        ps.setBytes(18, a.blockEntityNbt());
+                    }
+                    if (a.itemNbt() == null) {
+                        ps.setNull(19, java.sql.Types.VARBINARY);
+                    } else {
+                        ps.setBytes(19, a.itemNbt());
+                    }
+                    if (a.entityNbt() == null) {
+                        ps.setNull(20, java.sql.Types.VARBINARY);
+                    } else {
+                        ps.setBytes(20, a.entityNbt());
+                    }
                     ps.addBatch();
                 }
                 int[] r = ps.executeBatch();
@@ -252,8 +282,16 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         String signDyeColor = rs.getString(16);
         boolean waxedRaw = rs.getBoolean(17);
         Boolean signWaxed = rs.wasNull() ? null : waxedRaw;
+        // v1.3.1 X1 NBT columns. Read regardless of storage.persistNbt so
+        // historical rows survive the operator toggling the flag back off.
+        String oldBlockState = rs.getString(18);
+        String newBlockState = rs.getString(19);
+        byte[] blockEntityNbt = rs.getBytes(20);
+        byte[] itemNbt = rs.getBytes(21);
+        byte[] entityNbt = rs.getBytes(22);
         return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
-                          rolledBack, sourceTag, signSide, signDyeColor, signWaxed);
+                          rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
+                          oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt);
     }
 
     private static UUID safeUuid(String s) {

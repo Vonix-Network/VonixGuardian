@@ -971,6 +971,180 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 .position(x, y, z).targetId(targetId).sourceTag(sourceTag).build());
     }
 
+    // -------------------------------------------------------------------- v1.3.1 X1: NBT overrides
+    //
+    // These honor storage.persistNbt: when disabled (default), we ignore the
+    // NBT payload entirely and behave as the non-NBT overload — no allocation,
+    // no wasted DAO column writes. When enabled, we thread the NBT bytes into
+    // the ActionBuilder so the DAO persists them to the v5 columns.
+    //
+    // We keep the surface small (block break/place, container change, item
+    // drop/pickup, entity kill/spawn, entity change block, hopper push/pull);
+    // sibling waves X4/X7/X9 add more producer wiring on top.
+
+    private boolean persistNbt() {
+        GuardianConfig cfg = config;
+        return cfg != null && cfg.storage() != null && cfg.storage().persistNbt();
+    }
+
+    @Override
+    public void submitBlockBreak(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String blockId, String sourceTag,
+                                 String oldBlockState, byte[] blockEntityNbt) {
+        if (!persistNbt()) {
+            submitBlockBreak(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.BLOCK_BREAK, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag)
+                .oldBlockState(oldBlockState)
+                .blockEntityNbt(blockEntityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitBlockPlace(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String blockId, String sourceTag,
+                                 String newBlockState, byte[] blockEntityNbt) {
+        if (!persistNbt()) {
+            submitBlockPlace(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.BLOCK_PLACE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag)
+                .newBlockState(newBlockState)
+                .blockEntityNbt(blockEntityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitContainerChange(UUID actorUuid, String actorName, String worldId,
+                                      int x, int y, int z, String itemId, int delta, String sourceTag,
+                                      byte[] itemNbt) {
+        if (delta == 0) {
+            return;
+        }
+        if (!persistNbt()) {
+            submitContainerChange(actorUuid, actorName, worldId, x, y, z, itemId, delta, sourceTag);
+            return;
+        }
+        submit(seed(delta > 0 ? ActionType.CONTAINER_DEPOSIT : ActionType.CONTAINER_WITHDRAW,
+                    actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(Math.abs(delta)).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitItemDrop(UUID actorUuid, String actorName, String worldId,
+                               int x, int y, int z, String itemId, int amount, String sourceTag,
+                               byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitItemDrop(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ITEM_DROP, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitItemPickup(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitItemPickup(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ITEM_PICKUP, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitEntityKill(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String entityType, String sourceTag,
+                                 byte[] entityNbt) {
+        if (!persistNbt()) {
+            submitEntityKill(actorUuid, actorName, worldId, x, y, z, entityType, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ENTITY_KILL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag)
+                .entityNbt(entityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitEntitySpawn(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String entityType, String sourceTag,
+                                  byte[] entityNbt) {
+        if (!persistNbt()) {
+            submitEntitySpawn(actorUuid, actorName, worldId, x, y, z, entityType, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ENTITY_SPAWN, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag)
+                .entityNbt(entityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z,
+                                        String oldBlockId, String newBlockId, String sourceTag,
+                                        String oldBlockState, String newBlockState,
+                                        byte[] blockEntityNbt) {
+        if (!persistNbt()) {
+            submitEntityChangeBlock(actorUuid, actorName, worldId, x, y, z,
+                                    oldBlockId, newBlockId, sourceTag);
+            return;
+        }
+        // The non-NBT overload calls submitEntityChangeBlock at line 881 with
+        // its coalescer plumbing; we keep the payload-carrying variant separate
+        // and route straight through submit(). Sibling wave X2 owns the
+        // coalescer-friendly NBT path.
+        submit(seed(ActionType.ENTITY_CHANGE_BLOCK, actorUuid, actorName, worldId)
+                .position(x, y, z)
+                .targetId(newBlockId)
+                .targetMeta(oldBlockId)
+                .sourceTag(sourceTag)
+                .oldBlockState(oldBlockState)
+                .newBlockState(newBlockState)
+                .blockEntityNbt(blockEntityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitHopperPush(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.HOPPER_PUSH, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitHopperPull(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.HOPPER_PULL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
     // -------------------------------------------------------------------- inspector
 
     /**

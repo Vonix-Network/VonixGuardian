@@ -137,7 +137,8 @@ public final class ConfigLoader {
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), newPurge,
-                work.theme()
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
         if (work.permissions() != null && work.permissions().perNodeOpLevels() == null) {
@@ -149,7 +150,8 @@ public final class ConfigLoader {
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 newPerms, work.lookup(), work.privacy(), work.purge(),
-                work.theme()
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
         if (work.language() == null) {
@@ -157,7 +159,22 @@ public final class ConfigLoader {
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
-                work.theme()
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.theme(), "en_us"
+            );
+        }
+        // v1.3.1 X1: backfill storage=Storage.defaults() (persistNbt=false, the safe
+        // pre-X1 behaviour) when the on-disk config predates the field. Absent JSON
+        // key → Gson gives null; we replace with the shipped default so validate()
+        // and downstream .storage() readers never see null. Operators who set an
+        // explicit storage.persistNbt=true keep their setting.
+        if (work.storage() == null) {
+            LOG.info("Backfilling storage=Storage.defaults() persistNbt=false (pre-v1.3.1 X1 config)");
+            work = new GuardianConfig(
+                work.database(), work.queue(), work.logFile(), work.actions(),
+                work.permissions(), work.lookup(), work.privacy(), work.purge(),
+                GuardianConfig.Storage.defaults(),
+                work.theme(), work.language()
             );
         }
         if (work.actions() == null) return work;
@@ -237,7 +254,8 @@ public final class ConfigLoader {
         return new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), newActions,
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
-                work.theme()
+                work.storage(),
+                work.theme(), work.language()
         );
     }
 
