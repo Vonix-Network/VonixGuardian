@@ -1397,6 +1397,8 @@ public final class ForgeEvents {
      *  across an in-JVM restart. Idempotent. */
     public static void reset() {
         pendingDispatcher = null;
+        clearNaturalBlockCache();
+        clearHopperTracker();
     }
 
     // ====================================================================== v1.3.2 Y2 — event-bus parity handlers
@@ -1773,6 +1775,444 @@ public final class ForgeEvents {
             new ConcurrentHashMap<>();
     /** Rate-limit for onLivingTick error logging. */
     private static final Map<String, Long> LIVING_TICK_WARN_LIMIT = new ConcurrentHashMap<>();
+
+
+    // ====================================================================== v1.3.3 Z3 — Forge hopper + /fill //setblock event-bus fallback
+    //
+    // Round-3 audit finding P1-B and P1-C:
+    //   * HopperBlockEntityMixin.java (Z3 territory) called ForgeMixinBridge.hopperPush/Pull,
+    //     but with no vg.mixins.json wiring the injects never activate — hopper
+    //     transfers produced zero audit rows on Forge.
+    //   * FillCommandMixin.java + SetBlockCommandMixin.java existed but were
+    //     equally dormant — /fill and /setblock produced no per-block audit rows.
+    //
+    // Forge has NO first-class event for HopperBlockEntity#tryMoveItems or for
+    // per-block writes from /fill / /setblock. Z3 restores coverage via a
+    // sampled hopper content-diff tracker + a CommandEvent-driven pre/post
+    // snapshot for the two commands. Both are documented as best-effort:
+    //
+    // ACKNOWLEDGED COVERAGE GAPS (see docs/PERF-NOTES-1.3.3.md § Z3):
+    //   * HOPPER: sampled at HOPPER_SAMPLE_PER_TICK=20 hoppers per level per tick.
+    //     On shards with hopper-farm densities >2000 active hoppers/dimension
+    //     the sampler will miss transfers between the un-sampled majority on
+    //     any given tick, but will eventually catch every hopper within
+    //     ceil(N/20) ticks. Ledger's mixin-based hook is exact per transfer;
+    //     Z3's tracker is a diff-based sample that observes only the net
+    //     content delta between two samples of the same slot — chained
+    //     push+pull within the same sample window can cancel out and go
+    //     unrecorded. Fabric + NeoForge continue to use their wired
+    //     HopperBlockEntityMixin for exact per-transfer capture.
+    //   * HOPPER: pre-existing hoppers loaded before the server-side tracker
+    //     is initialised (i.e. before the first LevelTickEvent for that level)
+    //     are picked up when their chunk first fires ChunkEvent.Load with a
+    //     block-entity walk. Hoppers placed while the tracker was inactive
+    //     (e.g. during config reload) are not seen until the next chunk load.
+    //   * COMMAND: /fill regions larger than FILL_MAX_REGION_BLOCKS (32,768,
+    //     the vanilla /fill hard cap) are skipped entirely to keep the pre/post
+    //     snapshot bounded. Vanilla /fill itself rejects regions >32,768 so
+    //     this is a no-op in practice; modded /fill variants that widen the
+    //     cap are documented as uncovered.
+    //   * COMMAND: /fill with mode=replace and a filter clause reads the same
+    //     per-position break+place delta; we do not attempt to reproduce the
+    //     filter semantics — we just diff pre vs post, which is what any
+    //     rollback system needs.
+    //   * COMMAND: pre/post-snapshot fires on the CURRENT server tick and
+    //     deferred diff runs on server.execute() (next tick boundary). Vanilla
+    //     /fill and /setblock complete synchronously within the command
+    //     invocation, so this ordering is correct. A mod that delays the
+    //     write to a later tick will observe the "post" state at execute time
+    //     as still equal to pre, and the row will be omitted (safe under-log
+    //     rather than false positive).
+
+    /** Z3 — sample-per-tick cap for hopper content-diff. */
+    private static final int HOPPER_SAMPLE_PER_TICK = 20;
+    /** Z3 — hard cap on tracked hopper positions per level. */
+    private static final int HOPPER_TRACKER_MAX_PER_LEVEL = 8192;
+    /** Z3 — hard cap on /fill region size we will snapshot (vanilla limit). */
+    private static final int FILL_MAX_REGION_BLOCKS = 32_768;
+    /** Z3 — vanilla hopper slot count. */
+    private static final int HOPPER_SLOTS = 5;
+
+    /**
+     * Z3 — Per-level tracked hopper packed-keys, iterated round-robin by the
+     * per-tick sampler. Populated on {@code ChunkEvent.Load} block-entity walk
+     * and on hopper block-place; drained on hopper break + hopper chunk-unload.
+     */
+    private static final Map<String, java.util.concurrent.ConcurrentLinkedDeque<Long>> HOPPER_POS_BY_LEVEL =
+            new ConcurrentHashMap<>();
+    /**
+     * Z3 — Per-position slot-contents snapshot. Value is a length-5 array of
+     * "item_id:count" strings (null-slot == empty).
+     */
+    private static final Map<Long, String[]> HOPPER_SNAPSHOT = new ConcurrentHashMap<>();
+    /**
+     * Z3 — Parallel lookup from packed key to the BlockPos it represents.
+     * We keep this so the sampler can recover the position without needing to
+     * reverse the XOR-mixed encoding.
+     */
+    private static final Map<Long, BlockPos> HOPPER_POS_LOOKUP = new ConcurrentHashMap<>();
+    /** Z3 — Rate-limit for Z3 error logging. */
+    private static final Map<String, Long> Z3_WARN_LIMIT = new ConcurrentHashMap<>();
+
+    /** Z3 — encode (worldId, pos) into a single long for map keys. */
+    private static long hopperKey(String worldId, BlockPos pos) {
+        long wh = worldId == null ? 0L : ((long) worldId.hashCode()) & 0xFFFFFFFFL;
+        long x = ((long) pos.getX()) & 0x3FFFFFF;
+        long y = ((long) pos.getY()) & 0xFFF;
+        long z = ((long) pos.getZ()) & 0x3FFFFFF;
+        return (wh << 32) ^ (x << 38) ^ (y << 26) ^ z;
+    }
+
+    /**
+     * Z3 — Encode a single hopper slot into "id:count". Returns null for empty.
+     * Diff sign encodes push (delta > 0) vs pull (delta < 0).
+     */
+    private static String slotKey(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return null;
+        return itemId(stack) + "|" + stack.getCount();
+    }
+
+    private static String parseSlotId(String key) {
+        if (key == null) return null;
+        int i = key.lastIndexOf('|');
+        return i > 0 ? key.substring(0, i) : key;
+    }
+
+    private static int parseSlotCount(String key) {
+        if (key == null) return 0;
+        int i = key.lastIndexOf('|');
+        if (i < 0 || i == key.length() - 1) return 0;
+        try {
+            return Integer.parseInt(key.substring(i + 1));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static void z3Register(String worldId, BlockPos pos) {
+        long k = hopperKey(worldId, pos);
+        java.util.concurrent.ConcurrentLinkedDeque<Long> deque = HOPPER_POS_BY_LEVEL.computeIfAbsent(
+                worldId, w -> new java.util.concurrent.ConcurrentLinkedDeque<>());
+        if (deque.size() >= HOPPER_TRACKER_MAX_PER_LEVEL) return;
+        if (HOPPER_SNAPSHOT.putIfAbsent(k, new String[HOPPER_SLOTS]) == null) {
+            HOPPER_POS_LOOKUP.put(k, pos.immutable());
+            deque.add(k);
+        }
+    }
+
+    private static void z3Unregister(String worldId, BlockPos pos) {
+        long k = hopperKey(worldId, pos);
+        HOPPER_SNAPSHOT.remove(k);
+        HOPPER_POS_LOOKUP.remove(k);
+        java.util.concurrent.ConcurrentLinkedDeque<Long> deque = HOPPER_POS_BY_LEVEL.get(worldId);
+        if (deque != null) deque.remove(k);
+    }
+
+    /**
+     * Z3 — Walk a chunk's block-entities and register any hoppers seen.
+     * Fires once per chunk load; picks up pre-existing hoppers.
+     */
+    @SubscribeEvent
+    public static void onChunkLoadRegisterHoppers(net.minecraftforge.event.level.ChunkEvent.Load ev) {
+        try {
+            net.minecraft.world.level.chunk.ChunkAccess chunk = ev.getChunk();
+            if (chunk == null) return;
+            net.minecraft.world.level.LevelAccessor la = ev.getLevel();
+            if (!(la instanceof ServerLevel level)) return;
+            String worldId = WorldKey.of(level);
+            for (BlockPos p : chunk.getBlockEntitiesPos()) {
+                BlockEntity be = chunk.getBlockEntity(p);
+                if (be instanceof net.minecraft.world.level.block.entity.HopperBlockEntity) {
+                    z3Register(worldId, p);
+                }
+            }
+        } catch (Throwable t) {
+            rateLimitedZ3Warn("onChunkLoadRegisterHoppers", t);
+        }
+    }
+
+    /** Z3 — drop hoppers when their chunk unloads. */
+    @SubscribeEvent
+    public static void onChunkUnloadDropHoppers(net.minecraftforge.event.level.ChunkEvent.Unload ev) {
+        try {
+            net.minecraft.world.level.chunk.ChunkAccess chunk = ev.getChunk();
+            if (chunk == null) return;
+            net.minecraft.world.level.LevelAccessor la = ev.getLevel();
+            if (!(la instanceof ServerLevel level)) return;
+            String worldId = WorldKey.of(level);
+            for (BlockPos p : chunk.getBlockEntitiesPos()) {
+                BlockEntity be = chunk.getBlockEntity(p);
+                if (be instanceof net.minecraft.world.level.block.entity.HopperBlockEntity) {
+                    z3Unregister(worldId, p);
+                }
+            }
+        } catch (Throwable t) {
+            rateLimitedZ3Warn("onChunkUnloadDropHoppers", t);
+        }
+    }
+
+    /** Z3 — Track newly-placed hoppers. */
+    @SubscribeEvent
+    public static void onHopperPlacedRegister(BlockEvent.EntityPlaceEvent ev) {
+        try {
+            BlockState placed = ev.getPlacedBlock();
+            if (placed == null) return;
+            if (!(placed.getBlock() instanceof net.minecraft.world.level.block.HopperBlock)) return;
+            Level level = (Level) ev.getLevel();
+            if (!(level instanceof ServerLevel serverLevel)) return;
+            z3Register(WorldKey.of(serverLevel), ev.getPos());
+        } catch (Throwable t) {
+            rateLimitedZ3Warn("onHopperPlacedRegister", t);
+        }
+    }
+
+    /** Z3 — Untrack broken hoppers. */
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onHopperBrokenUnregister(BlockEvent.BreakEvent ev) {
+        try {
+            BlockState state = ev.getState();
+            if (state == null) return;
+            if (!(state.getBlock() instanceof net.minecraft.world.level.block.HopperBlock)) return;
+            Level level = (Level) ev.getLevel();
+            z3Unregister(WorldKey.of(level), ev.getPos());
+        } catch (Throwable t) {
+            rateLimitedZ3Warn("onHopperBrokenUnregister", t);
+        }
+    }
+
+    /**
+     * Z3 — Per-tick hopper content-diff sampler.
+     *
+     * <p>Runs at {@code TickEvent.Phase.END} for each ServerLevel; samples up
+     * to {@link #HOPPER_SAMPLE_PER_TICK} hoppers via round-robin drain-and-
+     * enqueue, and diffs each hopper's slot contents against the last-observed
+     * snapshot. Detected slot deltas emit {@code submitHopperPush} (slot count
+     * went up) or {@code submitHopperPull} (slot count went down).</p>
+     */
+    @SubscribeEvent
+    public static void onLevelTickHopperSampler(net.minecraftforge.event.TickEvent.LevelTickEvent ev) {
+        try {
+            if (ev.phase != net.minecraftforge.event.TickEvent.Phase.END) return;
+            if (ev.side != net.minecraftforge.fml.LogicalSide.SERVER) return;
+            Level level = ev.level;
+            if (!(level instanceof ServerLevel serverLevel)) return;
+            EventSubmitter s = sub();
+            if (s == null) return;
+            String worldId = WorldKey.of(serverLevel);
+            java.util.concurrent.ConcurrentLinkedDeque<Long> deque = HOPPER_POS_BY_LEVEL.get(worldId);
+            if (deque == null || deque.isEmpty()) return;
+            int sampled = 0;
+            while (sampled < HOPPER_SAMPLE_PER_TICK) {
+                Long k = deque.pollFirst();
+                if (k == null) break;
+                sampled++;
+                boolean stillTracked = sampleHopperOne(serverLevel, worldId, k, s);
+                if (stillTracked) deque.addLast(k);
+            }
+        } catch (Throwable t) {
+            rateLimitedZ3Warn("onLevelTickHopperSampler", t);
+        }
+    }
+
+    /**
+     * Z3 — Sample one hopper: read current slot contents, diff against
+     * snapshot, submit push/pull rows, update snapshot. Returns false if the
+     * hopper is gone (chunk unloaded, block replaced).
+     */
+    private static boolean sampleHopperOne(ServerLevel level, String worldId, long k, EventSubmitter s) {
+        BlockPos pos = HOPPER_POS_LOOKUP.get(k);
+        if (pos == null) {
+            HOPPER_SNAPSHOT.remove(k);
+            return false;
+        }
+        BlockEntity be = level.getBlockEntity(pos);
+        if (!(be instanceof net.minecraft.world.level.block.entity.HopperBlockEntity hopper)) {
+            HOPPER_SNAPSHOT.remove(k);
+            HOPPER_POS_LOOKUP.remove(k);
+            return false;
+        }
+        String[] snap = HOPPER_SNAPSHOT.get(k);
+        if (snap == null) snap = new String[HOPPER_SLOTS];
+        boolean firstObservation = allNull(snap);
+        for (int i = 0; i < HOPPER_SLOTS; i++) {
+            ItemStack cur = i < hopper.getContainerSize() ? hopper.getItem(i) : ItemStack.EMPTY;
+            String curKey = slotKey(cur);
+            String prevKey = snap[i];
+            snap[i] = curKey;
+            if (firstObservation) continue;
+            if (java.util.Objects.equals(prevKey, curKey)) continue;
+            int prevCount = parseSlotCount(prevKey);
+            int curCount = parseSlotCount(curKey);
+            String itemIdCur = parseSlotId(curKey);
+            String itemIdPrev = parseSlotId(prevKey);
+            // Item type CHANGED entirely: emit pull(prev) + push(cur) so
+            // rollback can undo both sides of the swap. This can happen if the
+            // hopper drained an item and got a different one within the same
+            // sample window; a rare corner case, but under-log is worse than
+            // false log.
+            if (prevKey != null && curKey != null && itemIdCur != null
+                    && itemIdPrev != null && !itemIdCur.equals(itemIdPrev)) {
+                s.submitHopperPull(null, Sentinel.HOPPER, worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), itemIdPrev, prevCount, Sentinel.HOPPER);
+                s.submitHopperPush(null, Sentinel.HOPPER, worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), itemIdCur, curCount, Sentinel.HOPPER);
+                continue;
+            }
+            String itemId = curKey != null ? itemIdCur : itemIdPrev;
+            if (itemId == null) continue;
+            int delta = curCount - prevCount;
+            if (delta > 0) {
+                s.submitHopperPush(null, Sentinel.HOPPER, worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, Sentinel.HOPPER);
+            } else if (delta < 0) {
+                s.submitHopperPull(null, Sentinel.HOPPER, worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), itemId, -delta, Sentinel.HOPPER);
+            }
+        }
+        HOPPER_SNAPSHOT.put(k, snap);
+        return true;
+    }
+
+    private static boolean allNull(String[] a) {
+        if (a == null) return true;
+        for (String s : a) if (s != null) return false;
+        return true;
+    }
+
+    /**
+     * Z3 — CommandEvent hook: detect /fill and /setblock, snapshot region,
+     * defer per-block diff to next tick on the server executor.
+     */
+    @SubscribeEvent
+    public static void onCommandFillSetblock(CommandEvent ev) {
+        try {
+            ParseResults<CommandSourceStack> res = ev.getParseResults();
+            if (res == null) return;
+            String raw = res.getReader().getString();
+            if (raw == null) return;
+            String trimmed = raw.startsWith("/") ? raw.substring(1) : raw;
+            String cmdName = trimmed.split("\\s+", 2)[0];
+            boolean isFill = cmdName.equals("fill") || cmdName.endsWith(":fill");
+            boolean isSetblock = cmdName.equals("setblock") || cmdName.endsWith(":setblock");
+            if (!isFill && !isSetblock) return;
+
+            CommandSourceStack src = res.getContext().getSource();
+            if (src == null) return;
+            ServerLevel level = src.getLevel();
+            if (level == null) return;
+            String worldId = WorldKey.of(level);
+            String sourceTag = isFill ? "cmd:fill" : "cmd:setblock";
+
+            UUID actorUuid = null;
+            String actorName = Sentinel.COMMAND;
+            if (src.getEntity() instanceof Player pl) {
+                actorUuid = pl.getUUID();
+                actorName = pl.getName().getString();
+            }
+
+            // Extract BlockPos + optional BlockInput from the parsed args.
+            java.util.List<BlockPos> corners = new java.util.ArrayList<>(2);
+            try {
+                var argsMap = res.getContext().getArguments();
+                for (var entry : argsMap.entrySet()) {
+                    Object result;
+                    try {
+                        result = entry.getValue().getResult();
+                    } catch (Throwable ignored) {
+                        continue;
+                    }
+                    if (result instanceof net.minecraft.commands.arguments.coordinates.Coordinates coords) {
+                        try {
+                            corners.add(coords.getBlockPos(src));
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            if (corners.isEmpty()) return; // acknowledged gap: no coords -> no diff
+            BlockPos min, max;
+            if (corners.size() >= 2) {
+                BlockPos a = corners.get(0), b = corners.get(1);
+                min = new BlockPos(Math.min(a.getX(), b.getX()), Math.min(a.getY(), b.getY()), Math.min(a.getZ(), b.getZ()));
+                max = new BlockPos(Math.max(a.getX(), b.getX()), Math.max(a.getY(), b.getY()), Math.max(a.getZ(), b.getZ()));
+            } else {
+                min = corners.get(0);
+                max = min;
+            }
+            long volume = (long)(max.getX() - min.getX() + 1)
+                        * (long)(max.getY() - min.getY() + 1)
+                        * (long)(max.getZ() - min.getZ() + 1);
+            if (volume <= 0 || volume > FILL_MAX_REGION_BLOCKS) return;
+
+            String[] preState = new String[(int) volume];
+            int idx = 0;
+            for (int y = min.getY(); y <= max.getY(); y++) {
+                for (int z = min.getZ(); z <= max.getZ(); z++) {
+                    for (int x = min.getX(); x <= max.getX(); x++) {
+                        BlockState st = level.getBlockState(new BlockPos(x, y, z));
+                        preState[idx++] = st != null ? blockId(st) : "minecraft:air";
+                    }
+                }
+            }
+            final BlockPos fmin = min;
+            final BlockPos fmax = max;
+            final String[] preSnap = preState;
+            final UUID fActorUuid = actorUuid;
+            final String fActorName = actorName;
+            final String fSourceTag = sourceTag;
+            final String fWorldId = worldId;
+
+            level.getServer().execute(() -> {
+                try {
+                    EventSubmitter s2 = sub();
+                    if (s2 == null) return;
+                    int i = 0;
+                    for (int y = fmin.getY(); y <= fmax.getY(); y++) {
+                        for (int z = fmin.getZ(); z <= fmax.getZ(); z++) {
+                            for (int x = fmin.getX(); x <= fmax.getX(); x++) {
+                                BlockPos p = new BlockPos(x, y, z);
+                                BlockState nowSt = level.getBlockState(p);
+                                String nowId = nowSt != null ? blockId(nowSt) : "minecraft:air";
+                                String prevId = preSnap[i++];
+                                if (prevId == null || prevId.equals(nowId)) continue;
+                                if (!"minecraft:air".equals(prevId)) {
+                                    s2.submitBlockBreak(fActorUuid, fActorName, fWorldId,
+                                            x, y, z, prevId, fSourceTag);
+                                }
+                                if (!"minecraft:air".equals(nowId)) {
+                                    s2.submitBlockPlace(fActorUuid, fActorName, fWorldId,
+                                            x, y, z, nowId, fSourceTag);
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable t2) {
+                    rateLimitedZ3Warn("onCommandFillSetblock.deferred", t2);
+                }
+            });
+        } catch (Throwable t) {
+            rateLimitedZ3Warn("onCommandFillSetblock", t);
+        }
+    }
+
+    /** Z3 — clear tracker state on server stop; called via {@link #reset()}. */
+    public static void clearHopperTracker() {
+        HOPPER_POS_BY_LEVEL.clear();
+        HOPPER_SNAPSHOT.clear();
+        HOPPER_POS_LOOKUP.clear();
+        Z3_WARN_LIMIT.clear();
+    }
+
+    private static void rateLimitedZ3Warn(String site, Throwable t) {
+        long now = System.currentTimeMillis();
+        String key = site + ":" + t.getClass().getName();
+        Long last = Z3_WARN_LIMIT.get(key);
+        if (last == null || now - last >= 60_000L) {
+            Z3_WARN_LIMIT.put(key, now);
+            LOG.warn(Guardian.MARKER, "{} failed", site, t);
+        }
+    }
+
 
     // ====================================================================== helpers
 
