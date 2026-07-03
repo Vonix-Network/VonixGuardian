@@ -85,6 +85,28 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private final UndoStack undoStack;
     private volatile Theme theme;
     private final EntityBlockChangeCoalescer entityBlockCoalescer;
+    /**
+     * v1.3.1 X3: short-term memory used to attribute fluid-flow rows produced
+     * by the {@code LiquidBlockMixin} pipeline back to the player whose
+     * bucket-empty seeded the source. Non-null; loader mixin bridges read this
+     * via {@link #fluidSourceMemory()}.
+     */
+    private final network.vonix.guardian.core.attribution.FluidSourceMemory fluidSourceMemory;
+    /**
+     * v1.3.0 W3: shared off-thread joiner for explosion affected-block lists.
+     * Loader-side event handlers hand pre-captured pos/id arrays here and the
+     * per-affected-block {@link StringBuilder} join + queue enqueue moves off
+     * the server thread. See {@link network.vonix.guardian.core.event.ExplosionJoinWorker}.
+     */
+    private final network.vonix.guardian.core.event.ExplosionJoinWorker explosionJoinWorker;
+    /**
+     * v1.3.1 X7: shared 5-min-TTL cache mapping (world, TNT position) →
+     * priming actor. Populated by loader-side TntBlockMixin /
+     * PrimedTntEntityMixin, consumed by the explosion-detonate handler via
+     * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveTntPrime}
+     * to close CoreProtect-parity gap G-CP-2.
+     */
+    private final network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory;
     /** Latched at boot when logFile.enabled; hot-swap of enabled flag flips this AtomicReference. */
     private final AtomicReference<JsonLinesLogFile> logFileRef;
     /** Server data-dir root, kept so reload can rebuild a JsonLinesLogFile at the same relative path. */
@@ -127,6 +149,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.undoStack = undoStack;
         this.theme = theme;
         this.entityBlockCoalescer = entityBlockCoalescer;
+        this.fluidSourceMemory = new network.vonix.guardian.core.attribution.FluidSourceMemory();
+        this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker();
+        this.tntPrimeMemory = new network.vonix.guardian.core.attribution.TntPrimeMemory();
         this.logFileRef = logFileRef;
         this.dataDir = dataDir;
         this.autoPurgeScheduler = autoPurgeScheduler;
@@ -158,7 +183,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         Objects.requireNonNull(mainThreadExec, "mainThreadExec");
         Objects.requireNonNull(tf, "tf");
 
-        LOG.info(MARKER, "Booting VonixGuardian (db={}, theme={}, queue.max={})",
+        LOG.info(MARKER, "Booting VonixGuardian v{} (db={}, theme={}, queue.max={})",
+                GuardianAPI.PLUGIN_VERSION,
                 config.database().type(), config.theme(), config.queue().maxSize());
 
         GuardianDao dao = StorageFactory.open(config);
@@ -170,6 +196,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             logFile = new JsonLinesLogFile(logDir,
                     config.logFile().gzipRotated(),
                     config.logFile().retentionDays(),
+                    config.logFile().forceSyncOnFlush(),
                     Clock.systemUTC());
         }
 
@@ -193,7 +220,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
         EventGate gate = new EventGate(config.actions());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
-        RollbackEngine rollback = new RollbackEngine(dao, mutator, mainThreadExec);
+        RollbackEngine rollback = new RollbackEngine(
+                dao, mutator, mainThreadExec,
+                // v1.3.2 Y3, P1-1 close-out: wire the X8 supplemental-scan reach
+                // knob into the engine at boot. Prior to Y3 this call used the
+                // 3-arg constructor and hard-coded MAX_TNT_REACH=16, so operators
+                // editing rollback.explosionSupplementalReach in config.json got
+                // no effect even though ConfigLoader passed validation.
+                config.rollback().explosionSupplementalReach());
         PurgeEngine purgeEng = new PurgeEngine(dao);
         try {
             rollback.recoverIncompleteBatches();
@@ -267,6 +301,37 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public EventGate gate()                { return gate; }
     /** Live coalescer, or {@code null} when disabled by config. Diagnostics only. */
     public EntityBlockChangeCoalescer entityBlockCoalescer() { return entityBlockCoalescer; }
+    /**
+     * v1.3.0 W3: off-thread joiner for {@code EXPLOSION} affected-block lists.
+     * Loader-side event handlers call {@code explosionJoinWorker().submit(...)}
+     * with pre-captured pos/id arrays; the join + queue enqueue happens off
+     * the server thread. Never {@code null}.
+     */
+    public network.vonix.guardian.core.event.ExplosionJoinWorker explosionJoinWorker() {
+        return explosionJoinWorker;
+    }
+    /**
+     * v1.3.1 X3: short-term bucket-empty → fluid-spread traceback memory.
+     * Loader mixin bridges use this from both the bucket-use TAIL inject
+     * ({@link network.vonix.guardian.core.attribution.FluidSourceMemory#recordBucketEmpty})
+     * and the {@code LiquidBlockMixin} spread inject
+     * ({@link network.vonix.guardian.core.attribution.FluidSourceMemory#lookup}).
+     * Never {@code null}.
+     */
+    public network.vonix.guardian.core.attribution.FluidSourceMemory fluidSourceMemory() {
+        return fluidSourceMemory;
+    }
+
+    /**
+     * X7: shared TNT-prime memory. Loader-side {@code TntBlockMixin} /
+     * {@code PrimedTntEntityMixin} record actor identities here at prime time;
+     * the {@code ExplosionEvent.Detonate} handler consults it via
+     * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveTntPrime}
+     * before falling back to the sentinel.
+     */
+    public network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory() {
+        return tntPrimeMemory;
+    }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }
     /** CP-1:1 purge entry point — enforces config.purge() minimum-age floor. */
@@ -383,6 +448,45 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * @return a summary of what changed and how — never {@code null}
      */
     public ReloadResult reloadConfig(Path path) {
+        // v1.3.7 DD1 (round-7 P1): serialize the entire reload critical section.
+        // Pre-v1.3.6, /vg config set called reloadConfig on the server thread; that
+        // was serialized by the tick loop. v1.3.6 CC2 routed /vg config set onto
+        // WORKER (pool size 2), so two config-set commands OR a config-set racing
+        // /vg reload can now interleave the read-old / build-merged / publish-new
+        // sequence and clobber each other's gate/config/perWorldStore/rollbackEngine
+        // /autoPurgeScheduler updates. Guard the whole path under CONFIG_MUTATION_LOCK
+        // (shared across cells' /vg config set path via {@link #withConfigMutationLock}).
+        synchronized (CONFIG_MUTATION_LOCK) {
+            return doReloadConfig(path);
+        }
+    }
+
+    /**
+     * v1.3.7 DD1: shared monitor guarding all config mutation paths. Loader-side
+     * /vg config set implementations MUST hold this monitor while performing the
+     * read-current-config / build-merged / persist-to-disk / reloadConfig sequence
+     * to prevent lost updates when concurrent set commands race on WORKER.
+     * <p>Cells use an explicit {@code synchronized (Guardian.CONFIG_MUTATION_LOCK)}
+     * block around their critical section rather than a Runnable wrapper because
+     * they need to short-circuit on validation failure with a chat error.</p>
+     */
+    public static final Object CONFIG_MUTATION_LOCK = new Object();
+
+    /**
+     * v1.3.7 DD1: reload variant for callers that already hold
+     * {@link #CONFIG_MUTATION_LOCK}. Used by the /vg config set critical section
+     * to avoid re-entering the monitor (Java monitors are reentrant so this
+     * is technically safe today — but naming the boundary makes the intent
+     * explicit and lets us swap to a non-reentrant Lock later without breaking
+     * loader cells).
+     */
+    public ReloadResult reloadConfigUnlocked(Path path) {
+        assert Thread.holdsLock(CONFIG_MUTATION_LOCK)
+                : "reloadConfigUnlocked called without CONFIG_MUTATION_LOCK";
+        return doReloadConfig(path);
+    }
+
+    private ReloadResult doReloadConfig(Path path) {
         List<String> hot = new ArrayList<>();
         List<String> restart = new ArrayList<>();
         List<String> errs = new ArrayList<>();
@@ -401,7 +505,31 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
         GuardianConfig fresh;
         try {
-            fresh = ConfigLoader.load(p);
+            // v1.3.1 X6 (P2-2): route ConfigLoader.load onto the common ForkJoinPool
+            // so Files.readString + Gson.fromJson do not stall the server thread on
+            // a slow / networked filesystem. reloadConfig is a synchronous API, so
+            // we block waiting for the parse — but a hot ForkJoinPool worker doing
+            // the IO keeps a soft-stall out of the tick when the caller thread is
+            // the server thread. Timeout guards against a stuck NFS mount.
+            final Path readPath = p;
+            fresh = java.util.concurrent.CompletableFuture
+                    .supplyAsync(() -> {
+                        try {
+                            return ConfigLoader.load(readPath);
+                        } catch (java.io.IOException ex) {
+                            throw new java.io.UncheckedIOException(ex);
+                        }
+                    })
+                    .get(10L, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            errs.add("load timed out after 10s (slow filesystem?)");
+            LOG.warn(MARKER, "Config reload timed out for {}", p);
+            return new ReloadResult(hot, restart, errs);
+        } catch (java.util.concurrent.ExecutionException ee) {
+            Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+            errs.add("load failed: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            LOG.warn(MARKER, "Config reload failed for {}", p, cause);
+            return new ReloadResult(hot, restart, errs);
         } catch (Exception e) {
             errs.add("load failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             LOG.warn(MARKER, "Config reload failed for {}", p, e);
@@ -428,14 +556,23 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         //      subsections from the OLD instance (they weren't applied) and takes
         //      everything else from FRESH. Then atomically swap the volatile ref
         //      and rebuild dependent state.
+        //
+        // v1.3.2 Y3 (P0-1 close-out): the previous form of this call used the
+        // 9-arg backward-compat GuardianConfig(...) overload, which fills
+        // {@code storage}, {@code rollback}, and {@code language} with defaults
+        // — meaning /vg reload silently reverted storage.persistNbt=true to
+        // false, rollback.explosionSupplementalReach to 16, and language to
+        // "en_us". This now uses the canonical 12-arg form so every operator
+        // knob survives reload.
         GuardianConfig merged = new GuardianConfig(
             old.database(),   // restart-required — keep old
             old.queue(),      // restart-required — keep old
             new GuardianConfig.LogFile(
                 fresh.logFile().enabled(),          // HOT
                 old.logFile().directory(),          // restart
-                old.logFile().gzipRotated(),        // restart
-                old.logFile().retentionDays()       // restart
+                old.logFile().gzipRotated(),       // restart
+                old.logFile().retentionDays(),     // restart
+                fresh.logFile().forceSyncOnFlush()  // HOT (v1.3.1 X6 P3-4)
             ),
             fresh.actions(),                        // HOT (whole subsection)
             old.permissions(),                      // restart-required
@@ -449,8 +586,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 fresh.privacy().hashIps(),          // HOT
                 old.privacy().salt()                // restart
             ),
-            fresh.purge(),                          // HOT
-            fresh.theme()                           // HOT
+            fresh.purge(),                          // HOT (Y3: applyConfig on scheduler)
+            fresh.storage(),                        // HOT (Y3: X1 persistNbt survives reload)
+            fresh.rollback(),                       // HOT (Y3: X8 reach survives reload)
+            fresh.theme(),                          // HOT
+            fresh.language()                        // HOT
         );
 
         // Track what actually changed to report as "hot-swapped".
@@ -464,12 +604,70 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         if (old.privacy().hashIps() != fresh.privacy().hashIps()) hot.add("privacy.hashIps");
         if (!Objects.equals(old.purge(), fresh.purge())) hot.add("purge");
         if (!Objects.equals(old.theme(), fresh.theme())) hot.add("theme");
+        // v1.3.2 Y3 (P0-1 + P2-5 close-out): storage.persistNbt, rollback.explosionSupplementalReach,
+        // and language all take effect immediately — they were silently dropped
+        // pre-Y3 (see 9-arg comment above) so the operator got no /vg reload feedback.
+        if (old.storage().persistNbt() != fresh.storage().persistNbt()) {
+            hot.add("storage.persistNbt");
+        }
+        if (old.rollback().explosionSupplementalReach() != fresh.rollback().explosionSupplementalReach()) {
+            hot.add("rollback.explosionSupplementalReach");
+        }
+        if (!Objects.equals(old.language(), fresh.language())) hot.add("language");
 
         // Swap in.
-        this.config = merged;
-        this.gate = new EventGate(merged.actions());
+        // v1.3.1 X6 (P2-5): build the fresh EventGate on a LOCAL reference and
+        // register every hook against it before publishing to `this.gate`. Between
+        // the pre-X6 `this.gate = new EventGate(...)` at the top and the last
+        // `this.gate.addHook(...)` at the bottom, concurrent submitters saw a
+        // freshly-empty gate — blacklist rules briefly did not apply, per-world
+        // overrides briefly did not apply. Building locally means every submitter
+        // sees either the fully old chain OR the fully new chain, never a
+        // half-registered one.
+        //
+        // v1.3.3 Z4 (G-Y3-1 P2 close-out): `this.config = merged` MOVED to below the
+        // `this.gate = localGate` publish (see end of this method). Rationale: submit()
+        // reads `gate` on the hot path but `config` (for auxiliary fields like
+        // storage.persistNbt / rollback.explosionSupplementalReach / language) on
+        // cooler paths. Publishing `config` first briefly left submitters observing
+        // the NEW config with the OLD gate — e.g. the new persistNbt flag was live
+        // while the old event gate's hooks (blacklist/per-world) were still in
+        // effect. Ordering: gate first keeps hooks in old state during the config
+        // swap; there is no window in which a NEW hook could observe an OLD
+        // persistNbt / language, since hooks are terminal (do not read config()).
+        EventGate localGate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
         network.vonix.guardian.core.i18n.Messages.setLanguage(merged.language());
+
+        // v1.3.2 Y3 (P1-1 + P2-1 close-out): hot-swap the supplemental EXPLOSION
+        // scan reach on the existing RollbackEngine without rebuilding it. The
+        // engine's field is volatile (Y3) so a concurrent /vg rollback observes
+        // either the old or new value — no torn read, no half-swapped engine.
+        try {
+            if (this.rollbackEngine != null) {
+                this.rollbackEngine.setExplosionSupplementalReach(
+                    merged.rollback().explosionSupplementalReach());
+            }
+        } catch (Exception e) {
+            errs.add("rollback.setExplosionSupplementalReach failed: " + e.getMessage());
+            LOG.warn(MARKER, "rollback reach hot-swap failed", e);
+        }
+
+        // v1.3.2 Y3 (P2-4 close-out): hot-swap the auto-purge daemon's schedule.
+        // Pre-Y3 the merged config carried the new autoPurgeTime/autoPurgeSeconds
+        // but the running daemon kept its original schedule until server restart.
+        try {
+            if (this.autoPurgeScheduler != null
+                && !Objects.equals(old.purge(), merged.purge())) {
+                boolean changed = this.autoPurgeScheduler.applyConfig(merged);
+                if (changed) {
+                    // "purge" already recorded in `hot` above — no duplicate entry.
+                }
+            }
+        } catch (Exception e) {
+            errs.add("autoPurgeScheduler.applyConfig failed: " + e.getMessage());
+            LOG.warn(MARKER, "auto-purge reload failed", e);
+        }
 
         // W3-B5: per-world overrides. Point the store at the new root, re-scan the
         // worlds/ dir (files may have been added/removed), and re-register the hook
@@ -490,7 +688,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 java.util.Set<String> before = new java.util.HashSet<>(store.overriddenWorlds());
                 store.reload(worldsDir);
                 java.util.Set<String> after = store.overriddenWorlds();
-                this.gate.addHook(new PerWorldEventHook(store, merged.actions()));
+                localGate.addHook(new PerWorldEventHook(store, merged.actions()));
                 if (!before.equals(after)) {
                     java.util.Set<String> added = new java.util.HashSet<>(after);
                     added.removeAll(before);
@@ -508,7 +706,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 store.updateRoot(merged.actions());
                 boolean hadEntries = !store.overriddenWorlds().isEmpty();
                 store.reload(worldsDir);
-                this.gate.addHook(new PerWorldEventHook(store, merged.actions()));
+                localGate.addHook(new PerWorldEventHook(store, merged.actions()));
                 if (hadEntries) hot.add("per-world: cleared (worlds/ dir gone)");
             }
         } catch (Exception e) {
@@ -519,6 +717,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // W3-B6: reload blacklist.txt. Re-parse from disk; if present, build a
         // fresh matcher and register a new hook on the new gate. Report rule
         // count under "blacklist.txt" in the hot-swapped list.
+        BlacklistFileHook newBlacklistHook = null;
         try {
             Path blPath = (dataDir != null) ? dataDir.resolve("blacklist.txt") : null;
             BlacklistFile.Parsed parsed = (blPath != null)
@@ -527,13 +726,12 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             if (parsed.size() > 0) {
                 BlacklistMatcher matcher = new BlacklistMatcher(parsed);
                 BlacklistFileHook hook = new BlacklistFileHook(matcher);
-                this.gate.addHook(hook);
-                this.blacklistHook = hook;
+                localGate.addHook(hook);
+                newBlacklistHook = hook;
                 if (matcher.size() != oldCount) {
                     hot.add("blacklist.txt (" + matcher.size() + " rules)");
                 }
             } else {
-                this.blacklistHook = null;
                 if (oldCount > 0) {
                     hot.add("blacklist.txt (cleared)");
                 }
@@ -546,7 +744,25 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // W3-B11: preserve the public cancellable pre-log hook on the rebuilt
         // EventGate. Keep it terminal so cheaper per-world/blacklist hooks run
         // before native event-bus dispatches after /vg reload just like at boot.
-        this.gate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
+        localGate.addHook(new network.vonix.guardian.core.event.PreLogEventHook());
+
+        // v1.3.1 X6 (P2-5): atomic publication. Every hook is registered on
+        // localGate; only now do we flip `this.gate` and `this.blacklistHook`.
+        // Any submitter racing this method observes either the old fully-populated
+        // gate or the new fully-populated gate.
+        //
+        // v1.3.3 Z4 (G-Y3-1 P2 close-out): publish `this.gate` BEFORE `this.config`.
+        // A submitter observes the gate (hot path) before it observes the new config
+        // (cool path). Reversing the pair (config-then-gate) would let a submitter
+        // read the new persistNbt/language while still routing through the old
+        // hook chain — a brief false-positive NBT capture window on any submit
+        // that races the reload. Ordered this way, hooks flip atomically to the
+        // new set and then config swaps under them; hooks are terminal (they do
+        // not read config()) so an in-flight decision under the new gate is
+        // unaffected by the imminent config swap.
+        this.gate = localGate;
+        this.config = merged;
+        this.blacklistHook = newBlacklistHook;
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on
         // (build a new JsonLinesLogFile at the same directory).
@@ -559,6 +775,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                         logDir,
                         merged.logFile().gzipRotated(),
                         merged.logFile().retentionDays(),
+                        merged.logFile().forceSyncOnFlush(),
                         Clock.systemUTC());
                 logFileRef.set(fresh2);
             } else if (!wantEnabled && currentLf != null) {
@@ -581,8 +798,38 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         return name != null ? name : Sentinel.UNKNOWN;
     }
 
+    /**
+     * Per-server-thread scratch {@link ActionBuilder} used by {@link #seed} on the hot path.
+     *
+     * <p>v1.3.0 W2 allocation cut: at hot rates (piston farm, fire spread, entity spam,
+     * hoppers) the old {@code new ActionBuilder()} in {@code seed()} was allocating a fresh
+     * 16-field mutable builder + object header per event on the server thread — MB/s of
+     * short-lived garbage feeding GC pressure. This {@code ThreadLocal} keeps one builder
+     * per producer thread and calls {@link ActionBuilder#reset()} to hand it back cleared.
+     * Immutable {@link Action} objects produced by {@link ActionBuilder#build()} are still
+     * fresh per submit (the DAO holds the reference in a batch); we only recycle the
+     * mutable scratch, which is the amortizable half of the pair.</p>
+     *
+     * <p>Tradeoff: Each unique producer thread parks its {@code ActionBuilder} for the
+     * lifetime of the thread; on a Minecraft server that means one instance for the server
+     * thread plus at most one per worker on any thread pool that routes into
+     * {@link EventSubmitter}. In practice: server thread + optional AI-executor + a handful
+     * of async producers. The steady-state memory cost is 8 * &lt; 200 bytes.</p>
+     */
+    private static final ThreadLocal<ActionBuilder> SCRATCH_BUILDER =
+            ThreadLocal.withInitial(ActionBuilder::new);
+
+    /**
+     * Package-visible accessor for regression tests that need to assert the scratch builder
+     * is stable per thread (see {@code ActionBuilderPoolingTest}). Not part of the public
+     * API surface.
+     */
+    static ActionBuilder scratchBuilderForCurrentThread() {
+        return SCRATCH_BUILDER.get();
+    }
+
     private ActionBuilder seed(ActionType type, UUID actorUuid, String actorName, String worldId) {
-        return new ActionBuilder()
+        return SCRATCH_BUILDER.get().reset()
                 .type(type)
                 .actorUuid(actorUuid)
                 .actorName(orUnknown(actorName))
@@ -594,6 +841,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         if (a == null) {
             return;
         }
+        // v1.3.0 W2: mixin hot-event kill-switch is now folded into EventGate.shouldLog
+        // (see EventGate.mixinHotEventsEnabled + MixinHotEventFilter). Keeps Guardian.submit
+        // free of gate-adjacent policy checks and lets the gate short-circuit before any
+        // hook chain traversal work.
         if (!gate.shouldLog(a)) {
             gated.incrementAndGet();
             return;
@@ -651,11 +902,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     @Override
     public void submitExplosion(UUID actorUuid, String actorName, String worldId,
                                 int x, int y, int z, String affectedJoined, String sourceTag) {
-        submit(new ActionBuilder()
-                .type(ActionType.EXPLOSION)
-                .actorUuid(actorUuid)
-                .actorName(actorName != null ? actorName : Sentinel.EXPLOSION)
-                .worldId(worldId)
+        // v1.3.1 X6 (P3-2): use the per-thread scratch builder via seed() instead of
+        // allocating a fresh ActionBuilder. Consistent with every other submit* path
+        // and cuts ~40B/allocation on the explosion-join worker thread on TNT-heavy
+        // servers. actorName defaults to Sentinel.EXPLOSION when null (kept identical
+        // to pre-X6 semantics — do NOT change to Sentinel.UNKNOWN).
+        submit(seed(ActionType.EXPLOSION, actorUuid,
+                    actorName != null ? actorName : Sentinel.EXPLOSION,
+                    worldId)
                 .position(x, y, z)
                 .targetId(affectedJoined)
                 .sourceTag(sourceTag)
@@ -781,6 +1035,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                                  int x, int y, int z, String fluidOrBlockId, String sourceTag) {
         submit(seed(ActionType.BUCKET_FILL, actorUuid, actorName, worldId)
                 .position(x, y, z).targetId(fluidOrBlockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitFluidFlow(UUID actorUuid, String actorName, String worldId,
+                                int x, int y, int z, String fluidBlockId, String sourceTag) {
+        submit(seed(ActionType.FLUID_FLOW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(fluidBlockId).sourceTag(sourceTag).build());
     }
 
     @Override
@@ -920,6 +1181,180 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 .position(x, y, z).targetId(targetId).sourceTag(sourceTag).build());
     }
 
+    // -------------------------------------------------------------------- v1.3.1 X1: NBT overrides
+    //
+    // These honor storage.persistNbt: when disabled (default), we ignore the
+    // NBT payload entirely and behave as the non-NBT overload — no allocation,
+    // no wasted DAO column writes. When enabled, we thread the NBT bytes into
+    // the ActionBuilder so the DAO persists them to the v5 columns.
+    //
+    // We keep the surface small (block break/place, container change, item
+    // drop/pickup, entity kill/spawn, entity change block, hopper push/pull);
+    // sibling waves X4/X7/X9 add more producer wiring on top.
+
+    private boolean persistNbt() {
+        GuardianConfig cfg = config;
+        return cfg != null && cfg.storage() != null && cfg.storage().persistNbt();
+    }
+
+    @Override
+    public void submitBlockBreak(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String blockId, String sourceTag,
+                                 String oldBlockState, byte[] blockEntityNbt) {
+        if (!persistNbt()) {
+            submitBlockBreak(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.BLOCK_BREAK, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag)
+                .oldBlockState(oldBlockState)
+                .blockEntityNbt(blockEntityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitBlockPlace(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String blockId, String sourceTag,
+                                 String newBlockState, byte[] blockEntityNbt) {
+        if (!persistNbt()) {
+            submitBlockPlace(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.BLOCK_PLACE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag)
+                .newBlockState(newBlockState)
+                .blockEntityNbt(blockEntityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitContainerChange(UUID actorUuid, String actorName, String worldId,
+                                      int x, int y, int z, String itemId, int delta, String sourceTag,
+                                      byte[] itemNbt) {
+        if (delta == 0) {
+            return;
+        }
+        if (!persistNbt()) {
+            submitContainerChange(actorUuid, actorName, worldId, x, y, z, itemId, delta, sourceTag);
+            return;
+        }
+        submit(seed(delta > 0 ? ActionType.CONTAINER_DEPOSIT : ActionType.CONTAINER_WITHDRAW,
+                    actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(Math.abs(delta)).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitItemDrop(UUID actorUuid, String actorName, String worldId,
+                               int x, int y, int z, String itemId, int amount, String sourceTag,
+                               byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitItemDrop(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ITEM_DROP, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitItemPickup(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitItemPickup(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ITEM_PICKUP, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitEntityKill(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String entityType, String sourceTag,
+                                 byte[] entityNbt) {
+        if (!persistNbt()) {
+            submitEntityKill(actorUuid, actorName, worldId, x, y, z, entityType, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ENTITY_KILL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag)
+                .entityNbt(entityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitEntitySpawn(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String entityType, String sourceTag,
+                                  byte[] entityNbt) {
+        if (!persistNbt()) {
+            submitEntitySpawn(actorUuid, actorName, worldId, x, y, z, entityType, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.ENTITY_SPAWN, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(entityType).sourceTag(sourceTag)
+                .entityNbt(entityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z,
+                                        String oldBlockId, String newBlockId, String sourceTag,
+                                        String oldBlockState, String newBlockState,
+                                        byte[] blockEntityNbt) {
+        if (!persistNbt()) {
+            submitEntityChangeBlock(actorUuid, actorName, worldId, x, y, z,
+                                    oldBlockId, newBlockId, sourceTag);
+            return;
+        }
+        // The non-NBT overload calls submitEntityChangeBlock at line 881 with
+        // its coalescer plumbing; we keep the payload-carrying variant separate
+        // and route straight through submit(). Sibling wave X2 owns the
+        // coalescer-friendly NBT path.
+        submit(seed(ActionType.ENTITY_CHANGE_BLOCK, actorUuid, actorName, worldId)
+                .position(x, y, z)
+                .targetId(newBlockId)
+                .targetMeta(oldBlockId)
+                .sourceTag(sourceTag)
+                .oldBlockState(oldBlockState)
+                .newBlockState(newBlockState)
+                .blockEntityNbt(blockEntityNbt)
+                .build());
+    }
+
+    @Override
+    public void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitHopperPush(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.HOPPER_PUSH, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
+    @Override
+    public void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt) {
+        if (!persistNbt()) {
+            submitHopperPull(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.HOPPER_PULL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt)
+                .build());
+    }
+
     // -------------------------------------------------------------------- inspector
 
     /**
@@ -967,6 +1402,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         } catch (Exception e) {
             LOG.warn(MARKER, "AutoPurgeScheduler shutdown raised", e);
         }
+        // v1.3.1 X6 (P2-1): drain the ExplosionJoinWorker BEFORE queue.drainAndFlush.
+        // Any join task queued at t=stop-Δ needs to land its submitExplosion call
+        // into the write queue before we tell the queue to drain — otherwise the
+        // row races the queue close and the DAO close, and gets silently dropped.
+        // close() now blocks up to 5s waiting for pending join tasks to finish.
+        try {
+            explosionJoinWorker.close();
+        } catch (Exception e) {
+            LOG.warn(MARKER, "ExplosionJoinWorker close raised", e);
+        }
         try {
             queue.drainAndFlush(30_000L);
         } catch (Exception e) {
@@ -984,6 +1429,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             dao.close();
         } catch (Exception e) {
             LOG.warn(MARKER, "DAO close raised", e);
+        }
+        try {
+            tntPrimeMemory.clear();
+        } catch (Exception e) {
+            LOG.warn(MARKER, "TntPrimeMemory clear raised", e);
         }
         LOG.info(MARKER, "VonixGuardian offline.");
     }

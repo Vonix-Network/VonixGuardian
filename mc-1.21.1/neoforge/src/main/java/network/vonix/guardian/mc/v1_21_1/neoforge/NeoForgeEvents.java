@@ -7,6 +7,7 @@ package network.vonix.guardian.mc.v1_21_1.neoforge;
 import com.mojang.brigadier.ParseResults;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.resources.ResourceLocation;
@@ -64,6 +65,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Static {@code @SubscribeEvent} handlers translating NeoForge events into
@@ -77,7 +79,11 @@ public final class NeoForgeEvents {
     private static final Logger LOG = LoggerFactory.getLogger(NeoForgeEvents.class);
 
     /** Per-entity-type rate limit for spawn logging (last-emit ts in millis). */
-    private static final Map<String, Long> SPAWN_LIMIT = new ConcurrentHashMap<>();
+    // v1.3.0 W2: de-boxed spawn-limit throttle. Previous Map<String,Long> auto-boxed a
+    // fresh Long on every put(...) — several MB/s of short-lived garbage on modded
+    // shards with mob-farm-heavy chunks (piglin bartering, drowned trident farms, etc.).
+    // AtomicLong lets us update in place with a plain volatile store on the hot path.
+    private static final Map<String, AtomicLong> SPAWN_LIMIT = new ConcurrentHashMap<>();
     private static final long SPAWN_LIMIT_MS = 1_000L;
 
     /** Daemon worker for off-tick JDBC (inspector lookups). */
@@ -105,6 +111,40 @@ public final class NeoForgeEvents {
     private static final int MAX_CONTAINER_SNAPSHOTS = 512;
     /** Hard cap on per-container slots retained to keep modded mega-containers bounded. */
     private static final int MAX_CONTAINER_SLOTS = 216;
+    /**
+     * v1.3.0 W3: counter for cleanupContainerSnapshots amortization. Old path
+     * scanned the full CONTAINER_SNAPSHOT_AT map on EVERY container open — O(n)
+     * per open even when there is nothing to evict. Now we only run the full
+     * TTL scan every {@link #CONTAINER_CLEANUP_EVERY} opens OR when the map
+     * exceeds {@link #MAX_CONTAINER_SNAPSHOTS} (bounded-work fast-path
+     * eviction still runs immediately in that case).
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger CONTAINER_CLEANUP_TICK
+            = new java.util.concurrent.atomic.AtomicInteger();
+    /** Run cleanupContainerSnapshots' full TTL scan every N opens; power-of-two so we can mask. */
+    private static final int CONTAINER_CLEANUP_EVERY = 32;
+
+    /**
+     * v1.3.0 W3: pooled scratch buffer for onExplosionDetonate capture. One
+     * per server thread — reused across explosions to avoid re-allocating
+     * 3× int[] + 1× String[] per detonation. Grows on demand up to a per-cell
+     * cap; a large TNT chain briefly bumps it, subsequent explosions reuse.
+     */
+    private static final ThreadLocal<ExplosionScratch> EXPLOSION_SCRATCH =
+            ThreadLocal.withInitial(ExplosionScratch::new);
+
+    private static final class ExplosionScratch {
+        int[] xs = new int[512];
+        int[] ys = new int[512];
+        int[] zs = new int[512];
+        String[] ids = new String[512];
+        void grow(int need) {
+            if (xs.length >= need) return;
+            int n = xs.length;
+            while (n < need) n <<= 1;
+            xs = new int[n]; ys = new int[n]; zs = new int[n]; ids = new String[n];
+        }
+    }
 
     private NeoForgeEvents() {
         // utility
@@ -124,6 +164,17 @@ public final class NeoForgeEvents {
     private static GuardianConfig cfg() {
         Guardian g = g();
         return g == null ? null : g.config();
+    }
+
+    /**
+     * v1.3.2 Y1: config-gated NBT-persist flag. When {@code false} (default),
+     * producers skip the NBT capture path entirely — no allocation, no BE
+     * lookup, no ItemStack.save. Safe to call from event handlers because
+     * the config accessor returns the last-loaded snapshot.
+     */
+    private static boolean persistNbt() {
+        GuardianConfig c = cfg();
+        return c != null && c.storage() != null && c.storage().persistNbt();
     }
 
     // ====================================================================== blocks
@@ -154,10 +205,20 @@ public final class NeoForgeEvents {
             BlockPos pos = ev.getPos();
             BlockState state = ev.getState();
             String blockId = blockId(state);
-            s.submitBlockBreak(p.getUUID(), p.getName().getString(),
-                    WorldKey.of((Level) ev.getLevel()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    blockId, null);
+            String worldId = WorldKey.of((Level) ev.getLevel());
+            // v1.3.2 Y1: NBT capture on the server thread BEFORE the break resolves.
+            if (persistNbt()) {
+                Level lvl = (Level) ev.getLevel();
+                String stateProps = NbtCapture.blockStateProps(state);
+                BlockEntity be = lvl.getBlockEntity(pos);
+                byte[] beNbt = be == null ? null : NbtCapture.blockEntity(be, lvl.registryAccess());
+                s.submitBlockBreak(p.getUUID(), p.getName().getString(),
+                        worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        blockId, null, stateProps, beNbt);
+            } else {
+                s.submitBlockBreak(p.getUUID(), p.getName().getString(),
+                        worldId, pos.getX(), pos.getY(), pos.getZ(), blockId, null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockBreak failed", t);
         }
@@ -223,7 +284,15 @@ public final class NeoForgeEvents {
         return sentinel.substring(5);
     }
 
-    /** Explosion detonate — log every affected block with a joined target list. */
+    /**
+     * Explosion detonate — v1.3.0 W3: server thread does the (unavoidable)
+     * per-pos {@code getBlockState} + registry key lookup into pooled scratch
+     * arrays, then hands the {@link StringBuilder} join + queue enqueue to
+     * {@link network.vonix.guardian.core.event.ExplosionJoinWorker}. A 5,000-block
+     * TNT chain no longer builds a 4 KiB {@link StringBuilder} on the tick;
+     * the worker splits the join into chunked {@code EXPLOSION} rows sharing
+     * the same center + source tag.
+     */
     @SubscribeEvent
     public static void onExplosionDetonate(ExplosionEvent.Detonate ev) {
         try {
@@ -231,27 +300,55 @@ public final class NeoForgeEvents {
             if (s == null) return;
             var affected = ev.getAffectedBlocks();
             if (affected == null || affected.isEmpty()) return;
-            StringBuilder sb = new StringBuilder();
-            int cap = 4096;
-            int count = 0;
+            ExplosionScratch scratch = EXPLOSION_SCRATCH.get();
+            int n = affected.size();
+            scratch.grow(n);
+            // Server-thread capture: getBlockState + registry-key lookup are
+            // NOT documented as thread-safe on ServerLevel. We match Prism /
+            // Ledger / CoreProtect: capture ids synchronously, defer the join.
+            int idx = 0;
             for (BlockPos p : affected) {
-                if (sb.length() > cap) break;
-                if (count++ > 0) sb.append(',');
-                BlockState oldState = ev.getLevel().getBlockState(p);
-                sb.append(p.getX()).append(':').append(p.getY()).append(':').append(p.getZ())
-                        .append('=').append(blockId(oldState));
+                scratch.xs[idx] = p.getX();
+                scratch.ys[idx] = p.getY();
+                scratch.zs[idx] = p.getZ();
+                scratch.ids[idx] = blockId(ev.getLevel().getBlockState(p));
+                idx++;
             }
             Entity source = ev.getExplosion().getDirectSourceEntity();
-            Attribution attr = (source != null && NeoForgeBootstrap.resolver != null)
-                    ? NeoForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
-                    : Attribution.unknown(EntitySentinel.UNKNOWN);
             BlockPos center = BlockPos.containing(ev.getExplosion().center());
-            s.submitExplosion(attr.actorUuid(),
-                    attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION,
-                    WorldKey.of((Level) ev.getLevel()),
-                    center.getX(), center.getY(), center.getZ(),
-                    sb.toString(),
-                    source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION);
+            String worldId = WorldKey.of((Level) ev.getLevel());
+            // v1.3.1 X7: PrimedTnt has no vanilla igniter accessor from
+            // ExplosionEvent.Detonate, so consult TntPrimeMemory populated by
+            // TntBlockMixin / PrimedTntEntityMixin at prime-time. Do the
+            // lookup against the exploding entity's own block position when
+            // the source is a PrimedTnt.
+            Attribution attr = null;
+            String sourceTagOverride = null;
+            Guardian gEarly = g();
+            if (gEarly != null && source instanceof net.minecraft.world.entity.item.PrimedTnt) {
+                BlockPos originPos = source.blockPosition();
+                Attribution primed = network.vonix.guardian.core.attribution.UniversalAttribution
+                        .resolveTntPrime(gEarly.tntPrimeMemory(), worldId,
+                                originPos.getX(), originPos.getY(), originPos.getZ(),
+                                Sentinel.TNT);
+                if (primed != null) {
+                    attr = primed;
+                    sourceTagOverride = "#tnt";
+                }
+            }
+            if (attr == null) {
+                attr = (source != null && NeoForgeBootstrap.resolver != null)
+                        ? NeoForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
+                        : Attribution.unknown(EntitySentinel.UNKNOWN);
+            }
+            String sourceTag = sourceTagOverride != null ? sourceTagOverride
+                    : (source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION);
+            String actorName = attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION;
+            Guardian g = g();
+            if (g == null) return;
+            g.explosionJoinWorker().submit(s, attr.actorUuid(), actorName, worldId,
+                    center.getX(), center.getY(), center.getZ(), sourceTag,
+                    scratch.xs, scratch.ys, scratch.zs, scratch.ids, idx);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onExplosionDetonate failed", t);
         }
@@ -294,10 +391,21 @@ public final class NeoForgeEvents {
             }
             BlockPos pos = victim.blockPosition();
             String entityType = EntitySentinel.of(victim);
-            s.submitEntityKill(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(victim.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    entityType, SourceTagger.tag(ev.getSource()));
+            // v1.3.2 Y1: capture the victim's persistent NBT BEFORE death
+            // resolves so custom names, tame owner, potion effects survive
+            // a rollback.
+            byte[] entNbt = persistNbt() ? NbtCapture.entity(victim) : null;
+            if (entNbt != null) {
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                        WorldKey.of(victim.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        entityType, SourceTagger.tag(ev.getSource()), entNbt);
+            } else {
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                        WorldKey.of(victim.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        entityType, SourceTagger.tag(ev.getSource()));
+            }
             if (NeoForgeBootstrap.damageHistory != null) {
                 NeoForgeBootstrap.damageHistory.forget(victim.getUUID());
             }
@@ -327,9 +435,17 @@ public final class NeoForgeEvents {
             if (ev.loadedFromDisk()) return;
             String type = EntitySentinel.of(e);
             long now = System.currentTimeMillis();
-            Long last = SPAWN_LIMIT.get(type);
-            if (last != null && now - last < SPAWN_LIMIT_MS) return;
-            SPAWN_LIMIT.put(type, now);
+            // v1.3.0 W2: de-boxed spawn-limit throttle — plain AtomicLong.set on the
+            // hot path, no autoboxing per spawn.
+            AtomicLong last = SPAWN_LIMIT.get(type);
+            if (last == null) {
+                AtomicLong fresh = new AtomicLong(now);
+                AtomicLong prev = SPAWN_LIMIT.putIfAbsent(type, fresh);
+                if (prev != null) prev.set(now);
+            } else {
+                if (now - last.get() < SPAWN_LIMIT_MS) return;
+                last.set(now);
+            }
             BlockPos pos = e.blockPosition();
             s.submitEntitySpawn(null, type,
                     WorldKey.of(ev.getLevel()),
@@ -431,6 +547,14 @@ public final class NeoForgeEvents {
             ParseResults<CommandSourceStack> res = ev.getParseResults();
             if (res == null) return;
             CommandSourceStack src = res.getContext().getSource();
+            // v1.3.6 CC2 (P1-5): server-side gate. CommandEvent fires on both
+            // logical sides on integrated servers; a client-side dispatch has
+            // src.getLevel() == null and we would blow up on the WorldKey.of
+            // call below. Also guard the server-thread invariant so an off-
+            // thread dispatcher (rare, but Sinytra Connector has done this)
+            // does not race the submitter.
+            if (src == null || src.getLevel() == null) return;
+            if (src.getServer() == null || !src.getServer().isSameThread()) return;
             String raw = res.getReader().getString();
             if (src.getEntity() instanceof ServerPlayer p) {
                 s.submitCommand(p.getUUID(), p.getName().getString(),
@@ -456,10 +580,18 @@ public final class NeoForgeEvents {
             if (p == null || ie == null) return;
             ItemStack stack = ie.getItem();
             BlockPos pos = ie.blockPosition();
-            s.submitItemDrop(p.getUUID(), p.getName().getString(),
-                    WorldKey.of(p.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    itemId(stack), stack.getCount(), null);
+            byte[] itemNbt = persistNbt() ? NbtCapture.itemStack(stack, p.level().registryAccess()) : null;
+            if (itemNbt != null) {
+                s.submitItemDrop(p.getUUID(), p.getName().getString(),
+                        WorldKey.of(p.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null, itemNbt);
+            } else {
+                s.submitItemDrop(p.getUUID(), p.getName().getString(),
+                        WorldKey.of(p.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onItemToss failed", t);
         }
@@ -507,18 +639,31 @@ public final class NeoForgeEvents {
 
     // ====================================================================== interaction
 
-    /** Right-click block -> CLICK if {@code logInteractions}; also snapshot container pos for delta tracking. */
+    /**
+     * Right-click block -&gt; CLICK if {@code logInteractions}; also snapshot
+     * container pos for delta tracking.
+     *
+     * <p><b>v1.3.0 W3:</b> reads {@link BlockState} once and reuses it across
+     * the container-entity detection and the CLICK submit. Old path called
+     * {@code getBlockState}/{@code getBlockEntity} twice.</p>
+     */
     @SubscribeEvent
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock ev) {
         try {
             Player p = ev.getEntity();
             if (p == null) return;
+            BlockPos pos = ev.getPos();
+            // v1.3.0 W3: single BlockState read reused below.
+            BlockState state = ev.getLevel().getBlockState(pos);
             // Container snapshot tracking (independent of logInteractions config).
             try {
-                if (p instanceof ServerPlayer sp) {
-                    BlockEntity be = ev.getLevel().getBlockEntity(ev.getPos());
+                if (p instanceof ServerPlayer sp
+                        && state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock) {
+                    // EntityBlock gate — cheap Block-class check rather than a
+                    // chunk-BE-map hit for every RC on plain terrain.
+                    BlockEntity be = ev.getLevel().getBlockEntity(pos);
                     if (be instanceof Container) {
-                        LAST_CONTAINER_RC.put(sp.getUUID(), ev.getPos().immutable());
+                        LAST_CONTAINER_RC.put(sp.getUUID(), pos.immutable());
                         LAST_CONTAINER_RC_AT.put(sp.getUUID(), System.currentTimeMillis());
                     }
                 }
@@ -529,8 +674,6 @@ public final class NeoForgeEvents {
             GuardianConfig c = cfg();
             if (s == null || c == null) return;
             if (!c.actions().logInteractions()) return;
-            BlockPos pos = ev.getPos();
-            BlockState state = ev.getLevel().getBlockState(pos);
             s.submitClick(p.getUUID(), p.getName().getString(),
                     WorldKey.of(ev.getLevel()),
                     pos.getX(), pos.getY(), pos.getZ(),
@@ -563,7 +706,24 @@ public final class NeoForgeEvents {
     }
 
 
+    /**
+     * v1.3.0 W3: amortized cleanup. Old path scanned the full
+     * {@code CONTAINER_SNAPSHOT_AT} map on every container open (O(n) per open,
+     * regardless of whether anything was actually expired). Now we run the
+     * TTL scan only every {@link #CONTAINER_CLEANUP_EVERY} opens, PLUS an
+     * immediate fast-path eviction when the snapshot map exceeds
+     * {@link #MAX_CONTAINER_SNAPSHOTS} (bounded work per open).
+     */
     private static void cleanupContainerSnapshots() {
+        // Fast-path: bounded eviction if we're over cap regardless of counter phase.
+        while (CONTAINER_SNAPSHOT.size() > MAX_CONTAINER_SNAPSHOTS) {
+            evictOldestContainerSnapshot();
+        }
+        // Amortized: only run the TTL scan every N opens (mask; N is power-of-two).
+        int tick = CONTAINER_CLEANUP_TICK.incrementAndGet();
+        if ((tick & (CONTAINER_CLEANUP_EVERY - 1)) != 0) {
+            return;
+        }
         long cutoff = System.currentTimeMillis() - CONTAINER_SNAPSHOT_TTL_MS;
         CONTAINER_SNAPSHOT_AT.entrySet().removeIf(e -> {
             Long ts = e.getValue();
@@ -575,9 +735,6 @@ public final class NeoForgeEvents {
             LAST_CONTAINER_RC_AT.remove(id);
             return true;
         });
-        while (CONTAINER_SNAPSHOT.size() > MAX_CONTAINER_SNAPSHOTS) {
-            evictOldestContainerSnapshot();
-        }
     }
 
     private static void evictOldestContainerSnapshot() {
@@ -653,6 +810,8 @@ public final class NeoForgeEvents {
             EventSubmitter s = sub();
             if (s == null) return;
             int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
+            boolean nbtOn = persistNbt();
+            HolderLookup.Provider registries = nbtOn ? sp.level().registryAccess() : null;
             for (int slot = 0; slot < size; slot++) {
                 ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
                 ItemStack after = c.getItem(slot);
@@ -662,8 +821,21 @@ public final class NeoForgeEvents {
                 if (itemId == null) continue;
                 int delta = afterCount - beforeCount;
                 if (delta == 0) continue;
-                s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                byte[] itemNbt = null;
+                if (nbtOn) {
+                    // delta > 0 means deposit — the "after" side carries the NBT
+                    // for what was added; delta < 0 means withdraw — the "before"
+                    // side carries the NBT for what was removed.
+                    ItemStack src = delta > 0 ? after : before;
+                    itemNbt = NbtCapture.itemStack(src, registries);
+                }
+                if (itemNbt != null) {
+                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
+                } else {
+                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                }
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onContainerClose failed", t);
@@ -880,9 +1052,33 @@ public final class NeoForgeEvents {
     }
 
     /** Clears the deferred dispatcher on server stop to avoid retaining the server graph
-     *  across an in-JVM restart. Idempotent. */
+     *  across an in-JVM restart. Idempotent.
+     *
+     *  <p>v1.3.1 X6 (P3-1): also shuts down the static {@link #WORKER} executor. Pre-X6
+     *  the worker was a static daemon that never terminated, leaking a thread across
+     *  every in-JVM server restart (dev mode). WORKER is {@code static final} — once
+     *  shut down it stays shut down for the JVM's lifetime; in production this is fine
+     *  because {@code reset()} runs at server-stop and the JVM exits shortly after. In
+     *  dev / test harnesses that do an in-JVM restart, the harness rebuilds the whole
+     *  {@code NeoForgeEvents} initialization path via a fresh classloader, so a fresh
+     *  WORKER is created for the new run.
+     */
     public static void reset() {
         pendingDispatcher = null;
+        try {
+            if (!WORKER.isShutdown()) {
+                WORKER.shutdown();
+                if (!WORKER.awaitTermination(2L, java.util.concurrent.TimeUnit.SECONDS)) {
+                    LOG.warn(Guardian.MARKER, "NeoForgeEvents.WORKER did not shut down in 2s; forcing shutdownNow");
+                    WORKER.shutdownNow();
+                }
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            WORKER.shutdownNow();
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "NeoForgeEvents.WORKER shutdown raised", t);
+        }
     }
 
     // ====================================================================== helpers

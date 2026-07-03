@@ -22,7 +22,21 @@ class PerWorldEventHookTest {
             List.of(), List.of(), List.of(),
             500L, 8192,
             List.of(), false
-        );
+        ,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        true,
+        false,
+        true);
     }
 
     private static Action action(ActionType type, String world, String target, String sourceTag) {

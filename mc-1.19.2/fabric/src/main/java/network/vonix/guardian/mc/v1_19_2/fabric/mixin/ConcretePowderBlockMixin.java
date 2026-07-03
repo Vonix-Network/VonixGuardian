@@ -6,7 +6,6 @@ package network.vonix.guardian.mc.v1_19_2.fabric.mixin;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.ConcretePowderBlock;
@@ -16,10 +15,16 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** Captures concrete-powder solidification as BlockForm parity on Fabric. */
+/**
+ * Captures concrete-powder solidification as BlockForm parity on Fabric.
+ *
+ * <p>v1.3.0 W1c: Fabric already used the tight @Redirect discipline for onLand
+ * (submit only when {@code Level.setBlock} actually solidified) and a
+ * post-return @Inject on updateShape that skips no-op cases. No behavioral
+ * change — verified against W1c discipline.</p>
+ */
 @Mixin(ConcretePowderBlock.class)
 public abstract class ConcretePowderBlockMixin {
 

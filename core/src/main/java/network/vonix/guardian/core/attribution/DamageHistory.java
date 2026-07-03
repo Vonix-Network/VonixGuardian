@@ -38,6 +38,16 @@ public final class DamageHistory {
     private final int maxEntries;
     private final Map<UUID, Hit> hits = new ConcurrentHashMap<>();
     private final AtomicLong evictions = new AtomicLong();
+    /**
+     * v1.3.1 X6 (P1-2): counter of insertions observed while {@code size > maxEntries}.
+     * We only invoke {@link #evictOldest()} every {@link #EVICT_STRIDE}th over-cap
+     * insert, amortizing the O(n) sweep across many events. Between sweeps the map
+     * may transiently overshoot the cap by up to {@code EVICT_STRIDE} entries — a
+     * negligible heap price for taking the O(n) scan off the server tick.
+     */
+    private final AtomicLong evictCounter = new AtomicLong();
+    /** Amortization stride: run the full oldest-entry sweep every 64th over-cap insert. */
+    static final int EVICT_STRIDE = 64;
 
     public DamageHistory() {
         this(DEFAULT_WINDOW_MILLIS, DEFAULT_MAX_ENTRIES);
@@ -61,7 +71,14 @@ public final class DamageHistory {
         }
         hits.put(victim, new Hit(attacker, timestampMs));
         if (hits.size() > maxEntries) {
-            evictOldest();
+            // v1.3.1 X6 (P1-2): amortized eviction. Under sustained combat the map sits
+            // at cap and every damage event would otherwise pay an O(n) sweep on the
+            // server tick. Only run the sweep every EVICT_STRIDE-th over-cap insert;
+            // between sweeps the map overshoots by up to EVICT_STRIDE entries (~1 KB
+            // heap), which is trivially cheaper than 63 wasted O(n) scans.
+            if ((evictCounter.incrementAndGet() % EVICT_STRIDE) == 0L) {
+                evictOldest();
+            }
         }
     }
 
@@ -111,19 +128,44 @@ public final class DamageHistory {
     // ------------------------------------------------------------------
 
     private void evictOldest() {
-        // Single pass to find the oldest entry. ConcurrentHashMap iteration is weakly
-        // consistent — fine for a "drop something" heuristic.
-        UUID oldestKey = null;
-        long oldestTs = Long.MAX_VALUE;
+        // v1.3.1 X6 (P1-2): evict a batch equal to EVICT_STRIDE per amortized sweep.
+        // Under sustained cap pressure the record() gate fires the sweep every
+        // EVICT_STRIDE-th over-cap insert; each sweep needs to remove at least
+        // that many entries to keep the map from growing linearly. We do a
+        // single O(n) pass and remove the STRIDE oldest entries in one shot,
+        // trading one O(n log STRIDE) sweep every 64 events for O(1) per event
+        // amortized (was O(n) per event with only 1 eviction, before X6).
+        //
+        // v1.3.6 CC2 (P2-10): audit — the PriorityQueue allocation here is
+        // paid at most once per EVICT_STRIDE=64 events, so the amortized cost
+        // is (64 entries × ~40B / entry) / 64 events ≈ 40 bytes/event. That's
+        // trivially below GC noise; the PQ is left in place as-is. A future
+        // refactor could keep an intrusive linked-timestamp index to avoid
+        // the PQ entirely, but that adds a lot of state per Hit for no
+        // measurable win at 20 Hz tick.
+        int target = EVICT_STRIDE;
+        // Small ordered ring of "oldest-so-far" keys. Java has no fixed-size
+        // priority queue that keeps the MAX for easy replacement; use PQ with
+        // reverse ordering so peek() returns the largest of the current picks.
+        java.util.PriorityQueue<Map.Entry<UUID, Long>> topOldest =
+                new java.util.PriorityQueue<>((a, b) -> Long.compare(b.getValue(), a.getValue()));
         for (Map.Entry<UUID, Hit> e : hits.entrySet()) {
             long ts = e.getValue().timestamp;
-            if (ts < oldestTs) {
-                oldestTs = ts;
-                oldestKey = e.getKey();
+            if (topOldest.size() < target) {
+                topOldest.add(Map.entry(e.getKey(), ts));
+            } else if (ts < topOldest.peek().getValue()) {
+                topOldest.poll();
+                topOldest.add(Map.entry(e.getKey(), ts));
             }
         }
-        if (oldestKey != null && hits.remove(oldestKey) != null) {
-            evictions.incrementAndGet();
+        long removed = 0L;
+        for (Map.Entry<UUID, Long> e : topOldest) {
+            if (hits.remove(e.getKey()) != null) {
+                removed++;
+            }
+        }
+        if (removed > 0L) {
+            evictions.addAndGet(removed);
         }
     }
 

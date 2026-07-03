@@ -100,6 +100,30 @@ public final class GuardianStatus {
             }
         } catch (Throwable ignored) { }
 
+        // ---- 4b. Mixin hot events (v1.3.0 W4) ----
+        // Shows the operator kill-switch state (actions.mixinHotEvents) and the
+        // per-type submit rate for the eight hot-tick mixin-sourced ActionTypes.
+        // Rates come from the sliding-window meter in BatchedAsyncWriteQueue.
+        try {
+            section(out, "Mixin hot events");
+            boolean mixinOn = g.config().actions().mixinHotEvents();
+            line(out, "  enabled    " + (mixinOn ? "yes" : "no (kill-switch engaged)"));
+            line(out, "  allocRate  " + String.format(java.util.Locale.ROOT, "%.2f/s",
+                    g.queue().allocationRatePerSecond()));
+            Map<String, Double> rates = safeRateMap(() -> g.queue().submitRateByType());
+            String[] mixinTypes = {
+                "BURN", "SPREAD", "IGNITE", "FADE", "FORM",
+                "LEAVES_DECAY", "DISPENSE", "ENTITY_CHANGE_BLOCK"
+            };
+            for (String t : mixinTypes) {
+                double r = rates.getOrDefault(t, 0.0);
+                line(out, "  " + padRight(t, 20) + " "
+                        + String.format(java.util.Locale.ROOT, "%.2f/s", r));
+            }
+        } catch (Throwable t) {
+            line(out, "  (err: " + t.getClass().getSimpleName() + ")");
+        }
+
         // ---- 5. Hook chain ----
         section(out, "Event hooks");
         try {
@@ -111,6 +135,13 @@ public final class GuardianStatus {
                     line(out, "  #" + (i + 1) + "         " + hooks.get(i).getClass().getSimpleName());
                 }
             }
+            // v1.3.1 X6 (P3-5): surface the internal-hook count so operators can spot
+            // misbehaving plugin registrations against the mixin-hot-event chain.
+            int internalCount = g.gate().internalHooks().size();
+            String capNote = internalCount > network.vonix.guardian.core.event.EventGate.INTERNAL_HOOKS_SOFT_CAP
+                ? " (over soft cap " + network.vonix.guardian.core.event.EventGate.INTERNAL_HOOKS_SOFT_CAP + ")"
+                : "";
+            line(out, "  internal   " + internalCount + capNote);
         } catch (Throwable t) {
             line(out, "  (err: " + t.getClass().getSimpleName() + ")");
         }
@@ -196,6 +227,23 @@ public final class GuardianStatus {
         } catch (Throwable t) {
             return Map.of();
         }
+    }
+
+    private static Map<String, Double> safeRateMap(Supplier<Map<String, Double>> s) {
+        try {
+            Map<String, Double> v = s.get();
+            return v == null ? Map.of() : v;
+        } catch (Throwable t) {
+            return Map.of();
+        }
+    }
+
+    private static String padRight(String s, int width) {
+        if (s.length() >= width) return s;
+        StringBuilder sb = new StringBuilder(width);
+        sb.append(s);
+        for (int i = s.length(); i < width; i++) sb.append(' ');
+        return sb.toString();
     }
 
     /** Compact histogram: sorted desc by count, top 6 entries plus tail. */

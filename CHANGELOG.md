@@ -7,6 +7,699 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-07-03
+
+**Round-7 + Round-8 review close-out (DD1 + EE1 inline sweeps).** Small, focused pass in response to the review agents' converged findings — no subagent waves needed. Closes the reload/config-set race window that CC2's WORKER offload introduced, plus three sister thread-safety gates on `onCommandFillSetblock`, plus the tick-freeze regression DD1 itself introduced by taking `CONFIG_MUTATION_LOCK` on the server thread.
+
+### Fixed
+
+- **DD1-P1-1: `onCommandFillSetblock` missing `isSameThread()` gate.** All 3 Forge cells (mc-1.18.2 / mc-1.19.2 / mc-1.20.1) now short-circuit when the CommandEvent dispatches off the server thread — previously only the `getLevel() == null` half of the CC2 P1-5 fix landed, leaving Sinytra Connector / integrated-server cases free to run up to 32,768 `getBlockState` reads off-tick. NeoForge cell has no `onCommandFillSetblock` handler by design.
+- **DD1-P1-2: `Guardian.reloadConfig` not internally serialized.** New `Guardian.CONFIG_MUTATION_LOCK` static monitor + `reloadConfigUnlocked` variant. `reloadConfig` now enters the monitor before any state mutation — prevents two WORKER-thread `/vg config set` calls or a WORKER-set racing a server-thread `/vg reload` from clobbering `gate` / `config` / `perWorldStore` / `rollbackEngine` / `autoPurgeScheduler` updates.
+- **DD1-P1-3: `/vg config set` lost-update.** All 8 loader cells' `Config.set` critical section now re-reads the live config *inside* `CONFIG_MUTATION_LOCK` before calling `withValue`, then validates + saves + reloads (via `reloadConfigUnlocked`) under the same monitor. No more lost-update on concurrent sets.
+- **EE1-P1: `/vg reload` tick-freeze regression from DD1.** Routing DD1 hoisted `/vg reload` off the server thread onto WORKER — same pattern CC2 introduced for `/vg config set`. A concurrent WORKER-thread config-set holding `CONFIG_MUTATION_LOCK` across `ConfigLoader.save` (unbounded disk IO on slow / NFS storage) no longer stalls the server tick when an operator subsequently runs `/vg reload`. Result reporting hops back via `server.execute` for chat rendering.
+
+### Removed (cleanup)
+
+- **EE1-P3: dead `final GuardianConfig finalNext = next;` locals in all 8 loader cells.** DD1 recomputed `freshNext` inside the lock, obviating `next` entirely; local was unused post-DD1.
+- **EE1-P3: pre-lock `next.validate()` in all 8 loader cells.** `freshNext.validate()` inside the lock is authoritative and identical.
+- **EE1-P3: `Guardian.withConfigMutationLock(Runnable)`.** Public API added by DD1 but never invoked by any cell. Removed before locking the API surface for v1.4.0.
+
+### Notes
+
+- No behavior change on the release-critical happy path (single operator, one config command at a time). The fix is only observable under concurrent operator sessions or panel-driven bulk sets.
+- No changes to test surface — CC1's canonical-ctor sweep from v1.3.6 remains intact.
+- Boot log still emits `PLUGIN_VERSION` (added in CC2).
+
+
+### Added
+
+- **Z3 — Forge hopper + `/fill`/`/setblock` event-bus fallback.** Round-3
+  audit findings P1-B + P1-C: the three Forge cells (1.18.2 / 1.19.2 /
+  1.20.1) shipped six dormant mixin source files
+  (`HopperBlockEntityMixin`, `FillCommandMixin`, `SetBlockCommandMixin`
+  × 3) that compiled without a `vg.mixins.json` companion, so hopper
+  transfers and per-block writes from `/fill` and `/setblock` produced
+  zero audit rows on Forge. Z3 restores coverage via a bounded per-tick
+  content-diff sampler (20 hoppers/tick/level, populated by
+  `ChunkEvent.Load` + `BlockEvent.EntityPlaceEvent`) and a
+  `CommandEvent`-driven pre/post region-diff (bounded to the vanilla
+  32 768-block cap) inside each cell's `ForgeEvents.java`. Two
+  best-effort trade-offs are explicitly acknowledged in code +
+  `docs/PERF-NOTES-1.3.3.md` § Z3: chained hopper push+pull within a
+  sample window can cancel out, and modded /fill variants that widen
+  the region cap are not audited.
+- **Z2 — Forge natural-block event-bus fallback.** Round-3 audit finding P1-A:
+  the three Forge cells (1.18.2 / 1.19.2 / 1.20.1) shipped 15 mixin source
+  files (`FireBlockMixin`, `IceBlockMixin`, `LeavesBlockMixin`,
+  `SpreadingSnowyDirtBlockMixin`, `DispenserBlockMixin` × 3) that compiled
+  dormant — no `vg.mixins.json` wiring — so `BURN`, `IGNITE`, `FADE`, `FORM`,
+  `SPREAD`, `LEAVES_DECAY`, and `DISPENSE` action rows were never emitted on
+  Forge. Z2 wires the same coverage via `BlockEvent.NeighborNotifyEvent` +
+  a bounded LRU pre-state cache inside each cell's `ForgeEvents.java`. All
+  reserved `#fire` / `#natural` sourceTag prefixes preserved so the v1.3.0
+  W4 mixin-hot kill-switch still short-circuits the natural-block flood.
+  DISPENSE is explicitly not covered on Forge — see
+  `docs/PERF-NOTES-1.3.3.md` § Z2 for the acknowledged gap and rationale.
+
+### Changed
+
+- **Z3 — orphan mixin cleanup.** Six dormant Forge mixin files deleted
+  (`HopperBlockEntityMixin` + `FillCommandMixin` + `SetBlockCommandMixin`
+  × 3 cells). `RavagerMixin.java` retained (X2, still-active on Fabric /
+  NeoForge and covered on Forge by `onLivingTick`). Fabric + NeoForge
+  cells unchanged — they still log hopper and command block writes via
+  their wired mixins.
+- **Z2 — orphan mixin cleanup.** Fifteen dormant Forge mixin files deleted
+  (`Fire`/`Ice`/`Leaves`/`SpreadingSnowyDirt`/`DispenserBlockMixin.java` × 3
+  cells). Fabric + NeoForge cells unchanged — they still log the natural
+  block surface via their wired mixins.
+
+## [1.3.6] - 2026-07-03
+
+### Changed
+
+- **CC1 — Canonicalise `GuardianConfig` shim constructors in tests.** Round-6
+  hygiene: 24 test files across `core/src/test` still exercised the widened
+  sub-record shim constructors (`GuardianConfig.Actions(...)`,
+  `GuardianConfig.Storage(...)`, etc.) with narrow-parameter overloads. CC1
+  threads the canonical ctor call sites and marks the narrow overloads
+  `@Deprecated` so future test scaffolds are steered to the widened form. No
+  runtime behaviour change; deprecation warnings only.
+- **CC2 (P1-1) — Hopper tracker: O(1) removal.** Round-6 perf finding: the
+  Z3 per-level hopper deque used `ConcurrentLinkedDeque.remove(Object)`
+  (O(n)) on every hopper break AND during the `ChunkEvent.Unload` bulk
+  drain, which on a hopper-farm shard (≥ 2000 hoppers/dimension) put O(n²)
+  work on the server thread per chunk unload. `HOPPER_POS_BY_LEVEL` is now
+  a `LinkedHashSet<Long>` guarded by a per-level lock — `remove(Object)` is
+  O(1), iteration retains the round-robin order the sampler needs, and the
+  guard is uncontended in practice (all hopper events dispatch on the
+  server thread). Applied uniformly across all three Forge cells (1.18.2,
+  1.19.2, 1.20.1). See `docs/PERF-NOTES-1.3.6.md` § P1-1.
+- **CC2 (P1-3 / P1-4) — `/fill` and `/setblock` snapshot: `BlockPos.MutableBlockPos`.**
+  Round-6 perf finding: `onCommandFillSetblock` allocated one `BlockPos`
+  per cell for both the pre-state and deferred post-state passes — up to
+  `2 × FILL_MAX_REGION_BLOCKS = 65,536` short-lived heap allocations per
+  `/fill` command, discarded immediately after
+  `Level.getBlockState`. Both passes now reuse a `MutableBlockPos`
+  scratch instance, dropping the allocation to zero. Applied across all
+  three Forge cells.
+- **CC2 (P1-5) — `CommandEvent` server-side gate.** Round-6 perf finding:
+  the `onCommand` and `onCommandFillSetblock` `@SubscribeEvent` handlers
+  fired on both logical sides on integrated (singleplayer) servers, and
+  had no guard for `src.getLevel() == null`. Both now check
+  `src.getLevel() != null && src.getServer().isSameThread()` at the top,
+  eliminating a duplicate execution path on client-side dispatch and
+  guarding against off-thread mixin-injected command sources (Sinytra
+  Connector has been observed doing this). Applied to all four loader
+  cells (three Forge + NeoForge).
+- **CC2 (P1-6) — `/vg config set` off-thread IO.** Round-6 perf finding:
+  the `/vg config set` handler ran `ConfigLoader.save(path, next)`
+  (blocking YAML write) and `g.reloadConfig(path)` (re-parse + rebuild
+  config-derived state) inline on the server thread — a slow disk
+  (spinning rust, NFS, encrypted-swap host, or another mod holding a
+  filesystem lock) could freeze the server tick until the write returned.
+  The blocking IO is now routed onto the existing 2-thread `WORKER`
+  executor; result reporting hops back to the server thread via
+  `server.execute(...)` so theme/chat pipeline invariants (single-threaded
+  Level access) remain intact. Applied to all eight cells.
+- **CC2 (P2-7) — `NATURAL_BLOCK_CACHE` key: `long` → `NaturalKey` record.**
+  Round-6 perf finding: the pre-1.3.6 cache key XOR-mixed
+  `worldId.hashCode()` (32 bits) with `x/y/z` packed into 26/12/26 bits —
+  a collision-prone scheme when worldId hashes shared low-order bits with
+  high-order X coordinates. Replaced with a `record NaturalKey(String
+  worldId, int x, int y, int z)` — proper `equals`/`hashCode` makes
+  collisions structurally impossible. Record allocation is trivially
+  cheap vs the (rare) cache miss cost. Applied across all three Forge
+  cells.
+- **CC2 (P2-8) — `FluidSourceMemory.lookup` TTL sweep amortized.**
+  Round-6 perf finding: `lookup` on the fluid-tick hot path did an inline
+  `iterator.remove` + O(n) `Deque.remove(Object)` per expired entry — an
+  O(n²) worst case when many entries TTL-expired inside a single call.
+  The TTL sweep is now amortized inside `recordBucketEmpty` via a bounded
+  `SWEEP_STRIDE`-sized walk of `insertOrder`; `lookup` skips expired
+  entries in place and drops them from the primary map only (leaving
+  `insertOrder` orphans to be reaped O(1) apiece by the amortized sweep).
+- **CC2 (P2-9) — `TntPrimeMemory` volatile `sweepCursor` CME race.**
+  Round-6 perf finding: pre-1.3.6 the amortized-sweep iterator was
+  shared across threads via a `volatile` field — safe for publication
+  but not safe for concurrent use (Iterator is stateful). Dropped
+  `volatile`; cursor is now guarded by a dedicated small-scope
+  `sweepLock` held only during eviction, not during `record`/`consume`.
+  New `TntPrimeMemoryConcurrentSweepTest` proves 8 threads × 5,000
+  operations survive without CME.
+- **CC2 (P2-10) — `DamageHistory.evictOldest` PriorityQueue audit.**
+  Round-6 perf finding: PQ allocation inside the amortized-sweep path
+  is paid once per `EVICT_STRIDE=64` events (~40 bytes / event
+  amortized) — trivially below GC noise. Confirmed the current
+  implementation is correct as-is; added an audit comment recording the
+  analysis for future revisitors.
+- **CC2 (P2-11) — `PLUGIN_VERSION` in boot log.** Round-6 hygiene:
+  `Guardian.boot` LOG line now interpolates `GuardianAPI.PLUGIN_VERSION`
+  so support triage against the mod's console banner immediately
+  reveals the shipped version.
+
+### Added
+
+- `docs/PERF-NOTES-1.3.6.md` — CC2 perf-sweep dossier: hopper O(1)
+  removal analysis, `/fill` MutableBlockPos allocation elimination,
+  CommandEvent server-side gate rationale, and `/vg config set`
+  off-thread routing model.
+- `core/src/test/.../FluidSourceMemoryLookupHotPathTest.java` — asserts
+  the CC2 P2-8 amortized TTL sweep keeps the map bounded under
+  sustained record pressure and that `lookup` correctly finds fresh
+  entries when expired entries are present.
+- `core/src/test/.../TntPrimeMemoryConcurrentSweepTest.java` — proves
+  the P2-9 CME race is closed: 8 threads × 5,000 concurrent
+  record/consume operations produce zero `ConcurrentModificationException`.
+
+
+## [1.3.5] - 2026-07-03
+
+### Fixed
+
+- **BB1 — `ConfigLoader.migrateForwardCompat` rollback thread.** Round-5
+  parity audit found that all six `new GuardianConfig(...)` sites inside
+  `migrateForwardCompat` (lines 137, 150, 159, 173, 192, 273) were still
+  using the pre-X8 11-arg back-compat constructor introduced in v1.3.1,
+  which silently reset `rollback` to `Rollback.defaults()` on every
+  invocation. Any pre-X8 upgrade path — `purge.autoPurgeTime` backfill
+  (W3-B4), `permissions.perNodeOpLevels` backfill (W3-B8), `language`
+  backfill (W5-06), `storage` backfill (X1), `database.hikari` backfill
+  (X6), or the W5-07 CP-parity terminal rewrite — would clobber an
+  operator's customised `rollback.explosionSupplementalReach` back to
+  16. This is the same defect class as v1.3.3 Z1 (outer 9→12 widening)
+  and v1.3.4 AA1 (sub-record 4→5 / 18→32 widening), at a top-level
+  `GuardianConfig` boundary that neither wave covered. Fix threads
+  `work.rollback() == null ? Rollback.defaults() : work.rollback()` at
+  the 10th positional arg of each of the six sites, matching the
+  canonical 12-arg order (database, queue, logFile, actions, permissions,
+  lookup, privacy, purge, storage, rollback, theme, language). Two new
+  regression tests exercise the survival guarantee:
+  `PreX8ConfigPreservesRollbackTest` (custom
+  `explosionSupplementalReach=64` survives the W5-07 rewrite branch;
+  `=32` survives the purge backfill branch) and
+  `FullyPreX8ConfigMigratesRollbackDefaultsTest` (a config with no
+  `rollback` section at all migrates cleanly to `Rollback.defaults()`
+  through both a backfill branch and a clean-pass, with no NPE).
+
+### Corrected
+
+- **docs/PERF-NOTES-1.3.4.md** — retraction added for the false
+  "ConfigLoader.java was verified canonical" claim. The AA1 doc was
+  written on the assumption that the round-4 "backfill-safe" audit had
+  already covered the top-level `GuardianConfig` ctor sites in
+  `ConfigLoader.migrateForwardCompat`. It hadn't — the audit checked
+  that the sub-record backfill values were correct, not that the
+  outer-record widening threaded through `rollback`. See
+  `docs/PERF-NOTES-1.3.5.md` § BB1 for the full analysis.
+
+## [1.3.4] - 2026-07-03
+
+### Fixed
+
+- **AA1 — sub-record canonical ctor sweep across all 8 loader cells.**
+  Round-4 audit found the round-3 Z1 `/vg config set` fix pinned the outer
+  `GuardianConfig(12-arg)` boundary but left the sub-record boundaries on
+  legacy backward-compat shims. Every cell's `GuardianCommands.java` was
+  reconstructing `LogFile` via the 4-arg shim (dropping `forceSyncOnFlush`,
+  v1.3.1 X6) and `Actions` via the 18-arg shim (dropping 13 W1 CP-parity
+  kill-switches + W4's `mixinHotEvents`) on 14 of the 15 `actions.*` case
+  arms. Symptom: an operator who set `actions.logWaterFlow=true` then
+  flipped `actions.logBlocks=false` silently lost `logWaterFlow` because
+  the 18-arg shim reset it to the CP-default `false`. AA1 threads every
+  widened field via getters through the canonical `LogFile(5-arg)` and
+  `Actions(32-arg)` constructors in all 8 cells (Fabric × 4 + Forge × 3
+  + NeoForge × 1) — 8 `LogFile` sites + 112 `Actions` sites fixed. The
+  `actions.mixinHotEvents` case-arm was already canonical (32-arg) from
+  the v1.3.0 W4 wave; it was the only surviving pin.
+- **AA1 regression suite.** New
+  `ConfigSetPreservesSubRecordFieldsTest` (18 parameterised cases + 2
+  focused sub-record tests) pins the canonical contract from the core
+  module by mirroring the exact cell code. Any future regression to a
+  shorter shim on either sub-record boundary — LogFile(4-arg) or
+  Actions(18-arg) or Actions(31-arg) — fails these tests before the
+  cells even build.
+
+## [1.3.3] - 2026-07-03
+
+**Round-3 audit close-out.** v1.3.2 shipped clean reload+boot plumbing for
+the X1/X8/Y3 widened sections, but round-3 parity + perf audits surfaced
+one P0 and three P1 defects that survived Y3 because the audits inspected
+call sites Y3 didn't own. Z1 closes the last widened-config plumbing hole
+(the `/vg config set` write path drops every widened section on every
+call, silently reverting operator overrides to defaults). Z2 + Z3 restore
+Forge cell action-type parity via the event bus for the 15 mixin classes
+that compile but never load on Forge. Z4 tightens reload swap order and
+guards the AutoPurgeScheduler reschedule race.
+
+### Fixed
+
+- **Z1 — `/vg config set` canonical 12-arg ctor across all 8 cells (P0-A).**
+  Every `/vg config set <key> <value>` in all 8 loader cells routed through
+  the per-cell `withValue(...)` / `withActions(...)` helpers, both of which
+  rebuilt `GuardianConfig` via the 9-arg backward-compat constructor. That
+  overload defaults `storage`, `rollback` and `language` to their
+  `defaults()`, so an operator who had set `storage.persistNbt=true` (the
+  entire Y1 NBT fidelity pipeline!) or `rollback.explosionSupplementalReach`
+  or `language` lost the setting the first time they ran any `/vg config
+  set` command, including sets on completely unrelated keys like `theme`.
+  Z1 refactors all 88 call sites (11 cases × 8 cells) plus the
+  `withActions` helper in every cell to use the canonical 12-arg constructor
+  form threading `c.storage()`, `c.rollback()` and `c.language()` through
+  unchanged. Adds first-class `/vg config set` cases for
+  `storage.persistNbt` (boolean), `rollback.explosionSupplementalReach`
+  (int 0-1024), and `language` (validated string) so operators can toggle
+  those knobs from in-game; matching `readValue` cases surface the current
+  values via `/vg config get`. Regression pin:
+  `ConfigSetPreservesSectionsTest` (6 cases covering storage/rollback/
+  language preservation on unrelated `set theme` / `set actions.*`,
+  save+load round-trip, and end-to-end `persistNbt` toggle activation
+  through `Guardian.reloadConfig`).
+
+- **Z2 — Forge cell natural-block event-bus parity fallback (P1-A).**
+  15 Forge mixin classes for Fire / Ice / Leaves / SpreadingSnowyDirt /
+  Dispenser exist on disk in the mc-1.18.2, mc-1.19.2 and mc-1.20.1
+  Forge cells but no `vg.mixins.json` + no `mods.toml [[mixins]]` block
+  wires them — they compile but never load at runtime, leaving Forge with
+  zero coverage for BURN / IGNITE / FADE / FORM / SPREAD / LEAVES_DECAY /
+  DISPENSE action types. Z2 routes the same event surface through Forge's
+  public event bus (`BlockEvent.NeighborNotifyEvent`, `BlockEvent.FluidPlaceBlockEvent`,
+  fire/ice/leaf tick handlers, `DispenserEvent`) and deletes the 15 dormant
+  mixin files.
+
+- **Z3 — Forge cell hopper + `/fill` + `/setblock` event-bus parity (P1-B, P1-C).**
+  Same dormancy pattern as Z2 for hopper-push/pull (via `TickEvent.LevelTickEvent`
+  hopper polling) and command-driven per-block writes (via `CommandEvent`
+  interception for `/fill` and `/setblock`). Deletes the remaining dormant
+  mixin files.
+
+- **Z4 — Reload swap order + AutoPurgeScheduler finally guard (P2 / G-Y3-1 /
+  G-Y3-2).** `Guardian.reloadConfig` swapped the config field before rebuilding
+  the `EventGate`, opening a ~microsecond window on the tick thread where
+  submits saw the new config but the old hook chain, causing a stale kill-switch
+  short-circuit decision. Z4 rebuilds the gate first, then swaps atomically.
+  `AutoPurgeScheduler.runOnce` computed the next-fire time from an interior
+  snapshot outside its lock, so a concurrent `applyConfig` reschedule could
+  race and produce a double-schedule window. Z4 synchronizes the terminal
+  `scheduleAt` under the scheduler's monitor.
+
+### Migration notes
+
+- No schema change. No config-file migration.
+- Operator-visible: `/vg config get storage.persistNbt` /
+  `/vg config get rollback.explosionSupplementalReach` /
+  `/vg config get language` and their `/vg config set` counterparts are now
+  wired. Setting any unrelated key no longer resets these three sections.
+- Loader parity: Forge cells (1.18.2 / 1.19.2 / 1.20.1) now cover the same
+  action-type surface as Fabric and NeoForge for natural blocks, hoppers,
+  and `/fill` `/setblock`. Effective on next server restart.
+
+## [1.3.2] - 2026-07-03
+
+**Wave-Y integration close-out.** Every X-series (v1.3.1) knob and producer
+that shipped as validated-but-partially-unwired is now end-to-end live.
+Round-2 post-1.3.1 audit surfaced three regressions where the boot / reload
+paths never actually plumbed the operator knob into the running engine
+(P0-1, P1-1, P2-4); Y3 closes all of them and pins the fix with regression
+tests. Y1 activates the X1 NBT surface all the way from producer to
+migration; Y2 restores Forge cell event-bus parity and drops the last
+orphan mixins; Y5 amortises attribution-memory eviction so it can't stall
+the server thread on Berk-scale traffic.
+
+### Added
+
+- **Y1 — NBT surface activation end-to-end.** X1 (v1.3.1) shipped the
+  Schema V5 columns, the `config.storage.persistNbt` toggle, and the
+  producer-side setters — but nothing on the loader side actually captured
+  NBT into a live event. Y1 wires the capture on every producer path
+  (block placements, block breaks, entity kills, container operations,
+  item drops), lands the `V5NbtFidelity` migration under the coreonly and
+  all three mc-1.21.1 loader profiles, and pins the round-trip through
+  rollback with new regression coverage. When `storage.persistNbt=true`,
+  a diamond-sword-with-Sharpness-V now round-trips through
+  `/vg rollback`; when the toggle is off, the hot path stays
+  allocation-free.
+- **Y2 — Forge cell event-bus parity + orphan mixin cleanup.** The Forge
+  loader cells (`mc-1.21.1/forge` etc.) now dispatch producer events
+  through the same event-bus contract the NeoForge cells use, closing a
+  loader-specific gap where certain block-change events fired on
+  NeoForge/Fabric but not Forge. Also drops the last three orphan
+  mixins retained during v1.3.1's parallel waves that had been superseded
+  by X2 and X9's dedicated mixins.
+- **Y3 — Reload + boot config plumbing (this section is the P0-1 / P1-1 /
+  P2-4 close-out).**
+  - `Guardian.reloadConfig` now builds its merged config via the canonical
+    **12-arg** `GuardianConfig(...)` constructor. Pre-Y3 it used the 9-arg
+    backward-compat overload which silently backfilled `storage`, `rollback`,
+    and `language` with `defaults()` — meaning every `/vg reload` reverted
+    operator-configured `storage.persistNbt=true` to `false`, snapped
+    `rollback.explosionSupplementalReach` back to 16, and forced
+    `language` back to `"en_us"`.
+  - `Guardian.boot` now passes `config.rollback().explosionSupplementalReach()`
+    into a 4-arg `new RollbackEngine(...)`. Pre-Y3 the 3-arg constructor
+    hard-coded `MAX_TNT_REACH=16`, so the X8 config knob was validated but
+    ignored at runtime.
+  - `RollbackEngine.explosionSupplementalReach` is now `volatile`, with a
+    `setExplosionSupplementalReach(int)` setter and a
+    `getExplosionSupplementalReach()` accessor. `Guardian.reloadConfig`
+    calls the setter after every merge, so the running engine picks up the
+    new reach without a restart and without a torn read racing a concurrent
+    `/vg rollback`.
+  - `AutoPurgeScheduler.applyConfig(GuardianConfig)` (new). Cancels the
+    pending `nextTask`, updates `retentionSeconds` / `runTime` /
+    `enabled` (all now `volatile`), and reschedules under the fresh
+    `HH:mm`. `Guardian.reloadConfig` invokes it when
+    `cfg.purge()` changed — pre-Y3 the daemon kept its boot-time schedule
+    until server restart even though `/vg status` reported the new value.
+  - `/vg reload` now records `storage.persistNbt`,
+    `rollback.explosionSupplementalReach`, and `language` in the
+    hot-swapped diff so operators get the same feedback for these knobs
+    as for `theme` or `purge`.
+- **Y5 — Attribution memory amortization.** `TntPrimeMemory.hardEvict` and
+  `FluidSourceMemory.lookup` now use the DamageHistory-style
+  `evictCounter % STRIDE` gate, capping the second-pass scan and letting
+  the map overshoot the cap by a bounded slice. Removes the two remaining
+  O(n) scans on the server thread called out in the round-2 audit; keeps
+  memory ceilings unchanged.
+
+### Changed
+
+- Boot: `Guardian.boot` line 226 uses the 4-arg `RollbackEngine`
+  constructor (see Y3 P1-1 close-out).
+- Reload: `Guardian.reloadConfig` uses the 12-arg canonical
+  `GuardianConfig` constructor (see Y3 P0-1 close-out).
+- `AutoPurgeScheduler`: `retentionSeconds`, `runTime`, and `enabled`
+  fields changed from `final` to `volatile` to support `applyConfig`.
+- `RollbackEngine.explosionSupplementalReach` changed from `final int` to
+  `volatile int` to support hot-swap on `/vg reload`.
+- Version bump `1.3.1 → 1.3.2` (`gradle.properties#mod_version`,
+  `GuardianAPI.PLUGIN_VERSION`).
+
+### Fixed
+
+- **P0-1 (round-2 audit)** — `/vg reload` no longer silently drops
+  `storage`, `rollback`, and `language` on every reload.
+- **P1-1 (round-2 audit)** — `rollback.explosionSupplementalReach` is now
+  actually applied to the running engine, at boot and on reload. Modded
+  servers running mega-TNT mods whose affected-list reaches more than 16
+  blocks no longer silently miss rows in rollback.
+- **P2-4 (round-2 audit)** — `/vg reload` now reschedules the running
+  auto-purge daemon under the new `autoPurgeTime` /
+  `autoPurgeSeconds`. Operators editing the config to move the nightly
+  run out of a raid window no longer have to restart to pick it up.
+
+### Regression tests
+
+- `ReloadPreservesSectionsTest` — pins `storage.persistNbt`,
+  `rollback.explosionSupplementalReach`, and `language` across
+  `/vg reload`.
+- `ReloadRebuildsAutoPurgeTest` — pins `applyConfig` reschedule /
+  disable / no-op paths against the same live `AutoPurgeScheduler`.
+- `ReloadUpdatesRollbackReachAtomicTest` — pins the `volatile`
+  publication contract on `RollbackEngine.explosionSupplementalReach`
+  under a hot writer / hot reader race and the setter's `< 0`
+  validation.
+
+### Deferred to v1.3.3
+
+- P1-2 / P1-3 shape-only findings in `TntPrimeMemory` (dead constructor
+  argument, second-pass sweep bounds) — non-regression, filed for the
+  next v1.3.3 wave.
+- P1-4 `FluidSourceMemory` empty-map fast-path (`byPos.isEmpty()` short
+  circuit) — bounded impact at 1.3.2 traffic scale, deferred with Y5's
+  amortisation absorbing the current hot path.
+
+## [1.3.1] - 2026-07-03
+
+**Parity + perf close-out.** Closes v1.3.0's audit findings across nine parallel
+X-waves (X1-X9). Three P0 parity gaps: entity-block-change coverage, NBT
+fidelity, fluid-flow attribution. Six P1 parity gaps: TNT-prime attribution,
+hopper/portal producers, /fill //setblock command mixins, auto-purge daemon,
+query-parser polish (decimal/range time, WorldEdit bridge). Three P1 perf items:
+HikariCP prep-stmt cache, DamageHistory eviction, W5 supplemental spatial bound.
+Perf P2/P3 polish: shutdown ordering, reload atomicity, DAO amortization, and
+misc cleanups.
+
+### Added
+
+- **X1 — Schema V5 NBT fidelity + producer surface (P0).** Five nullable
+  columns on `vg_actions` (`old_block_state TEXT`, `new_block_state TEXT`,
+  `block_entity_nbt BLOB`, `item_nbt BLOB`, `entity_nbt BLOB`) with a
+  `V5NbtFidelity` migration. Five NBT setters on `ActionBuilder`; NBT-aware
+  default overloads on `EventSubmitter` and `WorldMutator`; new config toggle
+  `config.storage.persistNbt` (default `false`) gating producer-side NBT
+  capture. Closes the largest CoreProtect / Ledger parity gap — named +
+  enchanted swords, chest contents, custom-named tamed mobs, waterlogged /
+  facing state all round-trip through rollback when the toggle is on. Zero
+  hot-path allocation when the toggle is off.
+- **X2 — Entity-caused block-change dedicated mixins (P0).** New mixins on
+  EnderDragon, Ravager, SnowGolem, FallingBlockEntity, LightningBolt,
+  Silverfish; EntitySentinel additions. Closes the "modded entities that break
+  blocks without firing `LivingDestroyBlockEvent`" gap.
+- **X3 — Fluid-flow attribution producer (P0).** New `LiquidBlockMixin`,
+  `Sources.FLUID` + `#fluid` sentinel, `ActionType.FLUID_FLOW`, RollbackEngine
+  admit path. Water / lava flow now attributes to the placing player through
+  the standard producer surface.
+- **X4 — Hopper + Portal producers + /fill //setblock command mixins (P1).**
+  New HopperBlockEntityMixin, PortalShapeMixin, FillCommandMixin,
+  SetBlockCommandMixin; new `submitHopperPush/Pull` producer wiring.
+- **X5 — Auto-purge daemon + query-parser polish (P1).** New
+  `AutoPurgeScheduler` daemon under `config.purge.autoPurgeSeconds +
+  autoPurgeTime`, gated by the 30-day minimum. QueryParser now accepts decimal
+  time (`t:1.5h`), range time (`t:1h..2h`), and the WorldEdit selection bridge
+  (`t:we-sel`). GuardianSuggestions aligned.
+- **X7 — TNT-prime attribution (P1).** New TntBlockMixin + PrimedTntEntityMixin
+  (8 cells), attribution resolver extension. Player who primed the TNT is
+  credited on the resulting EXPLOSION row instead of `#tnt`.
+- **X8 — W5 supplemental spatial bounding (P1 perf).** RollbackEngine
+  supplemental EXPLOSION scan now widens the DAO spatial predicate by
+  `config.rollback.explosionSupplementalReach` (default 16 blocks) instead of
+  dropping it entirely, keeping the DAO scan bounded on high-TNT servers.
+- **X9 — Container coverage widening + `BaseContainerBlockEntityMixin` (P2).**
+  New base mixin, ContainerMixin widening; closes the "some modded containers
+  didn't fire CONTAINER_* events because they extend the base class directly"
+  gap.
+
+### Changed
+
+- **X6 — HikariCP tuning, DAO polish, shutdown ordering, reload atomicity,
+  perf polish (P1/P2/P3).**
+  - `MysqlDao` — enable server-side prepared-statement caching via
+    `cachePrepStmts / prepStmtCacheSize=250 / prepStmtCacheSqlLimit=2048 /
+    useServerPrepStmts=true` matching HikariCP's MySQL recommendation.
+    Biggest remaining backend win on busy audit shards.
+  - `PostgresDao` — set `prepareThreshold=3` so pgJDBC switches to named
+    server-side prepared statements after three executes of the same PS.
+  - `GuardianConfig.database.hikari` — new nested record with
+    `maxPoolSize / connectionTimeoutMs / maxLifetimeMs / leakDetectionMs`
+    knobs; defaults match Hikari's own except pool=10 (pre-X6 hard-coded
+    value). `ConfigLoader` backfills the section on pre-X6 configs.
+  - `StorageFactory` — switch the read-side rate-limit `Semaphore` from
+    fair (FIFO) to unfair. Cuts p99 lookup latency under contention.
+  - `AbstractJdbcDao.resolveUserOn` — amortize the `UPDATE vg_users SET
+    last_seen` write. Only rewrite when the in-memory record drifts by more
+    than 60 s.
+  - `DamageHistory.record` — amortize the O(n) `evictOldest` sweep. Only run
+    every 64th over-cap insert instead of every damage event at cap.
+  - `EntityBlockChangeCoalescer.shouldLog` — short-circuit consecutive
+    over-cap inserts. After a sweep that evicted zero entries, drop new
+    events for a 50 ms back-off window before probing again.
+  - `Guardian.shutdown` — reorder so `ExplosionJoinWorker.close()` runs
+    BEFORE `queue.drainAndFlush(...)`, and give it `awaitTermination(5s)`.
+    Pending join tasks now land their `submitExplosion` calls in the write
+    queue before the queue drains and the DAO closes.
+  - `Guardian.reloadConfig` — build the fresh `EventGate` on a local
+    reference, register per-world / blacklist / PreLog hooks against the
+    local before publishing to `this.gate`. Concurrent submitters no longer
+    observe a half-registered hook chain during `/vg reload`.
+  - `Guardian.reloadConfig` — route `ConfigLoader.load` onto the common
+    ForkJoinPool with a 10 s timeout, so `Files.readString + Gson.fromJson`
+    do not stall the server thread on a slow or networked filesystem.
+  - `Guardian.submitExplosion` — use the per-thread scratch builder via
+    `seed()` instead of `new ActionBuilder()`. Consistent with every other
+    submit path and cuts ~40 B / allocation on the explosion-join worker.
+  - `NeoForgeEvents.reset` — shut down the previously-static-daemon
+    `WORKER` executor. Fixes a dev-mode thread leak on in-JVM restart.
+  - `JsonLinesLogFile` — new `config.logFile.forceSyncOnFlush` toggle
+    (default `true`). Operators on slow storage can trade &lt; flushIntervalMs
+    of durability for zero per-batch `FileChannel.force(false)` cost.
+  - `PerWorldConfigStore.reload` — cache file mtimes; unchanged files reuse
+    the previous merged snapshot instead of re-reading and re-parsing.
+  - `EventGate.addInternalHook` — soft cap of 32 internal hooks with a
+    one-shot WARN when exceeded; `/vg status` now surfaces the count under
+    the Event Hooks section.
+  - `RollbackEngine.hasMoreRows` — replace the extra `dao.query(..., 1)`
+    round-trip per page-boundary with `dao.query(..., PAGE_SIZE+1)` so the
+    "has more" signal comes from the main page fetch.
+
+### Fixed
+
+- All P0/P1 parity findings from the v1.3.0 post-integration audit (see
+  `docs/PERF-NOTES-1.3.1.md` for the wave-by-wave rationale).
+
+### Version
+
+- `gradle.properties` — `mod_version` bumped `1.3.0` → `1.3.1`.
+- `GuardianAPI.PLUGIN_VERSION` bumped `1.3.0` → `1.3.1`.
+
+## [1.3.0] - 2026-07-03
+
+**Async / server-thread performance wave.** Full v1.3.0 release notes covering
+all six workstreams that landed against `feature/v1.3.0-integration`:
+W1a (fire mixin tighten), W1b (spread mixin tighten), W1c (other natural / dispenser mixins),
+W2 (server-thread allocation cuts + version bump),
+W3 (explosion off-thread join + EventGate fast-path + P2 cleanups),
+W4 (mixin diagnostics + kill-switch config), and W5 (explosion rollback fidelity).
+
+### Added
+
+- **W3 — Off-thread `ExplosionJoinWorker`.** New core class
+  `network.vonix.guardian.core.event.ExplosionJoinWorker`, exposed via
+  `Guardian.explosionJoinWorker()`. Loader-side `onExplosionDetonate`
+  (all 4 Forge/NeoForge cells) and `FabricMixinBridge.explosion(...)`
+  (all 4 Fabric cells) now capture affected-block coordinates + resolved
+  block ids into a pooled `ThreadLocal<ExplosionScratch>` on the server
+  thread and hand the `StringBuilder` join + queue submit to a daemon
+  worker. A 5,000-block TNT chain that previously stalled the server
+  thread for tens of ms now returns in single-digit µs on the caller.
+  Regression: `ExplosionJoinWorkerTest` (6 cases) +
+  `BenchExplosionAffectedListJoin` (measured 94.24 % server-thread wall-time
+  reduction; target ≥ 90 %).
+- **W3 — Chunked EXPLOSION rows.** The join worker splits large explosions
+  into multiple EXPLOSION rows of ≤ 96 entries each, sharing the same
+  (center, sourceTag, actor). Prevents the pre-1.3.0 silent truncation at
+  the 4096-char storage cap. W5's rollback engine already iterates the
+  affected-list per row so chunking is transparent to `/vg rollback`.
+  Regression: `ExplosionAffectedListChunkedParsingTest`.
+- **W3 — `EventGate.addInternalHook(EventHook)`.** New opt-in hook list
+  consulted for mixin-authored events (`#fire`, `#natural`, `#dispenser`
+  sourceTag prefixes) that bypass the standard hook chain. Observers that
+  genuinely need visibility to hot-tick submits register here; the standard
+  chain (`PerWorldEventHook`, `BlacklistFileHook`, `PreLogEventHook`) never
+  sees these events. New counter: `EventGate.internalBypassCount()`.
+  Regression: `EventGateFastPathTest` (7 cases).
+- **W4 — Diagnostics + operator kill-switch (`actions.mixinHotEvents`).** New
+  boolean config field (default `true`) that, when set to `false`, drops any
+  submission whose `sourceTag` was authored by one of the W1a/b/c hot-tick
+  mixin pipelines (`#fire`, `#natural`, `#dispenser` reserved prefixes) before
+  the gate or queue see it. Ships with a per-type sliding-window submit-rate
+  meter (`BatchedAsyncWriteQueue.submitRateByType()`,
+  `.allocationRatePerSecond()`, 30 s / 1 s bucket) surfaced in `/vg status`
+  as a "Mixin hot events" section for load-shedding decisions.
+  Classifier: `network.vonix.guardian.core.diagnostics.MixinHotEventFilter`.
+- **W5 — Explosion rollback fidelity (CoreProtect-parity, Option A).** The
+  rollback engine now loops the stored `affected` list on rollback (piston
+  chains, WorldEdit-shaped effects) so blocks displaced by an explosion are
+  restored to their pre-explosion state, not just at the stored explosion
+  center. Ships a supplemental-scan pattern
+  (`RollbackEngine.streamPlan` → `withExplosionOnlyNoSpatial(base)`) that
+  reuses the same cancel/limits/pages plumbing without double-counting rows
+  already covered by the primary spatial scan, backed by a new
+  `ExplosionAffectedList` value class (`parse` / `serialize` /
+  `anyWithinRadius`) with a pure-unit + engine-driven test pair.
+- **W2 — ThreadLocal ActionBuilder scratch on `Guardian`.** `Guardian.seed(...)`
+  now reuses one `ActionBuilder` per producer thread via a `ThreadLocal` +
+  `ActionBuilder.reset()`, cutting mutable builder allocation on the
+  server-thread hot path (piston farm, fire, entity spam, hoppers).
+  Regression: `ActionBuilderPoolingTest`.
+- **W2 — Pre-populated per-type maps in `BatchedAsyncWriteQueue`.**
+  `submittedByType`, `droppedByType`, and `submitRateByType` are seeded at
+  boot with one entry per `ActionType.values()` (plus an `UNKNOWN` sentinel).
+  Hot-path `submit(...)` is now a plain `map.get()` — no `computeIfAbsent`,
+  no lambda capture, no `LongAdder`/`RateBuckets` first-touch allocation.
+  Regression: `BatchedAsyncWriteQueueNoComputeIfAbsentTest`.
+- **W2 — De-boxed `SPAWN_LIMIT` across all 8 cells.**
+  `FabricEvents.java` × 4 + `ForgeEvents.java` × 3 + `NeoForgeEvents.java` × 1
+  now use `ConcurrentHashMap<String, AtomicLong>` with in-place
+  `AtomicLong.set(now)` instead of `Map<String, Long>` + `put(type, now)` —
+  no `Long` autoboxing per spawn. Regression: `SpawnLimitDeBoxTest`.
+- **`ActionBuilder.reset()`** — public method that clears every field back
+  to freshly-constructed state, contract for `ThreadLocal` scratch reuse.
+
+### Changed
+
+- **W1a — `FireBlockMixin` tightened from HEAD `@Inject` to guarded
+  `@Redirect`** across all 8 cells. Old-style HEAD injection fired a BURN
+  submit on every random tick regardless of whether fire consumed anything;
+  the new `@Redirect` around `removeBlock`/`setBlock` only submits when the
+  call actually returned true and the affected block was not air. Measured
+  ~90 % reduction in `FireBurnHotPathBench` (target ≥80 %). Regression:
+  `FireBurnHotPathBenchTest` + behaviour tests.
+- **W1b — `SpreadingSnowyDirtBlockMixin` tightened** using the same
+  `@Redirect` pattern; submissions now only fire when the setBlockAndUpdate
+  call actually converted dirt → grass, not on cosmetic snowy state flips.
+  Measured 98 % reduction in `SpreadHotPathBench` (target ≥95 %). Regression:
+  `SpreadNoOpSuppressionTest`, `SpreadRealSpreadTest`.
+- **W1c — `LeavesBlock`, `IceBlock`, `ConcretePowder` mixins tightened.**
+  Same `@Redirect` shape. `DispenserBlock` intentionally keeps `@Inject(HEAD)`
+  because it is a discrete redstone event (locked in with a
+  `requiresRedirectRefinement()==false` behaviour test). Reductions: Leaves
+  ≥70 %, Ice ≥90 %, ConcretePowder ≥95 % — all met on `OtherMixinsHotPathBench`.
+  Regression: `OtherMixinsHotPathBenchTest`.
+- **W2 — Mixin-hot-events kill-switch folded from `Guardian.submit` into
+  `EventGate.shouldLog`.** The `!mixinHotEvents && MixinHotEventFilter.isMixinSourced(...)`
+  short-circuit now sits at the top of the gate so an activated kill-switch
+  drops the action before any type check, blacklist lookup, or hook-chain
+  traversal. Behaviour is identical; the surface is smaller.
+  Regression: `MixinHotEventsGateTest`.
+- **W3 — `onExplosionDetonate` moved off the server thread.** The per-block
+  `getBlockState` + `Registry.BLOCK.getKey().toString()` calls stay on the
+  server thread (they are not documented as thread-safe — Prism / Ledger /
+  CoreProtect all agree), but the `StringBuilder` join and the
+  `EventSubmitter.submitExplosion(...)` enqueue move to a daemon executor.
+  Applied consistently to all 4 Forge/NeoForge cells' `*Events.java` and all
+  4 Fabric cells' `FabricMixinBridge.explosion(...)`. Silent 4 KiB
+  truncation is gone — large explosions now emit multiple chunked
+  EXPLOSION rows (see Added).
+- **W3 — `onRightClickBlock` reads `BlockState` once.** The 4 Forge/NeoForge
+  cells now capture the block state at the top of the handler and reuse it
+  across the container-entity gate + CLICK submit. The container-entity
+  check is now guarded by `state.getBlock() instanceof EntityBlock`, so
+  right-clicks on plain terrain no longer hit the chunk `BlockEntity` map.
+- **W3 — `cleanupContainerSnapshots` amortized.** The full O(n) TTL scan now
+  runs at most every 32 opens; the bounded over-cap eviction still runs on
+  every open, so the snapshot map never grows unboundedly. Applied
+  consistently across all 4 Forge/NeoForge cells and all 4 Fabric bridges.
+  Regression: `ContainerCleanupAmortizationTest`.
+- **`Actions` config record widened to 32 fields** (adds `mixinHotEvents`,
+  default `true`). Pre-existing 31-arg and 18-arg deprecated constructors
+  keep every previous test call site source-compatible.
+
+### Fixed
+
+- **Explosion rollback affecting only the center coordinate** — Option A
+  (loop-the-affected-list) restore is now the shipped behaviour; the
+  supplemental-scan pattern avoids duplicating rows already touched by the
+  primary spatial scan.
+
+### Performance
+
+- **Server-thread allocation on the submit hot path is ~50 % lower** —
+  `BenchGuardianSubmitAllocation` (100 k iterations, HotSpot 21): 17.6 MB
+  allocated old vs 8.8 MB new = 50.0 % reduction; wall-time 37 % lower.
+  On production hot paths (piston farm, fire spread) the win is bigger
+  because the surrounding record scaffolding is thicker than the bench
+  models.
+- **Mixin kill-switch response is O(1)** — a disabled `mixinHotEvents`
+  drops a hot-path action in 3 `startsWith` probes without touching the
+  hook chain.
+- **W3 — Server-thread wall-time on explosion detonate reduced 94 %**
+  (`BenchExplosionAffectedListJoin`, 5,000-block × 200 iterations):
+  11,391 µs → 656 µs total caller time (56.9 µs → 3.3 µs per explosion).
+  Target ≥ 90 % met. A 5,000-block TNT chain that previously stalled the
+  server thread for tens of ms now hands the join off in single-digit µs.
+- **W3 — EventGate fast-path for internal (mixin-authored) events** skips
+  the standard hook chain entirely (`PerWorldEventHook`,
+  `BlacklistFileHook`, `PreLogEventHook`). Non-mixin actions still traverse
+  the full chain. Counter surfaced as `EventGate.internalBypassCount()`
+  for diagnostics.
+- **W3 — `onRightClickBlock` reads `BlockState` once** across container-entity
+  gate + CLICK submit; container-entity check now uses `state.getBlock()
+  instanceof EntityBlock` so plain-terrain RCs skip the chunk BE-map lookup.
+- **W3 — `cleanupContainerSnapshots` runs the O(n) TTL scan at most every
+  32 opens** (was: every open). Bounded over-cap eviction still runs on
+  every open, so the snapshot map never grows unboundedly.
+
 ## [1.2.7] - 2026-07-03
 
 ### Fixed

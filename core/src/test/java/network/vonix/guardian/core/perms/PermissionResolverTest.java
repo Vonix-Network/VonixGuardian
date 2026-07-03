@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 class PermissionResolverTest {
 
     private static GuardianConfig.Permissions cfg(boolean useLp, int defaultOp) {
-        return new GuardianConfig.Permissions(useLp, defaultOp);
+        return new GuardianConfig.Permissions(useLp, defaultOp, java.util.Map.of());
     }
 
     private static final UUID ALICE = UUID.fromString("00000000-0000-0000-0000-000000000001");

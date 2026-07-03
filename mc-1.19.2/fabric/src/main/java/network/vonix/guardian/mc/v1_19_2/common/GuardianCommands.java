@@ -713,21 +713,43 @@ public final class GuardianCommands {
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
-            Guardian.ReloadResult r = g.reloadConfig(g.configPath());
-            String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
-            String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
-            String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
-            send(src, ChatRenderer.primary(g.theme(),
-                    "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
-            send(src, ChatRenderer.warning(g.theme(),
-                    "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
-            if (r.errors().isEmpty()) {
-                send(src, ChatRenderer.muted(g.theme(),
-                        "[VonixGuardian] Errors: 0 (none)"));
-            } else {
-                send(src, ChatRenderer.error(g.theme(),
-                        "[VonixGuardian] Errors: " + r.errors().size() + " " + err));
-            }
+            // v1.3.7 EE1 (round-8 P1): route the actual reload off the server thread.
+            // reloadConfig now enters CONFIG_MUTATION_LOCK; a WORKER-thread /vg config
+            // set already holding the monitor across ConfigLoader.save (unbounded disk
+            // IO on slow/NFS storage) would otherwise stall the server tick. Result
+            // reporting hops back to the server thread so chat rendering (which
+            // touches Level/theme state) stays single-threaded.
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            send(src, ChatRenderer.muted(g.theme(),
+                    "[VonixGuardian] Reloading configuration..."));
+            WORKER.submit(() -> {
+                try {
+                    Guardian.ReloadResult r = g.reloadConfig(g.configPath());
+                    if (server == null) return;
+                    server.execute(() -> {
+                        String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
+                        String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
+                        String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
+                        send(src, ChatRenderer.primary(g.theme(),
+                                "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
+                        send(src, ChatRenderer.warning(g.theme(),
+                                "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
+                        if (r.errors().isEmpty()) {
+                            send(src, ChatRenderer.muted(g.theme(),
+                                    "[VonixGuardian] Errors: 0 (none)"));
+                        } else {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Errors: " + r.errors().size() + " " + err));
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "/vg reload failed off-thread", t);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Reload failed: " + t.getMessage())));
+                    }
+                }
+            });
             return 1;
         }
     }
@@ -775,25 +797,60 @@ public final class GuardianCommands {
                         "[VonixGuardian] Unknown or read-only config key: " + key));
                 return 0;
             }
-            try {
-                next.validate();
-                ConfigLoader.save(path, next);
-                Guardian.ReloadResult r = g.reloadConfig(path);
-                if (!r.errors().isEmpty()) {
-                    send(src, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Config saved but reload failed: " + String.join(", ", r.errors())));
-                    return 0;
+            // v1.3.6 CC2 (P1-6): route the blocking IO (ConfigLoader.save writes
+            // the on-disk YAML; reloadConfig re-parses it and rebuilds config-
+            // derived state) onto the shared WORKER pool. Pre-1.3.6 this ran on
+            // the server tick — a slow disk (spinning rust, NFS, encrypted-swap
+            // host, or another mod holding a filesystem lock) would freeze the
+            // tick until the write returned. All result reporting hops back to
+            // the server thread via server.execute so the theme/chat pipeline
+            // stays single-threaded (theme resolution touches Level state).
+            final java.nio.file.Path finalPath = path;
+            final String finalKey = key;
+            final String finalValue = value;
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            WORKER.submit(() -> {
+                try {
+                    // v1.3.7 DD1 (round-7 P1): serialize the whole read-build-save-reload
+                    // sequence under Guardian.CONFIG_MUTATION_LOCK so concurrent /vg config
+                    // set calls on the WORKER pool (size 2) can't clobber each other's
+                    // full-file save with a stale finalNext computed from an older snapshot.
+                    // We must ALSO re-read + re-build under the lock, so recompute merged
+                    // from the current live config rather than trusting the captured next.
+                    Guardian.ReloadResult r;
+                    synchronized (Guardian.CONFIG_MUTATION_LOCK) {
+                        GuardianConfig freshNext = withValue(g.config(), finalKey, finalValue);
+                        if (freshNext == null) {
+                            if (server != null) {
+                                server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                        "[VonixGuardian] Config key vanished under concurrent update: " + finalKey)));
+                            }
+                            return;
+                        }
+                        freshNext.validate();
+                        ConfigLoader.save(finalPath, freshNext);
+                        r = g.reloadConfigUnlocked(finalPath);
+                    }
+                    if (server == null) return;
+                    server.execute(() -> {
+                        if (!r.errors().isEmpty()) {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Config saved but reload failed: " + String.join(", ", r.errors())));
+                            return;
+                        }
+                        send(src, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Updated " + finalKey + " = " + readValue(g.config(), finalKey)
+                                        + " (hot-swapped: " + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
+                    });
+                } catch (Exception e) {
+                    LOG.warn(Guardian.MARKER, "Config set failed", e);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Config update failed: " + e.getMessage())));
+                    }
                 }
-                send(src, ChatRenderer.success(g.theme(),
-                        "[VonixGuardian] Updated " + key + " = " + readValue(g.config(), key)
-                                + " (hot-swapped: " + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
-                return 1;
-            } catch (Exception e) {
-                LOG.warn(Guardian.MARKER, "Config set failed", e);
-                send(src, ChatRenderer.error(g.theme(),
-                        "[VonixGuardian] Config update failed: " + e.getMessage()));
-                return 0;
-            }
+            });
+            return 1;
         }
 
         private static String readValue(GuardianConfig c, String key) {
@@ -822,6 +879,10 @@ public final class GuardianCommands {
                 case "actions.entityBlockChangeCoalesceWindowMs" -> Long.toString(c.actions().entityBlockChangeCoalesceWindowMs());
                 case "actions.entityBlockChangeMaxTracked" -> Integer.toString(c.actions().entityBlockChangeMaxTracked());
                 case "actions.entityChangeLogAllEntities" -> Boolean.toString(c.actions().entityChangeLogAllEntities());
+                case "actions.mixinHotEvents" -> Boolean.toString(c.actions().mixinHotEvents());
+                case "storage.persistNbt" -> Boolean.toString(c.storage().persistNbt());
+                case "rollback.explosionSupplementalReach" -> Integer.toString(c.rollback().explosionSupplementalReach());
+                case "language" -> c.language();
                 default -> null;
             };
         }
@@ -833,36 +894,40 @@ public final class GuardianCommands {
             GuardianConfig.Privacy pr = c.privacy();
             GuardianConfig.Purge pu = c.purge();
             return switch (key) {
-                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, value);
-                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays()), a, c.permissions(), l, pr, pu, c.theme());
-                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.theme());
-                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.theme());
-                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.theme());
-                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.theme());
-                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.theme());
-                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.theme());
-                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.theme());
-                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.theme());
-                case "actions.logBlocks" -> withActions(c, new GuardianConfig.Actions(parseBool(value, key), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logContainers" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), parseBool(value, key), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logItems" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), parseBool(value, key), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), parseBool(value, key), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logExplosions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), parseBool(value, key), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logChat" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), parseBool(value, key), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logCommands" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), parseBool(value, key), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logSessions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), parseBool(value, key), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logSigns" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), parseBool(value, key), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logInteractions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), parseBool(value, key), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.logWorldEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), parseBool(value, key), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.entityBlockChangeCoalesceWindowMs" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), parseLong(value, key), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
-                case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key)));
+                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), value, c.language());
+                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays(), lf.forceSyncOnFlush()), a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.storage(), c.rollback(), c.theme(), c.language());
+                case "actions.logBlocks" -> withActions(c, new GuardianConfig.Actions(parseBool(value, key), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logContainers" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), parseBool(value, key), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logItems" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), parseBool(value, key), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), parseBool(value, key), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logExplosions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), parseBool(value, key), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logChat" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), parseBool(value, key), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logCommands" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), parseBool(value, key), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logSessions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), parseBool(value, key), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logSigns" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), parseBool(value, key), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logInteractions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), parseBool(value, key), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logWorldEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), parseBool(value, key), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.entityBlockChangeCoalesceWindowMs" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), parseLong(value, key), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.mixinHotEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), parseBool(value, key)));
+                case "storage.persistNbt" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, new GuardianConfig.Storage(parseBool(value, key)), c.rollback(), c.theme(), c.language());
+                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key)), c.theme(), c.language());
+                case "language" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), value);
                 default -> null;
             };
         }
 
         private static GuardianConfig withActions(GuardianConfig c, GuardianConfig.Actions a) {
-            return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.theme());
+            return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.storage(), c.rollback(), c.theme(), c.language());
         }
 
         private static boolean parseBool(String value, String key) {

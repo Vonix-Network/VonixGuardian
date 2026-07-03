@@ -289,6 +289,38 @@ public interface EventSubmitter {
     void submitBucketFill(UUID actorUuid, String actorName, String worldId,
                           int x, int y, int z, String fluidOrBlockId, String sourceTag);
 
+    /**
+     * Convenience for fluid spread (v1.3.1 X3, CoreProtect parity for
+     * {@code BlockFromToEvent}).
+     *
+     * <p>Producer contract:</p>
+     * <ul>
+     *   <li>{@code actorUuid} — resolved via
+     *       {@link network.vonix.guardian.core.attribution.FluidSourceMemory}
+     *       when a bucket-empty ancestor is within the 2-min / 8-block window;
+     *       otherwise {@code null}.</li>
+     *   <li>{@code actorName} — the emptying player's name when
+     *       {@code actorUuid != null}; otherwise
+     *       {@link network.vonix.guardian.core.event.Sentinel#FLUID}
+     *       ({@code "#fluid"}).</li>
+     *   <li>{@code fluidBlockId} — the flowing block registry id
+     *       ({@code minecraft:water} / {@code minecraft:lava}) that will now
+     *       occupy {@code (x,y,z)}. Rollback of the row clears the cell to
+     *       {@code minecraft:air}.</li>
+     *   <li>{@code sourceTag} — always begins with
+     *       {@link network.vonix.guardian.core.diagnostics.MixinHotEventFilter#PREFIX_FLUID}
+     *       so the mixin-hot-events kill-switch can short-circuit spam.</li>
+     * </ul>
+     *
+     * @since 1.3.1
+     */
+    default void submitFluidFlow(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String fluidBlockId, String sourceTag) {
+        // Default delegates so third-party fakes without an override still work.
+        // Real implementation on Guardian overrides.
+        submitBucketEmpty(actorUuid, actorName, worldId, x, y, z, fluidBlockId, sourceTag);
+    }
+
     /** Convenience for {@code LeavesDecayEvent}. */
     void submitLeavesDecay(UUID actorUuid, String actorName, String worldId,
                            int x, int y, int z, String blockId, String sourceTag);
@@ -363,4 +395,125 @@ public interface EventSubmitter {
     /** Convenience for {@code PlayerInteractEvent} (buttons, levers, doors, plates). */
     void submitClick(UUID actorUuid, String actorName, String worldId,
                      int x, int y, int z, String targetId, String sourceTag);
+
+    // ------------------------------------------------------------------------
+    // v1.3.1 X1 — NBT-fidelity aware overloads (additive; default delegate to
+    // the non-NBT overload so existing loader stubs / tests / third-party
+    // integrations keep compiling). Producers only populate the NBT bytes when
+    // {@code storage.persistNbt=true} in the loaded config; when it is false
+    // (the default) these methods behave identically to the non-NBT overloads
+    // above. The DAO always persists whatever NBT arrives, so rows captured
+    // while the toggle was on remain useful after operators flip it back off.
+    // ------------------------------------------------------------------------
+
+    /**
+     * NBT-fidelity variant of {@link #submitBlockBreak(UUID, String, String, int, int, int, String, String)}.
+     *
+     * @param oldBlockState   pre-break block-state property string (nullable)
+     * @param blockEntityNbt  pre-break block-entity NBT bytes (nullable; e.g. chest contents)
+     * @since 1.3.1
+     */
+    default void submitBlockBreak(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String blockId, String sourceTag,
+                                  String oldBlockState, byte[] blockEntityNbt) {
+        submitBlockBreak(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitBlockPlace(UUID, String, String, int, int, int, String, String)}.
+     *
+     * @param newBlockState post-place block-state property string (nullable)
+     * @param blockEntityNbt post-place block-entity NBT bytes (nullable)
+     * @since 1.3.1
+     */
+    default void submitBlockPlace(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String blockId, String sourceTag,
+                                  String newBlockState, byte[] blockEntityNbt) {
+        submitBlockPlace(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitContainerChange(UUID, String, String, int, int, int, String, int, String)}.
+     *
+     * @param itemNbt item NBT bytes (nullable)
+     * @since 1.3.1
+     */
+    default void submitContainerChange(UUID actorUuid, String actorName, String worldId,
+                                       int x, int y, int z, String itemId, int delta, String sourceTag,
+                                       byte[] itemNbt) {
+        submitContainerChange(actorUuid, actorName, worldId, x, y, z, itemId, delta, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitItemDrop(UUID, String, String, int, int, int, String, int, String)}.
+     * @since 1.3.1
+     */
+    default void submitItemDrop(UUID actorUuid, String actorName, String worldId,
+                                int x, int y, int z, String itemId, int amount, String sourceTag,
+                                byte[] itemNbt) {
+        submitItemDrop(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitItemPickup(UUID, String, String, int, int, int, String, int, String)}.
+     * @since 1.3.1
+     */
+    default void submitItemPickup(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String itemId, int amount, String sourceTag,
+                                  byte[] itemNbt) {
+        submitItemPickup(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitEntityKill(UUID, String, String, int, int, int, String, String)}.
+     * @since 1.3.1
+     */
+    default void submitEntityKill(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String entityType, String sourceTag,
+                                  byte[] entityNbt) {
+        submitEntityKill(actorUuid, actorName, worldId, x, y, z, entityType, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitEntitySpawn(UUID, String, String, int, int, int, String, String)}.
+     * @since 1.3.1
+     */
+    default void submitEntitySpawn(UUID actorUuid, String actorName, String worldId,
+                                   int x, int y, int z, String entityType, String sourceTag,
+                                   byte[] entityNbt) {
+        submitEntitySpawn(actorUuid, actorName, worldId, x, y, z, entityType, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitEntityChangeBlock}.
+     * @since 1.3.1
+     */
+    default void submitEntityChangeBlock(UUID actorUuid, String actorName, String worldId,
+                                         int x, int y, int z,
+                                         String oldBlockId, String newBlockId, String sourceTag,
+                                         String oldBlockState, String newBlockState,
+                                         byte[] blockEntityNbt) {
+        submitEntityChangeBlock(actorUuid, actorName, worldId, x, y, z,
+                                oldBlockId, newBlockId, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitHopperPush}.
+     * @since 1.3.1
+     */
+    default void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String itemId, int amount, String sourceTag,
+                                  byte[] itemNbt) {
+        submitHopperPush(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /**
+     * NBT-fidelity variant of {@link #submitHopperPull}.
+     * @since 1.3.1
+     */
+    default void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String itemId, int amount, String sourceTag,
+                                  byte[] itemNbt) {
+        submitHopperPull(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
 }

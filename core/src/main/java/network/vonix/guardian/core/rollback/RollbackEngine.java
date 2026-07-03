@@ -55,9 +55,30 @@ public final class RollbackEngine {
 
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
+    /**
+     * Default reach (block-radius) padding for the W5 supplemental EXPLOSION scan.
+     * Vanilla TNT clears roughly a 7-block radius; 16 gives comfortable headroom
+     * without unbounding the scan. Overridable via
+     * {@link network.vonix.guardian.core.config.GuardianConfig.Rollback#explosionSupplementalReach}.
+     * @since 1.3.1 X8
+     */
+    public static final int MAX_TNT_REACH = 16;
+
     private final GuardianDao dao;
     private final WorldMutator mutator;
     private final Executor mainThreadExecutor;
+    /**
+     * Extra block radius applied to the supplemental EXPLOSION scan's spatial
+     * pre-filter.
+     *
+     * <p>{@code volatile} because {@code /vg reload} can call
+     * {@link #setExplosionSupplementalReach(int)} from off the query thread
+     * (v1.3.2 Y3, P2-1 close-out). Publishing this via {@code volatile} means
+     * a concurrent {@link #rollback}/{@link #restore} either observes the old
+     * value or the new value — never a torn read — and avoids rebuilding the
+     * engine on every knob change.
+     */
+    private volatile int explosionSupplementalReach;
 
     /**
      * @param dao                action store; must not be {@code null}
@@ -66,9 +87,66 @@ public final class RollbackEngine {
      *                           must not be {@code null}
      */
     public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor) {
+        this(dao, mutator, mainThreadExecutor, MAX_TNT_REACH);
+    }
+
+    /**
+     * X8 constructor variant that lets callers override the supplemental-scan
+     * reach padding. Loader wiring passes
+     * {@code GuardianConfig.rollback().explosionSupplementalReach()}; unit tests
+     * that want to exercise a tight bound pass a smaller value here.
+     *
+     * @param dao                        action store; must not be {@code null}
+     * @param mutator                    loader-supplied world mutator; must not be {@code null}
+     * @param mainThreadExecutor         server-tick executor; must not be {@code null}
+     * @param explosionSupplementalReach block-radius padding for the W5 supplemental EXPLOSION
+     *                                   scan's DAO spatial predicate; must be {@code >= 0}
+     * @since 1.3.1 X8
+     */
+    public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor,
+                          int explosionSupplementalReach) {
         this.dao = Objects.requireNonNull(dao, "dao");
         this.mutator = Objects.requireNonNull(mutator, "mutator");
         this.mainThreadExecutor = Objects.requireNonNull(mainThreadExecutor, "mainThreadExecutor");
+        if (explosionSupplementalReach < 0) {
+            throw new IllegalArgumentException(
+                "explosionSupplementalReach must be >= 0 (got " + explosionSupplementalReach + ")");
+        }
+        this.explosionSupplementalReach = explosionSupplementalReach;
+    }
+
+    /**
+     * Hot-swap the supplemental EXPLOSION scan reach (v1.3.2 Y3, P2-1 close-out).
+     *
+     * <p>Called from {@code Guardian.reloadConfig} after a merged
+     * {@link network.vonix.guardian.core.config.GuardianConfig} lands, so
+     * operators editing {@code rollback.explosionSupplementalReach} in
+     * {@code config.json} see the value applied immediately without a server
+     * restart. The write is published through the {@code volatile} field so a
+     * concurrently running rollback observes either the old or the new value —
+     * never a torn read.
+     *
+     * @param reach new block-radius padding; must be {@code >= 0}
+     * @throws IllegalArgumentException if {@code reach < 0}
+     * @since 1.3.2 Y3
+     */
+    public void setExplosionSupplementalReach(int reach) {
+        if (reach < 0) {
+            throw new IllegalArgumentException(
+                "explosionSupplementalReach must be >= 0 (got " + reach + ")");
+        }
+        this.explosionSupplementalReach = reach;
+    }
+
+    /**
+     * Current supplemental EXPLOSION scan reach — exposed for tests and
+     * {@code /vg status}.
+     *
+     * @return current block-radius padding
+     * @since 1.3.2 Y3
+     */
+    public int getExplosionSupplementalReach() {
+        return explosionSupplementalReach;
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
@@ -249,10 +327,17 @@ public final class RollbackEngine {
             }
 
             int limit = Math.min(options.pageSize(), remainingScanBudget);
-            List<Action> page = dao.query(filter, offset, limit);
-            if (page == null || page.isEmpty()) {
+            // v1.3.1 X6 (P3-6): request limit+1 rows so we can detect "has more" without
+            // a follow-up dao.query() round-trip below. Only the first `limit` rows
+            // are actually consumed; the extra row is a boolean signal.
+            List<Action> pageWithProbe = dao.query(filter, offset, limit + 1);
+            if (pageWithProbe == null || pageWithProbe.isEmpty()) {
                 break;
             }
+            boolean probeHasMore = pageWithProbe.size() > limit;
+            List<Action> page = probeHasMore
+                    ? new ArrayList<>(pageWithProbe.subList(0, limit))
+                    : pageWithProbe;
             pages++;
 
             List<Action> orderedPage = new ArrayList<>(page);
@@ -280,7 +365,8 @@ public final class RollbackEngine {
 
             boolean fullPage = page.size() == limit;
             boolean scanBudgetExhausted = scanned >= options.maxScannedActions();
-            boolean scanLimitReached = scanBudgetExhausted && fullPage && hasMoreRows(filter, offset + page.size());
+            // v1.3.1 X6 (P3-6): reuse the +1 probe result instead of a separate dao.query.
+            boolean scanLimitReached = scanBudgetExhausted && fullPage && probeHasMore;
             RollbackProgress progress = progress(pages, scanned, builder, scanLimitReached, false, false);
             options.publish(progress);
             if (scanLimitReached) {
@@ -293,7 +379,176 @@ public final class RollbackEngine {
             }
             offset += page.size();
         }
+
+        // W5 (v1.3.0): supplemental EXPLOSION scan — the primary DAO query filters
+        // by center coord against the caller's radius, so it misses TNT whose center
+        // is outside the box but whose affected-list reaches into it. Match
+        // CoreProtect: loop through the affected-list at rollback time and admit
+        // the row if ANY block in it falls within the caller's radius.
+        supplementExplosions(filter, builder, options, pages, scanned);
         return builder.build();
+    }
+
+    /**
+     * W5 — after the primary paged scan, sweep EXPLOSION rows whose center is
+     * OUTSIDE the caller's radius but whose affected-list reaches into it.
+     *
+     * <p><b>X8 (v1.3.1)</b>: the supplemental filter clones {@code base} but
+     * <em>widens</em> the spatial predicate by {@link #explosionSupplementalReach}
+     * blocks (default {@link #MAX_TNT_REACH}) rather than dropping it. This keeps
+     * the DAO scan bounded on griefing-storm servers — instead of "every
+     * EXPLOSION row in this world in the time window", the DAO reads only rows
+     * whose blast-center could plausibly reach into the caller's radius. Row
+     * admission still uses {@link ExplosionAffectedList#anyWithinRadius}, so
+     * widening the pre-filter is a strict superset of the correct answer:
+     * blasts whose center is far outside the padded box cannot have an
+     * affected-list that reaches into the original radius (vanilla TNT's
+     * affected-list stays within its blast radius; modded mega-explosives that
+     * exceed 16 blocks can raise {@code rollback.explosionSupplementalReach}).</p>
+     *
+     * <p>Rows already picked up by the primary scan (center inside the
+     * un-widened box) are re-checked with a cheap "center inside box?" test and
+     * skipped instead of double-added.</p>
+     *
+     * <p>Skipped when the filter has no spatial constraint ({@code radius==null}
+     * or {@code #global}), when no center is set, or when the filter's action
+     * list excludes EXPLOSION.</p>
+     */
+    private void supplementExplosions(QueryFilter base,
+                                      RollbackPlan.StreamingBuilder builder,
+                                      RollbackOptions options,
+                                      int pages,
+                                      int scanned) throws Exception {
+        Integer r = base.radius();
+        if (r == null || r < 0) return;                       // no spatial predicate to widen
+        if (base.centerX() == null || base.centerZ() == null) return;
+        if (!filterAdmitsExplosion(base)) return;
+
+        QueryFilter supp = withExplosionOnlyWidenedSpatial(base, explosionSupplementalReach);
+        int centerX = base.centerX();
+        Integer centerY = base.centerY();
+        int centerZ = base.centerZ();
+        // Un-widened box (the caller's original radius) is what we use to detect
+        // rows the primary scan already covered.
+        int minX = centerX - r, maxX = centerX + r;
+        int minZ = centerZ - r, maxZ = centerZ + r;
+        Integer minY = centerY == null ? null : centerY - r;
+        Integer maxY = centerY == null ? null : centerY + r;
+
+        int offset = 0;
+        while (true) {
+            if (options.isCancelRequested()) {
+                RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                options.publish(progress);
+                throw new RollbackCancelledException(progress);
+            }
+            int remainingScanBudget = options.maxScannedActions() - scanned;
+            if (remainingScanBudget <= 0) {
+                if (hasMoreRows(supp, offset)) {
+                    RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
+                    options.publish(progress);
+                    throw new RollbackLimitExceededException(
+                        "Rollback planning exceeded scan cap of " + options.maxScannedActions() + " action(s)",
+                        progress);
+                }
+                break;
+            }
+            int limit = Math.min(options.pageSize(), remainingScanBudget);
+            List<Action> page = dao.query(supp, offset, limit);
+            if (page == null || page.isEmpty()) break;
+            pages++;
+
+            List<Action> orderedPage = new ArrayList<>(page);
+            orderedPage.sort((a, b) -> {
+                int c = Long.compare(b.timestamp(), a.timestamp());
+                return c != 0 ? c : Long.compare(b.id(), a.id());
+            });
+
+            for (Action action : orderedPage) {
+                if (options.isCancelRequested()) {
+                    RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                    options.publish(progress);
+                    throw new RollbackCancelledException(progress);
+                }
+                scanned++;
+                // Skip if center is already inside the box — the primary scan
+                // already added this row.
+                boolean centerInside = action.x() >= minX && action.x() <= maxX
+                    && action.z() >= minZ && action.z() <= maxZ
+                    && (minY == null || (action.y() >= minY && action.y() <= maxY));
+                if (centerInside) continue;
+
+                ExplosionAffectedList list = ExplosionAffectedList.parse(action.targetId());
+                if (list.isEmpty()) continue;
+                if (!list.anyWithinRadius(centerX, centerY, centerZ, r)) continue;
+
+                builder.add(action);
+                if (builder.plannedSteps() > options.maxPlannedSteps()) {
+                    RollbackProgress progress = progress(pages, scanned, builder, false, true, false);
+                    options.publish(progress);
+                    throw new RollbackLimitExceededException(
+                        "Rollback planning exceeded mutation cap of " + options.maxPlannedSteps() + " step(s)",
+                        progress);
+                }
+            }
+
+            boolean fullPage = page.size() == limit;
+            RollbackProgress progress = progress(pages, scanned, builder, false, false, false);
+            options.publish(progress);
+            if (!fullPage) break;
+            offset += page.size();
+        }
+    }
+
+    /**
+     * Whether the caller's action filter admits EXPLOSION rows. Returns
+     * {@code true} when {@code actions} is empty (= all types) OR contains an
+     * explicit {@code EXPLOSION} entry.
+     */
+    private static boolean filterAdmitsExplosion(QueryFilter f) {
+        if (f.actions() == null || f.actions().isEmpty()) return true;
+        for (QueryFilter.ActionSelect a : f.actions()) {
+            if (a.type() == ActionType.EXPLOSION) return true;
+        }
+        return false;
+    }
+
+    /**
+     * X8 (v1.3.1): copy of {@code base} with (a) the spatial predicate
+     * <em>widened</em> outward by {@code reach} blocks on x/y/z (the y widening
+     * is skipped when {@code centerY} is unset, matching the primary scan's
+     * behavior) and (b) the action list forced to EXPLOSION only. Used by the
+     * W5 supplemental scan so the DAO stays bounded while still catching
+     * blasts whose center sits outside the caller's radius but whose
+     * affected-list reaches into it.
+     *
+     * <p>The final row admission is still done in-Java via
+     * {@link ExplosionAffectedList#anyWithinRadius}; this method only relaxes
+     * the DAO pre-filter, it never over-admits rows.</p>
+     */
+    private static QueryFilter withExplosionOnlyWidenedSpatial(QueryFilter base, int reach) {
+        Integer r = base.radius();
+        Integer widenedRadius = (r == null || r < 0) ? r : r + reach;
+        return new QueryFilter(
+            base.users(),
+            base.sinceMillis(),
+            base.untilMillis(),
+            widenedRadius,        // widened by reach — was: null
+            base.worldSel(),
+            base.centerX(),       // preserved — was: null
+            base.centerY(),       // preserved — was: null
+            base.centerZ(),       // preserved — was: null
+            List.of(new QueryFilter.ActionSelect(ActionType.EXPLOSION, QueryFilter.ActionSelect.Sign.ANY)),
+            base.include(),
+            base.exclude(),
+            base.rolledBack(),
+            base.countOnly(),
+            base.preview(),
+            base.verbose(),
+            base.silent(),
+            base.optimize(),
+            null                  // worldEditPlayer cleared — WE region already covers primary
+        );
     }
 
     private boolean hasMoreRows(QueryFilter filter, int offset) throws Exception {
@@ -398,49 +653,106 @@ public final class RollbackEngine {
 
     /** Apply the inverse of the action (used by rollback). */
     private void applyInverse(Action a) {
+        // v1.3.2 Y1: branch on a.hasNbt() and route through the NBT-aware
+        // WorldMutator overloads when the row carries any NBT fidelity payload.
+        // The default WorldMutator overload delegates to the legacy method, so
+        // impl cells that opt in override the NBT variant to reconstruct
+        // block-state / BE / ItemStack / Entity via NbtIo.read. On decode failure
+        // the cell logs at DEBUG and falls back to the legacy behaviour — never
+        // throws. When hasNbt()==false we skip the NBT overload entirely so the
+        // hot path stays allocation-free for pre-v1.3.1 rows.
+        boolean nbt = a.hasNbt();
         switch (a.type()) {
             case BLOCK_PLACE ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
-            case BLOCK_BREAK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case BLOCK_BREAK -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.oldBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case CONTAINER_DEPOSIT ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case CONTAINER_WITHDRAW ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case CONTAINER_WITHDRAW -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case ITEM_DROP ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case ITEM_PICKUP ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
-            case ENTITY_KILL ->
-                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case ITEM_PICKUP -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
+            case ENTITY_KILL -> {
+                if (nbt) {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta(), a.entityNbt());
+                } else {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case EXPLOSION ->
                 restoreExplosion(a);
             // --- v0.1.0 expansion: block events ---
             // ENTITY_CHANGE_BLOCK: targetId carries oldBlockId; targetMeta carries newBlockId.
-            case ENTITY_CHANGE_BLOCK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+            case ENTITY_CHANGE_BLOCK -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null,
+                        a.oldBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+                }
+            }
             // Block was destroyed/changed-away — inverse is to restore the original block.
-            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.oldBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             // Block was created — inverse is to clear it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE ->
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case HOPPER_PULL ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case HOPPER_PULL -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             // --- v0.1.0 expansion: entities ---
             case HANGING_PLACE ->
                 mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
-            case HANGING_BREAK ->
-                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case HANGING_BREAK -> {
+                if (nbt) {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta(), a.entityNbt());
+                } else {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             // --- per-action explicit refusals (replacing the silent default branch) ---
             case DISPENSE ->
                 LOG.warn("RollbackEngine: refusing to roll back DISPENSE (id={}) — container slot tracking required", a.id());
@@ -465,20 +777,44 @@ public final class RollbackEngine {
 
     /** Reapply the original action (used by restore). */
     private void applyForward(Action a) {
+        // v1.3.2 Y1: mirror applyInverse's NBT branching. Restore semantics
+        // re-apply the row's original mutation, so the NBT payload used here is
+        // the "new state" side (post-change) — newBlockState + blockEntityNbt
+        // for a BLOCK_PLACE, itemNbt for CONTAINER_DEPOSIT / ITEM_DROP /
+        // HOPPER_PUSH, entityNbt for HANGING_PLACE.
+        boolean nbt = a.hasNbt();
         switch (a.type()) {
-            case BLOCK_PLACE ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case BLOCK_PLACE -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.newBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case BLOCK_BREAK ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
-            case CONTAINER_DEPOSIT ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case CONTAINER_DEPOSIT -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case CONTAINER_WITHDRAW ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case ITEM_DROP ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case ITEM_DROP -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case ITEM_PICKUP ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
@@ -488,25 +824,49 @@ public final class RollbackEngine {
                 clearExplosionBlocks(a);
             // --- v0.1.0 expansion: block events ---
             // ENTITY_CHANGE_BLOCK: re-apply the newBlockId carried in targetMeta.
-            case ENTITY_CHANGE_BLOCK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetMeta() != null ? a.targetMeta() : AIR, null);
+            case ENTITY_CHANGE_BLOCK -> {
+                String newId = a.targetMeta() != null ? a.targetMeta() : AIR;
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null,
+                        a.newBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null);
+                }
+            }
             // Block was originally destroyed/changed-away — restoring means re-destroying.
             case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // Block was originally created — restoring means re-placing it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
+                if (nbt) {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                        a.newBlockState(), a.blockEntityNbt());
+                } else {
+                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             // --- v0.1.0 expansion: containers ---
-            case HOPPER_PUSH ->
-                mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+            case HOPPER_PUSH -> {
+                if (nbt) {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
             case HOPPER_PULL ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             // --- v0.1.0 expansion: entities ---
-            case HANGING_PLACE ->
-                mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+            case HANGING_PLACE -> {
+                if (nbt) {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta(), a.entityNbt());
+                } else {
+                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                }
+            }
             case HANGING_BREAK ->
                 mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
             // --- per-action explicit refusals (replacing the silent default branch) ---
@@ -532,64 +892,20 @@ public final class RollbackEngine {
     }
 
     private void restoreExplosion(Action a) {
-        String target = a.targetId();
-        if (target == null || target.isEmpty()) {
-            return;
-        }
-        for (String entry : target.split(",")) {
-            ExplosionEntry e = parseExplosionEntry(entry);
-            if (e == null) {
-                continue;
-            }
-            mutator.setBlock(a.worldId(), e.x, e.y, e.z, e.id, e.meta);
+        ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
+        if (list.isEmpty()) return;
+        for (ExplosionAffectedList.Entry e : list.entries()) {
+            // Restore the pre-blast block state at each affected coord.
+            mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
         }
     }
 
     private void clearExplosionBlocks(Action a) {
-        String target = a.targetId();
-        if (target == null || target.isEmpty()) {
-            return;
-        }
-        for (String entry : target.split(",")) {
-            ExplosionEntry e = parseExplosionEntry(entry);
-            if (e == null) {
-                continue;
-            }
-            mutator.setBlock(a.worldId(), e.x, e.y, e.z, AIR, null);
-        }
-    }
-
-    private static ExplosionEntry parseExplosionEntry(String entry) {
-        if (entry == null || entry.isBlank()) {
-            return null;
-        }
-        try {
-            int eq = entry.indexOf('=');
-            if (eq <= 0 || eq == entry.length() - 1) {
-                return null;
-            }
-            String pos = entry.substring(0, eq);
-            String rest = entry.substring(eq + 1);
-            String id;
-            String meta = null;
-            int pipe = rest.indexOf('|');
-            if (pipe >= 0) {
-                id = rest.substring(0, pipe);
-                meta = rest.substring(pipe + 1);
-            } else {
-                id = rest;
-            }
-            String[] xyz = pos.split(":");
-            if (xyz.length != 3) {
-                return null;
-            }
-            int x = Integer.parseInt(xyz[0].trim());
-            int y = Integer.parseInt(xyz[1].trim());
-            int z = Integer.parseInt(xyz[2].trim());
-            return new ExplosionEntry(x, y, z, id.trim(), meta);
-        } catch (NumberFormatException e) {
-            LOG.warn("RollbackEngine: malformed explosion entry '{}'", entry);
-            return null;
+        ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
+        if (list.isEmpty()) return;
+        for (ExplosionAffectedList.Entry e : list.entries()) {
+            // Restore direction: re-clear the affected area (re-apply the blast).
+            mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), AIR, null);
         }
     }
 
@@ -604,7 +920,7 @@ public final class RollbackEngine {
                  BUCKET_EMPTY, BUCKET_FILL, ENTITY_CHANGE_BLOCK,
                  HOPPER_PUSH, HOPPER_PULL,
                  HANGING_PLACE, HANGING_BREAK,
-                 STRUCTURE_GROW, PORTAL_CREATE -> true;
+                 STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> true;
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE,
@@ -614,6 +930,4 @@ public final class RollbackEngine {
                  CHUNK_POPULATE, CLICK -> false;
         };
     }
-
-    private record ExplosionEntry(int x, int y, int z, String id, String meta) {}
 }

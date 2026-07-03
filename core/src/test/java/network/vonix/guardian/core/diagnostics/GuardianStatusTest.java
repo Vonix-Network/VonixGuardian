@@ -33,21 +33,38 @@ class GuardianStatusTest {
     @Test
     void coalescerSectionReportsSuppressedEvictionsAndHardCapDrops(@TempDir Path tmp) throws Exception {
         GuardianConfig cfg = new GuardianConfig(
-            new GuardianConfig.Database("sqlite", tmp.resolve("status.db").toString(), null, null, null),
+            new GuardianConfig.Database("sqlite", tmp.resolve("status.db").toString(), null, null, null, null, GuardianConfig.Hikari.defaults()),
             new GuardianConfig.Queue(1000, 5_000L, 100),
-            new GuardianConfig.LogFile(false, "logs", true, 30),
+            new GuardianConfig.LogFile(false, "logs", true, 30, true),
             new GuardianConfig.Actions(
                 true, true, true, true, true, true, true, true, true, true, true,
                 List.of(), List.of("minecraft:air"), List.of(),
                 60_000L, 4,
                 List.of(), true
-            ),
-            new GuardianConfig.Permissions(true, 3),
+            ,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            false,
+            true,
+            true,
+            false,
+            true,
+            false,
+            true),
+            new GuardianConfig.Permissions(true, 3, java.util.Map.of()),
             new GuardianConfig.Lookup(7, 10_000, 100_000, 4),
             new GuardianConfig.Privacy(false, "some-16-char-salt-000000"),
             new GuardianConfig.Purge(86_400L, 3_600L, 0L, "03:30"),
+        GuardianConfig.Storage.defaults(),
+        GuardianConfig.Rollback.defaults(),
             "aqua"
-        );
+        ,
+        "en_us");
         Guardian g = Guardian.boot(cfg, tmp, NOOP_MUTATOR, ZERO_OP, SYNC, DAEMONS);
         try {
             g.submitEntityChangeBlock(null, "#mob:minecraft:zombie", "minecraft:overworld", 1, 64, 1,

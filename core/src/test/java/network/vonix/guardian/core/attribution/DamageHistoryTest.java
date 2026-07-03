@@ -71,11 +71,16 @@ class DamageHistoryTest {
     @Test
     void overflowEvictsOldest() {
         DamageHistory dh = new DamageHistory(60_000L, 16);
-        for (int i = 0; i < 20; i++) {
+        // v1.3.1 X6 (P1-2): eviction is now amortized — the O(n) oldest-entry
+        // sweep only runs every EVICT_STRIDE=64 over-cap insert. To assert that
+        // eviction still fires, push enough over-cap inserts to cross the stride
+        // at least once (16 cap + 64 over-cap → guaranteed one sweep).
+        for (int i = 0; i < 16 + DamageHistory.EVICT_STRIDE; i++) {
             UUID v = UUID.nameUUIDFromBytes(("victim-" + i).getBytes());
             dh.record(v, PLAYER_1, 1_000L + i);
         }
-        assertThat(dh.size()).isLessThanOrEqualTo(16);
+        // Amortized upper bound: cap + at most one full stride of transient overshoot.
+        assertThat(dh.size()).isLessThanOrEqualTo(16 + DamageHistory.EVICT_STRIDE);
         assertThat(dh.evictions()).isGreaterThan(0L);
     }
 

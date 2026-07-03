@@ -34,7 +34,7 @@ class LookupPermissionFilterTest {
      * {@link PermissionNodeChildTest}.
      */
     private static PermissionResolver fakeResolver(int opLevel) {
-        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2);
+        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
         return new PermissionResolver(cfg, uuid -> opLevel);
     }
 
@@ -90,7 +90,7 @@ class LookupPermissionFilterTest {
     void resolverDeniesAll_onlyFallOpenRowsSurvive() {
         // Fallback returns 0 → denies every child. Only rows whose childForAction returns the
         // family itself (fall-open) survive.
-        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2);
+        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
         PermissionResolver r = new PermissionResolver(cfg, uuid -> 0);
 
         List<Action> rows = Arrays.asList(
@@ -106,7 +106,7 @@ class LookupPermissionFilterTest {
     void rollbackFamily_messageRows_fallOpen() {
         // CHAT under ROLLBACK family: childForAction returns ROLLBACK (no rollback-of-chat
         // scoping in CP). Even when resolver denies, message rows survive under ROLLBACK.
-        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2);
+        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
         PermissionResolver r = new PermissionResolver(cfg, uuid -> 0);
 
         List<Action> rows = Arrays.asList(

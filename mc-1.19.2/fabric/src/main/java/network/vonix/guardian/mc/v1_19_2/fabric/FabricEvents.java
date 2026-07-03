@@ -46,6 +46,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Fabric event handlers translating Fabric API callbacks into
@@ -68,7 +69,11 @@ public final class FabricEvents {
     private static final Logger LOG = LoggerFactory.getLogger(FabricEvents.class);
 
     /** Per-entity-type rate limit for spawn logging (last-emit ts in millis). */
-    private static final Map<String, Long> SPAWN_LIMIT = new ConcurrentHashMap<>();
+    // v1.3.0 W2: de-boxed spawn-limit throttle. Previous Map<String,Long> auto-boxed a
+    // fresh Long on every put(...) — several MB/s of short-lived garbage on modded
+    // shards with mob-farm-heavy chunks (piglin bartering, drowned trident farms, etc.).
+    // AtomicLong lets us update in place with a plain volatile store on the hot path.
+    private static final Map<String, AtomicLong> SPAWN_LIMIT = new ConcurrentHashMap<>();
     private static final long SPAWN_LIMIT_MS = 1_000L;
 
     /** Daemon worker for off-tick JDBC (inspector lookups). Mirrors ForgeEvents. */
@@ -202,6 +207,12 @@ public final class FabricEvents {
         return g == null ? null : g.config();
     }
 
+    /** v1.3.2 Y1 config-gated NBT persist flag. */
+    private static boolean persistNbt() {
+        GuardianConfig c = cfg();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     // ====================================================================== blocks
 
     /**
@@ -214,10 +225,20 @@ public final class FabricEvents {
         try {
             EventSubmitter s = sub();
             if (s == null || player == null) return;
-            s.submitBlockBreak(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(world),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    blockId(state), null);
+            // v1.3.2 Y1: NBT capture on server thread BEFORE the break resolves.
+            if (persistNbt()) {
+                String stateProps = NbtCapture.blockStateProps(state);
+                byte[] beNbt = be == null ? null : NbtCapture.blockEntity(be);
+                s.submitBlockBreak(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(world),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(state), null, stateProps, beNbt);
+            } else {
+                s.submitBlockBreak(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(world),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(state), null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockBreakAfter failed", t);
         }
@@ -335,11 +356,34 @@ public final class FabricEvents {
                 attr = Attribution.unknown(EntitySentinel.UNKNOWN);
             }
             BlockPos pos = victim.blockPosition();
+
             String entityType = EntitySentinel.of(victim);
-            s.submitEntityKill(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(victim.level),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    entityType, source == null ? null : SourceTagger.tag(source));
+
+            // v1.3.2 Y1: capture the victim's persistent NBT BEFORE death resolves.
+
+            byte[] entNbt = persistNbt() ? NbtCapture.entity(victim) : null;
+
+            if (entNbt != null) {
+
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+
+                        WorldKey.of(victim.level),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        entityType, source == null ? null : SourceTagger.tag(source), entNbt);
+
+            } else {
+
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+
+                        WorldKey.of(victim.level),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        entityType, source == null ? null : SourceTagger.tag(source));
+
+            }
             if (FabricBootstrap.damageHistory != null) {
                 FabricBootstrap.damageHistory.forget(victim.getUUID());
             }
@@ -380,9 +424,17 @@ public final class FabricEvents {
             if (!(entity instanceof LivingEntity) || entity instanceof Player) return;
             String type = EntitySentinel.of(entity);
             long now = System.currentTimeMillis();
-            Long last = SPAWN_LIMIT.get(type);
-            if (last != null && now - last < SPAWN_LIMIT_MS) return;
-            SPAWN_LIMIT.put(type, now);
+            // v1.3.0 W2: de-boxed spawn-limit throttle — plain AtomicLong.set on the
+            // hot path, no autoboxing per spawn.
+            AtomicLong last = SPAWN_LIMIT.get(type);
+            if (last == null) {
+                AtomicLong fresh = new AtomicLong(now);
+                AtomicLong prev = SPAWN_LIMIT.putIfAbsent(type, fresh);
+                if (prev != null) prev.set(now);
+            } else {
+                if (now - last.get() < SPAWN_LIMIT_MS) return;
+                last.set(now);
+            }
             BlockPos pos = entity.blockPosition();
             s.submitEntitySpawn(null, type,
                     WorldKey.of(level),

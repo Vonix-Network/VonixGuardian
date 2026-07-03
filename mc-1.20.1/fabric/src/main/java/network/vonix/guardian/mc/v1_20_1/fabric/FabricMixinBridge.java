@@ -47,6 +47,14 @@ public final class FabricMixinBridge {
 
     private FabricMixinBridge() {}
 
+    /** v1.3.2 Y1 config-gated NBT persist flag. */
+    private static boolean persistNbt() {
+        Guardian g = VonixGuardianFabric.guardian();
+        if (g == null) return false;
+        var c = g.config();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     private static EventSubmitter sub() {
         Guardian g = VonixGuardianFabric.guardian();
         return g == null ? null : g.submitter();
@@ -84,33 +92,63 @@ public final class FabricMixinBridge {
         }
     }
 
-    /** Explosion#finalizeExplosion → EXPLOSION. Iterates affected block list. */
+    /**
+     * Explosion#finalizeExplosion → EXPLOSION.
+     *
+     * <p><b>v1.3.0 W3:</b> server thread does the (unavoidable) per-pos
+     * {@code getBlockState} + registry key lookup into pooled scratch arrays,
+     * then hands the {@link StringBuilder} join + queue enqueue to
+     * {@link network.vonix.guardian.core.event.ExplosionJoinWorker}. A 5,000-block
+     * TNT chain no longer builds a 4 KiB {@link StringBuilder} on the tick.</p>
+     */
     public static void explosion(Level level, Entity source,
                                  double cx, double cy, double cz,
                                  List<BlockPos> affected) {
         try {
             EventSubmitter s = sub();
             if (s == null || level == null || affected == null || affected.isEmpty()) return;
-            StringBuilder sb = new StringBuilder();
-            int cap = 4096;
-            int count = 0;
+            ExplosionScratch scratch = EXPLOSION_SCRATCH.get();
+            int n = affected.size();
+            scratch.grow(n);
+            int idx = 0;
             for (BlockPos p : affected) {
-                if (sb.length() > cap) break;
-                if (count++ > 0) sb.append(',');
-                BlockState oldState = level.getBlockState(p);
-                sb.append(p.getX()).append(':').append(p.getY()).append(':').append(p.getZ())
-                        .append('=').append(blockId(oldState));
+                scratch.xs[idx] = p.getX();
+                scratch.ys[idx] = p.getY();
+                scratch.zs[idx] = p.getZ();
+                scratch.ids[idx] = blockId(level.getBlockState(p));
+                idx++;
             }
-            Attribution attr = (source != null && FabricBootstrap.resolver != null)
-                    ? FabricBootstrap.resolver.resolve(source, System.currentTimeMillis())
-                    : Attribution.unknown(EntitySentinel.UNKNOWN);
+            String worldIdForPrime = WorldKey.of(level);
+            // v1.3.1 X7: PrimedTnt loses its igniter by the time
+            // Explosion#finalizeExplosion fires. Consult TntPrimeMemory
+            // (populated by TntBlockMixin / PrimedTntEntityMixin) at the
+            // entity's block position before falling back to the resolver.
+            // Closes CoreProtect-parity gap G-CP-2.
+            Attribution attr = null;
+            if (source instanceof net.minecraft.world.entity.item.PrimedTnt) {
+                network.vonix.guardian.core.Guardian gEarly = VonixGuardianFabric.guardian();
+                if (gEarly != null) {
+                    BlockPos originPos = source.blockPosition();
+                    attr = network.vonix.guardian.core.attribution.UniversalAttribution
+                            .resolveTntPrime(gEarly.tntPrimeMemory(), worldIdForPrime,
+                                    originPos.getX(), originPos.getY(), originPos.getZ(),
+                                    Sentinel.TNT);
+                }
+            }
+            if (attr == null) {
+                attr = (source != null && FabricBootstrap.resolver != null)
+                        ? FabricBootstrap.resolver.resolve(source, System.currentTimeMillis())
+                        : Attribution.unknown(EntitySentinel.UNKNOWN);
+            }
             BlockPos center = BlockPos.containing(cx, cy, cz);
-            s.submitExplosion(attr.actorUuid(),
-                    attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION,
-                    WorldKey.of(level),
-                    center.getX(), center.getY(), center.getZ(),
-                    sb.toString(),
-                    source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION);
+            String worldId = WorldKey.of(level);
+            String sourceTag = source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION;
+            String actorName = attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION;
+            network.vonix.guardian.core.Guardian g = VonixGuardianFabric.guardian();
+            if (g == null) return;
+            g.explosionJoinWorker().submit(s, attr.actorUuid(), actorName, worldId,
+                    center.getX(), center.getY(), center.getZ(), sourceTag,
+                    scratch.xs, scratch.ys, scratch.zs, scratch.ids, idx);
         } catch (Throwable t) {
             warn("explosion", t);
         }
@@ -146,7 +184,55 @@ public final class FabricMixinBridge {
     private static final int MAX_CONTAINER_SNAPSHOTS = 512;
     private static final int MAX_CONTAINER_SLOTS = 216;
 
+    /**
+     * v1.3.0 W3: counter for cleanupContainerSnapshots amortization. Old path
+     * scanned the full SNAP_TIME map on EVERY container open — O(n) per open.
+     * Now we only run the TTL scan every {@link #CONTAINER_CLEANUP_EVERY} opens
+     * OR when the map exceeds {@link #MAX_CONTAINER_SNAPSHOTS}.
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger CONTAINER_CLEANUP_TICK
+            = new java.util.concurrent.atomic.AtomicInteger();
+    /** Full TTL scan every N opens; power-of-two so we can mask. */
+    private static final int CONTAINER_CLEANUP_EVERY = 32;
+
+    /**
+     * v1.3.0 W3: pooled scratch buffer for explosion capture. One per server
+     * thread — reused across explosions to avoid re-allocating 3× int[] + 1×
+     * String[] per detonation.
+     */
+    private static final ThreadLocal<ExplosionScratch> EXPLOSION_SCRATCH =
+            ThreadLocal.withInitial(ExplosionScratch::new);
+
+    private static final class ExplosionScratch {
+        int[] xs = new int[512];
+        int[] ys = new int[512];
+        int[] zs = new int[512];
+        String[] ids = new String[512];
+        void grow(int need) {
+            if (xs.length >= need) return;
+            int n = xs.length;
+            while (n < need) n <<= 1;
+            xs = new int[n]; ys = new int[n]; zs = new int[n]; ids = new String[n];
+        }
+    }
+
+    /**
+     * v1.3.0 W3: amortized cleanup. Old path scanned the full SNAP_TIME map on
+     * every container open (O(n) per open). Now we run the TTL scan only every
+     * {@link #CONTAINER_CLEANUP_EVERY} opens, PLUS an immediate fast-path
+     * eviction when the map exceeds {@link #MAX_CONTAINER_SNAPSHOTS}
+     * (bounded work per open).
+     */
     private static void cleanupContainerSnapshots() {
+        // Fast-path: bounded eviction if we're over cap.
+        while (SNAP.size() > MAX_CONTAINER_SNAPSHOTS) {
+            evictOldestContainerSnapshot();
+        }
+        // Amortized: only run the TTL scan every N opens (mask; N is power-of-two).
+        int tick = CONTAINER_CLEANUP_TICK.incrementAndGet();
+        if ((tick & (CONTAINER_CLEANUP_EVERY - 1)) != 0) {
+            return;
+        }
         long cutoff = System.currentTimeMillis() - SNAP_TTL_MS;
         SNAP_TIME.entrySet().removeIf(e -> {
             Long ts = e.getValue();
@@ -157,9 +243,6 @@ public final class FabricMixinBridge {
             SNAP_WORLD.remove(id);
             return true;
         });
-        while (SNAP.size() > MAX_CONTAINER_SNAPSHOTS) {
-            evictOldestContainerSnapshot();
-        }
     }
 
     private static void evictOldestContainerSnapshot() {
@@ -220,6 +303,7 @@ public final class FabricMixinBridge {
             EventSubmitter s = sub();
             if (s == null) return;
             int size = Math.min(container.getContainerSize(), MAX_CONTAINER_SLOTS);
+            boolean nbtOn = persistNbt();
             for (int slot = 0; slot < size; slot++) {
                 ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
                 ItemStack after = container.getItem(slot);
@@ -229,8 +313,19 @@ public final class FabricMixinBridge {
                 if (itemId == null) continue;
                 int delta = afterCount - beforeCount;
                 if (delta == 0) continue;
-                s.submitContainerChange(player.getUUID(), player.getName().getString(), worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                byte[] itemNbt = null;
+                if (nbtOn) {
+                    // delta > 0 = deposit (after carries NBT); delta < 0 = withdraw (before carries NBT).
+                    ItemStack src = delta > 0 ? after : before;
+                    itemNbt = NbtCapture.itemStack(src);
+                }
+                if (itemNbt != null) {
+                    s.submitContainerChange(player.getUUID(), player.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
+                } else {
+                    s.submitContainerChange(player.getUUID(), player.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                }
             }
         } catch (Throwable t) {
             warn("containerClose", t);
@@ -249,6 +344,16 @@ public final class FabricMixinBridge {
                         : (heldItemId != null ? heldItemId : "minecraft:water");
                 s.submitBucketEmpty(player.getUUID(), player.getName().getString(), worldId,
                         pos.getX(), pos.getY(), pos.getZ(), fluid, null);
+                // v1.3.1 X3: seed the 2-min traceback so downstream FLUID_FLOW rows attribute back.
+                Guardian g = network.vonix.guardian.mc.v1_20_1.fabric.VonixGuardianFabric.guardian();
+                if (g != null) {
+                    network.vonix.guardian.core.attribution.FluidSourceMemory mem = g.fluidSourceMemory();
+                    if (mem != null) {
+                        mem.recordBucketEmpty(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                                player.getUUID(), player.getName().getString(),
+                                System.currentTimeMillis());
+                    }
+                }
             } else {
                 String fluidId = blockId(level.getBlockState(pos));
                 s.submitBucketFill(player.getUUID(), player.getName().getString(), worldId,
@@ -259,16 +364,67 @@ public final class FabricMixinBridge {
         }
     }
 
+    /**
+     * v1.3.1 X3: fluid-flow producer entry
+     * (parity with CoreProtect {@code BlockFromToListener}).
+     */
+    public static void fluidFlow(net.minecraft.server.level.ServerLevel level, BlockPos pos,
+                                 net.minecraft.world.level.material.FlowingFluid flowingFluid) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || flowingFluid == null) return;
+            Guardian g = network.vonix.guardian.mc.v1_20_1.fabric.VonixGuardianFabric.guardian();
+            if (g == null) return;
+            String worldId = WorldKey.of(level);
+            String path;
+            try {
+                ResourceLocation rl = BuiltInRegistries.FLUID.getKey(flowingFluid);
+                path = rl == null ? "water" : rl.getPath();
+            } catch (Throwable t) {
+                path = "water";
+            }
+            String kind = path.contains("lava") ? "lava" : "water";
+            String fluidBlockId = "minecraft:" + kind;
+            String sourceTag =
+                    network.vonix.guardian.core.diagnostics.MixinHotEventFilter.PREFIX_FLUID + ":" + kind;
+
+            network.vonix.guardian.core.attribution.FluidSourceMemory mem = g.fluidSourceMemory();
+            UUID actorUuid = null;
+            String actorName = Sentinel.FLUID;
+            if (mem != null) {
+                network.vonix.guardian.core.attribution.FluidSourceMemory.Record rec =
+                        mem.lookup(worldId, pos.getX(), pos.getY(), pos.getZ(), System.currentTimeMillis());
+                if (rec != null && rec.actorUuid != null) {
+                    actorUuid = rec.actorUuid;
+                    actorName = rec.actorName != null ? rec.actorName : Sentinel.FLUID;
+                }
+            }
+            s.submitFluidFlow(actorUuid, actorName, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), fluidBlockId, sourceTag);
+        } catch (Throwable t) {
+            warn("fluidFlow", t);
+        }
+    }
+
     /** Player#drop → ITEM_DROP. */
     public static void itemDrop(Player player, ItemStack stack) {
         try {
             EventSubmitter s = sub();
             if (s == null || player == null || stack == null || stack.isEmpty()) return;
             BlockPos pos = player.blockPosition();
-            s.submitItemDrop(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(player.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    itemId(stack), stack.getCount(), null);
+            // v1.3.2 Y1: item toss NBT.
+            byte[] itemNbt = persistNbt() ? NbtCapture.itemStack(stack) : null;
+            if (itemNbt != null) {
+                s.submitItemDrop(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(player.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null, itemNbt);
+            } else {
+                s.submitItemDrop(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(player.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null);
+            }
         } catch (Throwable t) {
             warn("itemDrop", t);
         }
@@ -389,6 +545,34 @@ public final class FabricMixinBridge {
         }
     }
 
+    // ==================================================================== X7 TNT-prime memory
+    // v1.3.1 X7: record the actor priming a TNT block so the eventual
+    // explosion-detonate handler can attribute correctly. See
+    // network.vonix.guardian.core.attribution.TntPrimeMemory.
+
+    /**
+     * Record a player as the priming actor for the TNT block at {@code pos}.
+     *
+     * <p>Called from {@code TntBlockMixin.explode(Level,BlockPos,LivingEntity)}
+     * HEAD when the igniter is a Player, and from
+     * {@code PrimedTntEntityMixin.<init>} TAIL when the igniter argument on
+     * the constructor is a Player.
+     */
+    public static void recordTntPrimePlayer(Level level, BlockPos pos, Player player) {
+        try {
+            Guardian g = VonixGuardianFabric.guardian();
+            if (g == null || level == null || pos == null || player == null) return;
+            long now = System.currentTimeMillis();
+            g.tntPrimeMemory().record(
+                    WorldKey.of(level), pos.getX(), pos.getY(), pos.getZ(),
+                    network.vonix.guardian.core.attribution.TntPrimeMemory.PrimeRecord.player(
+                            player.getUUID(), player.getName().getString(), now));
+        } catch (Throwable t) {
+            warn("recordTntPrimePlayer", t);
+        }
+    }
+
+
     /** Sign packet → SIGN row with metadata. */
     public static void signChange(Player player, Level level, BlockPos pos, String[] lines, boolean isFront) {
         try {
@@ -421,6 +605,66 @@ public final class FabricMixinBridge {
 
     // ================================================================== helpers
 
+    // ================================================================== v1.3.1 X2 entity dispatchers
+
+    /**
+     * v1.3.1 X2: entity-caused block break (EnderDragon, Ravager,
+     * FallingBlockEntity fall-side). Produces ENTITY_CHANGE_BLOCK with a
+     * mob-scoped {@code actorName} from {@link EntitySentinel} and one of the
+     * {@code EntitySentinel.SRC_*} source tags.
+     */
+    public static void entityBreak(Entity entity, Level level, BlockPos pos, BlockState oldState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null) return;
+            String actor = EntitySentinel.of(entity);
+            s.submitEntityChangeBlock(null, actor,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), "minecraft:air",
+                    sourceTag == null ? actor : sourceTag);
+        } catch (Throwable t) {
+            warn("entityBreak", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X2: entity-caused block place (SnowGolem trail,
+     * FallingBlockEntity land, LightningBolt fire).
+     */
+    public static void entityPlace(Entity entity, Level level, BlockPos pos, BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || newState == null) return;
+            String actor = EntitySentinel.of(entity);
+            s.submitEntityChangeBlock(null, actor,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    "minecraft:air", blockId(newState),
+                    sourceTag == null ? actor : sourceTag);
+        } catch (Throwable t) {
+            warn("entityPlace", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X2: Silverfish infest — full old→new state change.
+     */
+    public static void entityChange(Entity entity, Level level, BlockPos pos, BlockState oldState, BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null || newState == null) return;
+            String actor = EntitySentinel.of(entity);
+            s.submitEntityChangeBlock(null, actor,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), blockId(newState),
+                    sourceTag == null ? actor : sourceTag);
+        } catch (Throwable t) {
+            warn("entityChange", t);
+        }
+    }
+
     public static String blockId(BlockState state) {
         try {
             ResourceLocation rl = BuiltInRegistries.BLOCK.getKey(state.getBlock());
@@ -436,6 +680,90 @@ public final class FabricMixinBridge {
             return rl != null ? rl.toString() : "minecraft:air";
         } catch (Throwable t) {
             return "minecraft:air";
+        }
+    }
+
+    // ================================================================== v1.3.1 X4 dispatchers
+
+    /**
+     * v1.3.1 X4 — Hopper push (item moved into a container). Attribution is
+     * {@link Sentinel#HOPPER}: no player owner exists for a vanilla hopper.
+     */
+    public static void hopperPush(Level level, BlockPos pos, ItemStack stack) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || stack == null || stack.isEmpty()) return;
+            s.submitHopperPush(null, Sentinel.HOPPER, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    itemId(stack), stack.getCount(), Sentinel.HOPPER);
+        } catch (Throwable t) {
+            warn("hopperPush", t);
+        }
+    }
+
+    /** v1.3.1 X4 — Hopper pull (item moved out of a container). */
+    public static void hopperPull(Level level, BlockPos pos, ItemStack stack) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || stack == null || stack.isEmpty()) return;
+            s.submitHopperPull(null, Sentinel.HOPPER, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    itemId(stack), stack.getCount(), Sentinel.HOPPER);
+        } catch (Throwable t) {
+            warn("hopperPull", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code BLOCK_PLACE}
+     * with {@link Sentinel#PORTAL} attribution and source tag {@code #portal};
+     * rollback treats these rows as world-events (see RollbackEngine PORTAL_CREATE handling).
+     */
+    public static void portalCreate(Level level, BlockPos pos, BlockState state) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || state == null) return;
+            s.submitBlockPlace(null, Sentinel.PORTAL, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(state), Sentinel.PORTAL);
+        } catch (Throwable t) {
+            warn("portalCreate", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X4 — {@code /fill} / {@code /setblock} per-block old-state break row.
+     * Attributed to the player when a player invoked the command, else to
+     * {@link Sentinel#COMMAND}.
+     */
+    public static void commandBlockBreak(Player player, Level level, BlockPos pos,
+                                         BlockState oldState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null || oldState.isAir()) return;
+            UUID uuid = player != null ? player.getUUID() : null;
+            String name = player != null ? player.getName().getString() : Sentinel.COMMAND;
+            s.submitBlockBreak(uuid, name, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), sourceTag != null ? sourceTag : "cmd");
+        } catch (Throwable t) {
+            warn("commandBlockBreak", t);
+        }
+    }
+
+    /** v1.3.1 X4 — {@code /fill} / {@code /setblock} per-block new-state place. */
+    public static void commandBlockPlace(Player player, Level level, BlockPos pos,
+                                         BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || newState == null) return;
+            UUID uuid = player != null ? player.getUUID() : null;
+            String name = player != null ? player.getName().getString() : Sentinel.COMMAND;
+            s.submitBlockPlace(uuid, name, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(newState), sourceTag != null ? sourceTag : "cmd");
+        } catch (Throwable t) {
+            warn("commandBlockPlace", t);
         }
     }
 

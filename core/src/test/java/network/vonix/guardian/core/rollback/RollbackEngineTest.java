@@ -297,8 +297,13 @@ class RollbackEngineTest {
             "w", 1, 64, 0, "minecraft:diamond_ore", null, 1, false);
         Action other = action(32L, 200L, ActionType.BLOCK_PLACE,
             "w", 2, 64, 0, "minecraft:dirt", null, 1, false);
-        when(dao.query(any(), eq(0), eq(2))).thenReturn(List.of(olderSamePos, newest));
-        when(dao.query(any(), eq(2), eq(2))).thenReturn(List.of(other));
+        // v1.3.1 X6 (P3-6): RollbackEngine now requests pageSize+1 rows per page so
+        // the extra row acts as the "has more" probe (saves the follow-up
+        // dao.query(...,1) round-trip). Mocks return pageSize rows; because
+        // pageSize+1 was asked for and pageSize came back, the loop knows the
+        // stream is exhausted without a second probe.
+        when(dao.query(any(), eq(0), eq(3))).thenReturn(List.of(olderSamePos, newest));
+        when(dao.query(any(), eq(2), eq(3))).thenReturn(List.of(other));
 
         List<RollbackProgress> progress = new ArrayList<>();
         RollbackOptions options = new RollbackOptions(2, 10, 10, () -> false, progress::add);
@@ -310,8 +315,8 @@ class RollbackEngineTest {
         assertThat(progress.get(1).pagesFetched()).isEqualTo(2);
         assertThat(progress.get(1).scannedActions()).isEqualTo(3);
         assertThat(progress.get(1).plannedSteps()).isEqualTo(2);
-        verify(dao).query(any(), eq(0), eq(2));
-        verify(dao).query(any(), eq(2), eq(2));
+        verify(dao).query(any(), eq(0), eq(3));
+        verify(dao).query(any(), eq(2), eq(3));
         verify(dao, never()).query(any(), eq(0), eq(RollbackEngine.PAGE_SIZE));
         verify(dao, never()).markRolledBack(any(), anyBoolean());
     }
@@ -324,8 +329,9 @@ class RollbackEngineTest {
             "w", 2, 64, 0, "minecraft:dirt", null, 1, false);
         Action extra = action(43L, 100L, ActionType.BLOCK_PLACE,
             "w", 3, 64, 0, "minecraft:oak_planks", null, 1, false);
-        when(dao.query(any(), eq(0), eq(2))).thenReturn(List.of(a, b));
-        when(dao.query(any(), eq(2), eq(1))).thenReturn(List.of(extra));
+        // v1.3.1 X6 (P3-6): return pageSize+1=3 rows so the extra row triggers the
+        // scan-cap-reached signal without a follow-up hasMoreRows probe.
+        when(dao.query(any(), eq(0), eq(3))).thenReturn(List.of(a, b, extra));
 
         List<RollbackProgress> progress = new ArrayList<>();
         RollbackOptions options = new RollbackOptions(2, 2, 10, () -> false, progress::add);
@@ -345,7 +351,9 @@ class RollbackEngineTest {
             "w", 1, 64, 0, "minecraft:stone", null, 1, false);
         Action b = action(52L, 200L, ActionType.BLOCK_PLACE,
             "w", 2, 64, 0, "minecraft:dirt", null, 1, false);
-        when(dao.query(any(), eq(0), eq(2))).thenReturn(List.of(a, b));
+        // v1.3.1 X6 (P3-6): dao now receives pageSize+1=3 as the limit; return the
+        // two seed rows and no probe.
+        when(dao.query(any(), eq(0), eq(3))).thenReturn(List.of(a, b));
 
         List<RollbackProgress> progress = new ArrayList<>();
         RollbackOptions options = new RollbackOptions(2, 10, 1, () -> false, progress::add);

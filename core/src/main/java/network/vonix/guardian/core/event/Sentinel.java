@@ -4,6 +4,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+
 /**
  * Frozen registry of sentinel actor-name strings used when no real player UUID
  * exists for the source of an event (creepers, lava, pistons, etc.).
@@ -21,6 +22,20 @@ public final class Sentinel {
     public static final String END_CRYSTAL    = "#end_crystal";
     public static final String WITHER_SKULL   = "#wither_skull";
     public static final String FIREBALL       = "#fireball";
+    /** v1.3.1 X4 — actor sentinel for portal-frame block creation. */
+    public static final String PORTAL         = "#portal";
+    /**
+     * v1.3.1 X4 — hopper/dropper-driven container transfers with no player
+     * attribution (vanilla hopper pull/push). Kept distinct from
+     * {@link #PISTON} to keep source classification honest.
+     */
+    public static final String HOPPER         = "#hopper";
+    /**
+     * v1.3.1 X4 — actor sentinel for {@code /fill} / {@code /setblock} per-block
+     * audit rows emitted when the source is a non-player (e.g. command block,
+     * automation). Player-invoked commands use the player's UUID/name directly.
+     */
+    public static final String COMMAND        = "#command";
     public static final String BED            = "#bed";
     public static final String RESPAWN_ANCHOR = "#respawn_anchor";
     public static final String FIRE           = "#fire";
@@ -35,6 +50,16 @@ public final class Sentinel {
     public static final String SKELETON       = "#skeleton";
     public static final String ENDERMAN       = "#enderman";
     public static final String EXPLOSION      = "#explosion";
+    /**
+     * Fluid-flow sentinel (v1.3.1 X3). Used as {@code actorName} on a
+     * {@code FLUID_FLOW} row when the {@link
+     * network.vonix.guardian.core.attribution.FluidSourceMemory} 2-min
+     * traceback expires and no bucket-empty ancestor is recorded. Also used
+     * as a {@code sourceTag} prefix ({@code #fluid:water} / {@code #fluid:lava})
+     * on natural-flow producer submissions from the {@code LiquidBlockMixin}
+     * pipeline.
+     */
+    public static final String FLUID          = "#fluid";
     public static final String UNKNOWN        = "#unknown";
 
     /** Unmodifiable view of every sentinel string, in declaration order. */
@@ -47,6 +72,9 @@ public final class Sentinel {
         s.add(END_CRYSTAL);
         s.add(WITHER_SKULL);
         s.add(FIREBALL);
+        s.add(PORTAL);
+        s.add(HOPPER);
+        s.add(COMMAND);
         s.add(BED);
         s.add(RESPAWN_ANCHOR);
         s.add(FIRE);
@@ -61,6 +89,7 @@ public final class Sentinel {
         s.add(SKELETON);
         s.add(ENDERMAN);
         s.add(EXPLOSION);
+        s.add(FLUID);
         s.add(UNKNOWN);
         ALL = Collections.unmodifiableSet(s);
     }

@@ -7,16 +7,24 @@ package network.vonix.guardian.mc.v1_21_1.neoforge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FlowingFluid;
+import net.minecraft.world.level.material.Fluid;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.attribution.FluidSourceMemory;
+import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 import network.vonix.guardian.core.event.EventSubmitter;
+import network.vonix.guardian.core.event.Sentinel;
 import network.vonix.guardian.mc.v1_21_1.common.WorldKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import net.minecraft.world.entity.Entity;
+import network.vonix.guardian.mc.v1_21_1.common.EntitySentinel;
 
 /**
  * Non-mixin bridge for NeoForge mixins.
@@ -116,6 +124,34 @@ public final class NeoForgeMixinBridge {
         }
     }
 
+    // ==================================================================== X7 TNT-prime memory
+    // v1.3.1 X7: record the actor priming a TNT block so the eventual
+    // explosion-detonate handler can attribute correctly. See
+    // network.vonix.guardian.core.attribution.TntPrimeMemory.
+
+    /**
+     * Record a player as the priming actor for the TNT block at {@code pos}.
+     *
+     * @param player the priming player (never {@code null}); called from
+     *               {@code TntBlockMixin.explode(Level,BlockPos,LivingEntity)}
+     *               HEAD when the igniter is a Player, and from
+     *               {@code PrimedTntEntityMixin.<init>} TAIL when the igniter
+     *               argument on the constructor is a Player.
+     */
+    public static void recordTntPrimePlayer(Level level, BlockPos pos, Player player) {
+        try {
+            Guardian g = VonixGuardianNeoForge.guardian();
+            if (g == null || level == null || pos == null || player == null) return;
+            long now = System.currentTimeMillis();
+            g.tntPrimeMemory().record(
+                    WorldKey.of(level), pos.getX(), pos.getY(), pos.getZ(),
+                    network.vonix.guardian.core.attribution.TntPrimeMemory.PrimeRecord.player(
+                            player.getUUID(), player.getName().getString(), now));
+        } catch (Throwable t) {
+            warn("recordTntPrimePlayer", t);
+        }
+    }
+
     public static void bucketFill(Player player, BlockPos pos, String fluidId) {
         try {
             EventSubmitter s = sub();
@@ -132,11 +168,84 @@ public final class NeoForgeMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || player == null || pos == null) return;
+            String worldId = WorldKey.of(player.level());
             s.submitBucketEmpty(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(player.level()), pos.getX(), pos.getY(), pos.getZ(),
+                    worldId, pos.getX(), pos.getY(), pos.getZ(),
                     fluidId == null ? "minecraft:water" : fluidId, null);
+            // v1.3.1 X3: seed the 2-min traceback so downstream fluid-flow
+            // rows within radius can attribute back to this player.
+            Guardian g = VonixGuardianNeoForge.guardian();
+            if (g != null) {
+                FluidSourceMemory mem = g.fluidSourceMemory();
+                if (mem != null) {
+                    mem.recordBucketEmpty(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                            player.getUUID(), player.getName().getString(),
+                            System.currentTimeMillis());
+                }
+            }
         } catch (Throwable t) {
             warn("bucketEmpty", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X3: fluid-flow producer entry.
+     *
+     * @param level        the server level (spread cell world)
+     * @param pos          the destination position that will now hold the
+     *                     flowing fluid
+     * @param flowingFluid the fluid that is spreading; used to resolve the
+     *                     water/lava registry id
+     */
+    public static void fluidFlow(ServerLevel level, BlockPos pos, FlowingFluid flowingFluid) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || flowingFluid == null) return;
+            Guardian g = VonixGuardianNeoForge.guardian();
+            if (g == null) return;
+            String worldId = WorldKey.of(level);
+            String fluidBlockId = fluidBlockId(flowingFluid);
+            String kind = fluidKind(flowingFluid); // "water" or "lava"
+            String sourceTag = MixinHotEventFilter.PREFIX_FLUID + ":" + kind;
+
+            // Attribution: try 2-min bucket traceback first.
+            FluidSourceMemory mem = g.fluidSourceMemory();
+            java.util.UUID actorUuid = null;
+            String actorName = Sentinel.FLUID;
+            if (mem != null) {
+                FluidSourceMemory.Record rec = mem.lookup(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        System.currentTimeMillis());
+                if (rec != null && rec.actorUuid != null) {
+                    actorUuid = rec.actorUuid;
+                    actorName = rec.actorName != null ? rec.actorName : Sentinel.FLUID;
+                }
+            }
+            s.submitFluidFlow(actorUuid, actorName, worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), fluidBlockId, sourceTag);
+        } catch (Throwable t) {
+            warn("fluidFlow", t);
+        }
+    }
+
+    private static String fluidBlockId(Fluid fluid) {
+        try {
+            ResourceLocation rl = BuiltInRegistries.FLUID.getKey(fluid);
+            if (rl == null) return "minecraft:water";
+            String path = rl.getPath();
+            if (path.contains("lava")) return "minecraft:lava";
+            return "minecraft:water";
+        } catch (Throwable t) {
+            return "minecraft:water";
+        }
+    }
+
+    private static String fluidKind(Fluid fluid) {
+        try {
+            ResourceLocation rl = BuiltInRegistries.FLUID.getKey(fluid);
+            if (rl == null) return "water";
+            return rl.getPath().contains("lava") ? "lava" : "water";
+        } catch (Throwable t) {
+            return "water";
         }
     }
 
@@ -162,7 +271,165 @@ public final class NeoForgeMixinBridge {
         return stack == null ? "minecraft:air" : itemId(stack.getItem());
     }
 
+    // ================================================================== v1.3.1 X4 dispatchers
+
+    /**
+     * v1.3.1 X4 — Hopper push (item moved into a container). Attribution is
+     * {@link Sentinel#HOPPER}: no player owner exists for a vanilla hopper.
+     */
+    public static void hopperPush(Level level, BlockPos pos, ItemStack stack) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || stack == null || stack.isEmpty()) return;
+            s.submitHopperPush(null, Sentinel.HOPPER, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    itemId(stack), stack.getCount(), Sentinel.HOPPER);
+        } catch (Throwable t) {
+            warn("hopperPush", t);
+        }
+    }
+
+    /** v1.3.1 X4 — Hopper pull (item moved out of a container). */
+    public static void hopperPull(Level level, BlockPos pos, ItemStack stack) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || stack == null || stack.isEmpty()) return;
+            s.submitHopperPull(null, Sentinel.HOPPER, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    itemId(stack), stack.getCount(), Sentinel.HOPPER);
+        } catch (Throwable t) {
+            warn("hopperPull", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code BLOCK_PLACE}
+     * with {@link Sentinel#PORTAL} attribution and source tag {@code #portal};
+     * rollback treats these rows as world-events.
+     */
+    public static void portalCreate(Level level, BlockPos pos, BlockState state) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || state == null) return;
+            s.submitBlockPlace(null, Sentinel.PORTAL, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(state), Sentinel.PORTAL);
+        } catch (Throwable t) {
+            warn("portalCreate", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X4 — {@code /fill} / {@code /setblock} per-block old-state break
+     * row. Attributed to the player when a player invoked the command, else to
+     * {@link Sentinel#COMMAND}.
+     */
+    public static void commandBlockBreak(Player player, Level level, BlockPos pos,
+                                         BlockState oldState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null || oldState.isAir()) return;
+            java.util.UUID uuid = player != null ? player.getUUID() : null;
+            String name = player != null ? player.getName().getString() : Sentinel.COMMAND;
+            s.submitBlockBreak(uuid, name, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), sourceTag != null ? sourceTag : "cmd");
+        } catch (Throwable t) {
+            warn("commandBlockBreak", t);
+        }
+    }
+
+    /** v1.3.1 X4 — {@code /fill} / {@code /setblock} per-block new-state place. */
+    public static void commandBlockPlace(Player player, Level level, BlockPos pos,
+                                         BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || newState == null) return;
+            java.util.UUID uuid = player != null ? player.getUUID() : null;
+            String name = player != null ? player.getName().getString() : Sentinel.COMMAND;
+            s.submitBlockPlace(uuid, name, WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(newState), sourceTag != null ? sourceTag : "cmd");
+        } catch (Throwable t) {
+            warn("commandBlockPlace", t);
+        }
+    }
+
     private static void warn(String path, Throwable t) {
         LOG.warn("NeoForgeMixinBridge {} failed: {}", path, t.toString());
     }
+    // ================================================================== v1.3.1 X2 dispatchers
+    
+        /**
+         * Entity-caused block break — used by the 6 X2 mixins (EnderDragon, Ravager,
+         * FallingBlockEntity fall side, Silverfish infest, LightningBolt fire spread
+         * cleanup path if applicable). Produces an ENTITY_CHANGE_BLOCK action with
+         * a mob-scoped {@code actorName} derived from the entity's registry type and
+         * a stable {@code sourceTag} that mirrors the Ledger source constants.
+         *
+         * @param entity     the entity that caused the break; may be {@code null}
+         * @param level      dimension the break happened in
+         * @param pos        block position
+         * @param oldState   block state before removal (used to produce {@code oldBlockId})
+         * @param sourceTag  one of the {@code EntitySentinel.SRC_*} constants
+         */
+        public static void entityBreak(Entity entity, Level level, BlockPos pos, BlockState oldState, String sourceTag) {
+            try {
+                EventSubmitter s = sub();
+                if (s == null || level == null || pos == null || oldState == null) return;
+                String actor = EntitySentinel.of(entity);
+                s.submitEntityChangeBlock(null, actor,
+                        WorldKey.of(level),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(oldState), "minecraft:air",
+                        sourceTag == null ? actor : sourceTag);
+            } catch (Throwable t) {
+                warn("entityBreak", t);
+            }
+        }
+
+    /**
+         * Full old→new state change — used by Silverfish infest, which swaps stone→
+         * infested_stone (i.e. block-id changes, not break-then-place).
+         */
+        public static void entityChange(Entity entity, Level level, BlockPos pos, BlockState oldState, BlockState newState, String sourceTag) {
+            try {
+                EventSubmitter s = sub();
+                if (s == null || level == null || pos == null || oldState == null || newState == null) return;
+                String actor = EntitySentinel.of(entity);
+                s.submitEntityChangeBlock(null, actor,
+                        WorldKey.of(level),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(oldState), blockId(newState),
+                        sourceTag == null ? actor : sourceTag);
+            } catch (Throwable t) {
+                warn("entityChange", t);
+            }
+        }
+
+    /**
+         * Entity-caused block place — used by SnowGolem (aiStep snow trail),
+         * FallingBlockEntity landing, and LightningBolt spawnFire.
+         *
+         * @param entity     the entity that placed the block; may be {@code null}
+         * @param level      dimension
+         * @param pos        block position
+         * @param newState   block state placed (used to produce {@code newBlockId})
+         * @param sourceTag  one of the {@code EntitySentinel.SRC_*} constants
+         */
+        public static void entityPlace(Entity entity, Level level, BlockPos pos, BlockState newState, String sourceTag) {
+            try {
+                EventSubmitter s = sub();
+                if (s == null || level == null || pos == null || newState == null) return;
+                String actor = EntitySentinel.of(entity);
+                s.submitEntityChangeBlock(null, actor,
+                        WorldKey.of(level),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        "minecraft:air", blockId(newState),
+                        sourceTag == null ? actor : sourceTag);
+            } catch (Throwable t) {
+                warn("entityPlace", t);
+            }
+        }
+
 }

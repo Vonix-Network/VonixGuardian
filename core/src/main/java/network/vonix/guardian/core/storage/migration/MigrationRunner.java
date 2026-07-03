@@ -63,7 +63,8 @@ public final class MigrationRunner {
     public static MigrationRunner defaults() {
         return new MigrationRunner(List.of(
             new V3WidenActionTarget(),
-            new V4SignMetadata()
+            new V4SignMetadata(),
+            new V5NbtFidelity()
         ));
     }
 

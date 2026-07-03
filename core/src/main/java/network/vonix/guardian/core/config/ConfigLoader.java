@@ -137,7 +137,9 @@ public final class ConfigLoader {
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), newPurge,
-                work.theme()
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
+                work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
         if (work.permissions() != null && work.permissions().perNodeOpLevels() == null) {
@@ -149,7 +151,9 @@ public final class ConfigLoader {
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 newPerms, work.lookup(), work.privacy(), work.purge(),
-                work.theme()
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
+                work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
         if (work.language() == null) {
@@ -157,7 +161,44 @@ public final class ConfigLoader {
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
-                work.theme()
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
+                work.theme(), "en_us"
+            );
+        }
+        // v1.3.1 X1: backfill storage=Storage.defaults() (persistNbt=false, the safe
+        // pre-X1 behaviour) when the on-disk config predates the field. Absent JSON
+        // key → Gson gives null; we replace with the shipped default so validate()
+        // and downstream .storage() readers never see null. Operators who set an
+        // explicit storage.persistNbt=true keep their setting.
+        if (work.storage() == null) {
+            LOG.info("Backfilling storage=Storage.defaults() persistNbt=false (pre-v1.3.1 X1 config)");
+            work = new GuardianConfig(
+                work.database(), work.queue(), work.logFile(), work.actions(),
+                work.permissions(), work.lookup(), work.privacy(), work.purge(),
+                GuardianConfig.Storage.defaults(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
+                work.theme(), work.language()
+            );
+        }
+        // v1.3.1 X6: backfill database.hikari=Hikari.defaults() when the on-disk config
+        // predates the field. Absent JSON key → Gson leaves the record field null; we
+        // replace with the shipped defaults so downstream MysqlDao/PostgresDao ctors
+        // never NPE on cfg.hikari().maxPoolSize(). Operators who set explicit
+        // database.hikari knobs keep their setting.
+        if (work.database() != null && work.database().hikari() == null) {
+            LOG.info("Backfilling database.hikari=Hikari.defaults() (pre-v1.3.1 X6 config)");
+            var db = work.database();
+            var newDb = new GuardianConfig.Database(
+                db.type(), db.file(), db.jdbcUrl(), db.user(), db.password(),
+                db.migrationTarget(), GuardianConfig.Hikari.defaults()
+            );
+            work = new GuardianConfig(
+                newDb, work.queue(), work.logFile(), work.actions(),
+                work.permissions(), work.lookup(), work.privacy(), work.purge(),
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
+                work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
         if (work.actions() == null) return work;
@@ -213,6 +254,14 @@ public final class ConfigLoader {
         boolean vHopperMetaFilter    = w5_07AllFalse ? false : a.logHopperMetaFilter();
         boolean vDuplicateSuppression= w5_07AllFalse ? true  : a.logDuplicateSuppression();
         boolean vCancelledChat       = w5_07AllFalse ? false : a.logCancelledChat();
+        // v1.3.0 W4: mixinHotEvents defaults ON. If the config predates W4, the field is
+        // absent → Gson deserialises to false → we backfill to true. Heuristic: a config that
+        // ALSO has every W5-07 toggle false almost certainly predates W4 (W5-07 shipped in
+        // v1.2.6, W4 in v1.3.0). We conservatively only backfill mixinHotEvents to true when
+        // we're already convinced this is a pre-W5-07 (and therefore pre-W4) config; otherwise
+        // we honor the explicit operator value. An operator who intentionally disables the
+        // kill-switch on a modern config keeps their setting.
+        boolean vMixinHotEvents      = w5_07AllFalse ? true  : a.mixinHotEvents();
         var newActions = new GuardianConfig.Actions(
                 a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(),
                 a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(),
@@ -223,12 +272,15 @@ public final class ConfigLoader {
                 vNaturalBreaks, vTreeGrowth, vMushroomGrowth, vVineGrowth,
                 vSculkSpread, vPortals, vWaterFlow, vLavaFlow,
                 vFireExtinguish, vCampfireStart, vHopperMetaFilter,
-                vDuplicateSuppression, vCancelledChat
+                vDuplicateSuppression, vCancelledChat,
+                vMixinHotEvents
         );
         return new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), newActions,
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
-                work.theme()
+                work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
+                work.theme(), work.language()
         );
     }
 

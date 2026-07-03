@@ -1,70 +1,63 @@
-# NIGHTSHIFT — v1.2.5 Perfection Wave
+# NIGHTSHIFT.md — v1.3.0 async/perf wave
 
-Status: **ACTIVE** — WeedMeister explicitly called out remaining parity/quality gaps after the initial v1.2.5 patch.
-Started: 2026-07-02
-Repo: `/root/DEV/VonixGuardian`
-Base HEAD: `bf97c33 fix(vg): harden 1.2.4 safety paths`
-Current working tree: dirty; contains partial v1.2.5 changes for rollback expansion, coalescer cap telemetry, and initial Fabric world-event mixins.
+Base commit: `2557a2e` (v1.2.7). Target: v1.3.0.
 
-## Goal
+## Scope
 
-Make VonixGuardian as close to "100% perfect" as is realistically verifiable for the next release: CoreProtect/Ledger-class fidelity, safe modded-server behavior, bounded rollback memory, aligned attribution policy, and real loader/runtime smoke coverage instead of compile-only confidence.
+Address ALL findings from the 2026-07-03 async/perf audit:
 
-## Non-negotiables
+- 3× P0 (real perf regressions on server thread)
+- 4× P1 (measurable improvement not user-visible today)
+- 3× P2 (minor cleanups)
 
-- CoreProtect source at `/root/staging/coreprotect-ref/CoreProtect` is ground truth for CP behavior claims.
-- Ledger source at `/root/staging/ledger-ref/Ledger` is secondary reference for modded/server ergonomics.
-- Cells stay thin; reusable logic belongs in `core/`.
-- Live player accounts are never mutated for testing.
-- Fabric / Forge / NeoForge parity claims require either GameTest/smoke proof or a documented blocker.
-- Large rollback must not materialize unbounded actions into memory without an explicit configured cap/progress/cancel path.
-- Modded entity attribution must be policy-aligned across Fabric and Forge/NeoForge; loader differences are implementation details, not behavior excuses.
+Plus 2 workstreams for architecture:
+- W4 — diagnostics + kill-switch config (new `actions.mixinHotEvents`)
+- W5 — explosion rollback fidelity (Option A: rollback engine expands affected-list)
 
-## Active lanes
+**Standing perf rules (WeedMeister 2026-07-03):**
+- No shortcuts. Full codebase to best possible state.
+- Zero allocation on server-thread hot paths where feasible.
+- Fail-closed under load — bounded work per tick.
+- Every P0/P1 gets a regression test.
+- Benchmark harness before + after for mixin waves.
+- CoreProtect semantics when applicable.
 
-| Lane | Priority | Scope | Deliverable | Status |
-|---|---:|---|---|---|
-| W6-A | P0 | Fabric fire/fade/spread/leaves/dispense/form mixins | Actual implemented mixins across 1.18.2/1.19.2/1.20.1/1.21.1, not just registered names; compile + targeted runtime feasibility notes | In progress |
-| W6-B | P0 | Loader smoke / GameTest | A runnable smoke or GameTest harness proving boot + representative event producers per loader/version where feasible | Pending |
-| W6-C | P0 | Large rollback memory safety | Configurable cap and/or streaming/progress/cancel design with regression tests; no silent unbounded materialization | Pending |
-| W6-D | P0 | Modded entity attribution alignment | Unified policy matrix + code changes so Fabric and Forge/NeoForge use equivalent attribution decisions | Pending |
-| W6-E | P1 | Explosion fidelity | Per-block old-state fidelity or explicit audit-only classification with rollback safety; compare Forge/Fabric paths | Pending |
-| W6-F | P1 | Container fidelity | Beyond chest-only Fabric snapshots: barrel/shulker/hopper and stale snapshot cleanup/caps/timeouts/status | Pending |
-| W6-G | P1 | Hanging/entity interaction fidelity | Player/non-player hanging place/break and entity-interaction parity across loaders | Pending |
-| W6-H | P1 | More-gap adversarial audit | CoreProtect/Ledger comparison for anything not already in lanes A-G: commands, config, API, permissions, query UX, rollback semantics, event coverage | Pending |
+## Task table
 
-## Current checkpoint
-
-Already verified before this wave:
-
-```bash
-./gradlew -PbuildProfile=coreonly :core:build
-./gradlew -PbuildProfile=forgeonly :mc-1.18.2:forge:compileJava :mc-1.19.2:forge:compileJava :mc-1.20.1:forge:compileJava :mc-1.21.1:neoforge:compileJava -x test
-./gradlew -PbuildProfile=mc1182 :mc-1.18.2:fabric:compileJava -x test
-./gradlew -PbuildProfile=mc1192 :mc-1.19.2:fabric:compileJava -x test
-./gradlew -PbuildProfile=mc1201 :mc-1.20.1:fabric:compileJava -x test
-./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:compileJava :mc-1.21.1:neoforge:compileJava -x test
-```
-
-All passed, but this is compile-only confidence. It does **not** prove runtime mixin application, GameTest coverage, or full parity.
-
-## Dispatch contract for audit subagents
-
-Subagents for this wave are read-only unless explicitly assigned an isolated worktree. If reading the dirty parent tree, they must not edit files. Every finding must include file:line evidence and a concrete fix recommendation. Use severity buckets:
-
-- CRITICAL — unsafe data loss/world mutation/crash/boot failure
-- HIGH — parity gap or feature advertised but not actually working
-- MEDIUM — fidelity/performance/observability gap
-- LOW — polish/docs/test-only improvement
-
-Each report should include `## Verified clean` so coverage is visible, not just bugs.
+| Wave | ID | Title | Files owned | Depends |
+|---|---|---|---|---|
+| A | W1a | FireBlockMixin tighten HEAD→RETURN + submit-on-actual-burn | `mc-*/*/src/main/java/**/mixin/FireBlockMixin.java` (8 cells) + `NeoForgeMixinBridge.java` / `FabricMixinBridge.java` (4 files) | — |
+| A | W1b | SpreadingSnowyDirtBlockMixin tighten to actual spread | `mc-*/*/src/main/java/**/mixin/SpreadingSnowyDirtBlockMixin.java` (8 cells) + bridges | — |
+| A | W1c | LeavesBlock/IceBlock/ConcretePowder/Dispenser mixin tighten (same pattern; smaller impact) | `mc-*/*/src/main/java/**/mixin/{LeavesBlockMixin,IceBlockMixin,ConcretePowderBlockMixin,DispenserBlockMixin}.java` | — |
+| A | W4 | Diagnostics + kill-switch config | `core/config/GuardianConfig.java` (+ Actions record widening — 5-step recipe), `core/config/ConfigLoader.java`, `core/diagnostics/GuardianStatus.java`, `core/queue/BatchedAsyncWriteQueue.java` | — |
+| A | W5 | Explosion rollback fidelity (Option A: expand affected-list on rollback) | `core/rollback/RollbackEngine.java` (explosion handling only), `core/action/Action.java` (parse helper), regression test | — |
+| B | W2 | Server-thread allocation cuts | `core/Guardian.java` (submit + seed), `core/queue/BatchedAsyncWriteQueue.java` (pre-populate CHMs), `mc-1.21.1/neoforge/**/NeoForgeEvents.java` (SPAWN_LIMIT de-box) | A |
+| B | W3 | Explosion chunking + EventGate fast-path | `mc-*/*/src/main/java/**/{NeoForge,Forge,Fabric}Events.java` (explosion off-thread), `core/Guardian.java` (submit fast-path), `core/event/EventGate.java` | B/W2 |
 
 ## Integration order
 
-1. Finish Fabric world-event mixin actual implementation and registration.
-2. Add tests/smoke harness scaffolding so later lanes can prove runtime behavior.
-3. Land rollback memory cap/progress/cancel in core with tests.
-4. Align attribution policy and then retest event lanes against it.
-5. Deep fidelity passes: explosion, containers, hanging, interaction.
-6. Run adversarial gap audit, fix CRITICAL/HIGH, defer remaining MEDIUM/LOW explicitly.
-7. Final local build matrix + jar build where feasible; only then release/tag/deploy.
+Wave A (parallel, 5 subagents): W1a, W1b, W1c, W4, W5.
+Wave B (serial after A): W2, then W3.
+
+Wave A subagents write to isolated file sets. W2 and W3 both touch `Guardian.java` → strict serial.
+
+## Per-wave definition of done
+
+Each subagent must:
+1. Deliver the code changes.
+2. Add JUnit regression tests in `core/src/test/java/**/`.
+3. Add a JMH-style micro-benchmark harness (Java `main`-runnable, no JMH dep) in `core/src/test/java/network/vonix/guardian/core/bench/` verifying before/after allocation OR wall-time reduction.
+4. Update `docs/PERF-NOTES-1.3.0.md` (new file, append) with a one-paragraph summary of the change + measured impact.
+5. `./gradlew -PbuildProfile=coreonly :core:build` MUST pass.
+6. For cell-touching waves also: `./gradlew -PbuildProfile=mc1211 :mc-1.21.1:neoforge:build -x test` MUST pass.
+
+## Version bumps
+
+`gradle.properties` `mod_version` → `1.3.0`.
+`core/src/main/java/network/vonix/guardian/core/api/GuardianAPI.java` `PLUGIN_VERSION` → `"1.3.0"`.
+`CHANGELOG.md` new `## [1.3.0] - 2026-07-03` under empty `## [Unreleased]`. Consolidated at wave close.
+
+## Deferred (post-1.3.0)
+
+- P1 (thread-local ActionBuilder pool → Valhalla value-class) requires benchmarks first; scoped for 1.3.1.
+- W3 EventGate off-thread refactor is intentionally minimal (fast-path bypass only); full move to worker thread deferred.

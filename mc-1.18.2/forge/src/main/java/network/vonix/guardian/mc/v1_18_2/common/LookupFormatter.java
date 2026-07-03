@@ -61,7 +61,7 @@ public final class LookupFormatter {
             case BLOCK_BREAK, BURN, FADE, BUCKET_FILL, LEAVES_DECAY,
                  PISTON_RETRACT, HANGING_BREAK              -> "broke";
             case BLOCK_PLACE, FORM, SPREAD, IGNITE, BUCKET_EMPTY,
-                 PISTON_EXTEND, HANGING_PLACE                -> "placed";
+                 PISTON_EXTEND, HANGING_PLACE, FLUID_FLOW    -> "placed";
             case CONTAINER_DEPOSIT, INVENTORY_DEPOSIT, HOPPER_PUSH -> "deposited";
             case CONTAINER_WITHDRAW, INVENTORY_WITHDRAW, HOPPER_PULL -> "withdrew";
             case ITEM_DROP        -> "dropped";

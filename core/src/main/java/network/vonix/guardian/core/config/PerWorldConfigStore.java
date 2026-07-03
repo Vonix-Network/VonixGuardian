@@ -53,6 +53,15 @@ public final class PerWorldConfigStore {
     private volatile GuardianConfig.Actions rootActions;
     private volatile Map<String, GuardianConfig.Actions> cache = Map.of();
     private volatile List<String> loadedFilenames = List.of();
+    /**
+     * v1.3.1 X6 (P3-7): last observed (path, mtime) for every file we've parsed since
+     * boot. When the same file re-appears with an unchanged mtime we skip the
+     * {@code readString + Gson.fromJson + merge} entirely and reuse the cached
+     * {@link GuardianConfig.Actions} snapshot. The map is rebuilt each reload from
+     * the freshly-scanned worlds/ dir, so files that vanish drop out naturally.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<Path, java.nio.file.attribute.FileTime> mtimeCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * @param rootActions the root {@code actions.*} block used as the fallback
@@ -77,8 +86,14 @@ public final class PerWorldConfigStore {
         if (worldsDir == null || !Files.isDirectory(worldsDir)) {
             this.cache = Map.copyOf(next);
             this.loadedFilenames = List.copyOf(filenames);
+            this.mtimeCache.clear();
             return;
         }
+        // v1.3.1 X6 (P3-7): track paths we saw this pass so we can prune the mtime
+        // cache of files that vanished between reloads. Prior snapshot is the
+        // authoritative fallback source when we skip an unchanged file.
+        java.util.Set<Path> seenPaths = new java.util.HashSet<>();
+        Map<String, GuardianConfig.Actions> prior = this.cache;
         try (Stream<Path> s = Files.list(worldsDir)) {
             s.filter(p -> p.getFileName().toString().endsWith(".json"))
              .sorted()
@@ -86,7 +101,18 @@ public final class PerWorldConfigStore {
                  String fname = p.getFileName().toString();
                  String key = fname.substring(0, fname.length() - ".json".length());
                  String worldId = key.replace("__", ":");
+                 seenPaths.add(p);
                  try {
+                     java.nio.file.attribute.FileTime mtime = Files.getLastModifiedTime(p);
+                     java.nio.file.attribute.FileTime prev = mtimeCache.get(p);
+                     GuardianConfig.Actions cached = prior.get(worldId);
+                     if (prev != null && prev.equals(mtime) && cached != null) {
+                         // Unchanged file — reuse the merged snapshot from the previous
+                         // reload. Skips the readString + Gson.fromJson + merge chain.
+                         next.put(worldId, cached);
+                         filenames.add(fname);
+                         return;
+                     }
                      String raw = Files.readString(p, StandardCharsets.UTF_8);
                      JsonElement je = LENIENT.fromJson(raw, JsonElement.class);
                      if (je == null || !je.isJsonObject()) {
@@ -96,6 +122,7 @@ public final class PerWorldConfigStore {
                      GuardianConfig.Actions merged = merge(rootActions, je.getAsJsonObject());
                      next.put(worldId, merged);
                      filenames.add(fname);
+                     mtimeCache.put(p, mtime);
                  } catch (IOException | JsonSyntaxException e) {
                      LOG.warn("Failed to load per-world override {}: {}", p, e.getMessage());
                  }
@@ -103,8 +130,20 @@ public final class PerWorldConfigStore {
         } catch (IOException e) {
             LOG.warn("Failed to scan per-world overrides dir {}: {}", worldsDir, e.getMessage());
         }
+        // Prune mtime entries for files that vanished.
+        mtimeCache.keySet().retainAll(seenPaths);
         this.cache = Map.copyOf(next);
         this.loadedFilenames = List.copyOf(filenames);
+    }
+
+    /**
+     * Force the next {@link #reload(Path)} to re-parse every file even if its mtime
+     * matches the cached value. Called after {@link #updateRoot(GuardianConfig.Actions)}
+     * — a root actions change invalidates the pre-merged snapshots.
+     * @since 1.3.1 (X6)
+     */
+    public void invalidateMtimeCache() {
+        mtimeCache.clear();
     }
 
     /**
@@ -114,6 +153,10 @@ public final class PerWorldConfigStore {
      */
     public void updateRoot(GuardianConfig.Actions newRoot) {
         this.rootActions = Objects.requireNonNull(newRoot, "newRoot");
+        // v1.3.1 X6 (P3-7): the merged Actions snapshots are computed against the
+        // OLD root; changing the root invalidates them, so the next reload must
+        // re-parse every file even if the mtime matches.
+        this.mtimeCache.clear();
     }
 
     /**
@@ -157,7 +200,21 @@ public final class PerWorldConfigStore {
             longVal(o, "entityBlockChangeCoalesceWindowMs", root.entityBlockChangeCoalesceWindowMs()),
             intVal(o, "entityBlockChangeMaxTracked", root.entityBlockChangeMaxTracked()),
             stringList(o, "entityChangeAllowlist", root.entityChangeAllowlist()),
-            bool(o, "entityChangeLogAllEntities", root.entityChangeLogAllEntities())
+            bool(o, "entityChangeLogAllEntities", root.entityChangeLogAllEntities()),
+            bool(o, "logNaturalBreaks", root.logNaturalBreaks()),
+            bool(o, "logTreeGrowth", root.logTreeGrowth()),
+            bool(o, "logMushroomGrowth", root.logMushroomGrowth()),
+            bool(o, "logVineGrowth", root.logVineGrowth()),
+            bool(o, "logSculkSpread", root.logSculkSpread()),
+            bool(o, "logPortals", root.logPortals()),
+            bool(o, "logWaterFlow", root.logWaterFlow()),
+            bool(o, "logLavaFlow", root.logLavaFlow()),
+            bool(o, "logFireExtinguish", root.logFireExtinguish()),
+            bool(o, "logCampfireStart", root.logCampfireStart()),
+            bool(o, "logHopperMetaFilter", root.logHopperMetaFilter()),
+            bool(o, "logDuplicateSuppression", root.logDuplicateSuppression()),
+            bool(o, "logCancelledChat", root.logCancelledChat()),
+            bool(o, "mixinHotEvents", root.mixinHotEvents())
         );
     }
 

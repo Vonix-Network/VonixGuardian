@@ -26,6 +26,7 @@ import java.util.Set;
  * @param lookup       {@code /vg lookup} UX settings
  * @param privacy      IP hashing settings for SESSION_JOIN rows
  * @param purge        minimum-age floors for {@code /vg purge}
+ * @param storage      storage-layer toggles (v1.3.1 X1); currently just NBT capture
  * @param theme        chat theme key; must be a known {@link ThemeRegistry} entry
  * @param language     player-facing message bundle key; one of {@link #KNOWN_LANGUAGES}
  * @since 0.1.0
@@ -39,14 +40,87 @@ public record GuardianConfig(
     Lookup lookup,
     Privacy privacy,
     Purge purge,
+    Storage storage,
+    Rollback rollback,
     String theme,
     String language
 ) {
 
     /**
-     * Backward-compat constructor for callers/tests written before {@code language} existed.
-     * Defaults {@code language} to {@code "en_us"}.
+     * Compact canonical constructor — defensively backfills {@link #rollback} when
+     * a legacy on-disk config predates the field (Gson deserialises absent JSON
+     * keys to {@code null}). Every other section is left as-is because
+     * {@link ConfigLoader#migrateForwardCompat} already handles them; this covers
+     * the X8 addition without requiring a companion loader change.
+     * @since 1.3.1 X8
      */
+    public GuardianConfig {
+        if (rollback == null) rollback = Rollback.defaults();
+    }
+
+    /**
+     * Backward-compat constructor for callers/tests written before {@code rollback} existed.
+     * Defaults {@code rollback} to {@link Rollback#defaults()}.
+     *
+     * @since 1.3.1 X8
+     * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree caller/test to the
+     *     12-arg canonical constructor. Kept for one release cycle for out-of-tree consumers;
+     *     slated for removal in a subsequent minor. Prefer the canonical 12-arg constructor
+     *     or {@link #defaults()} + {@code with*} helpers.
+     */
+    @Deprecated(since = "1.3.6", forRemoval = true)
+    public GuardianConfig(
+        Database database,
+        Queue queue,
+        LogFile logFile,
+        Actions actions,
+        Permissions permissions,
+        Lookup lookup,
+        Privacy privacy,
+        Purge purge,
+        Storage storage,
+        String theme,
+        String language
+    ) {
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
+             storage, Rollback.defaults(), theme, language);
+    }
+
+    /**
+     * Backward-compat constructor for callers/tests written before {@code storage} existed.
+     * Defaults {@code storage} to {@link Storage#defaults()} and {@code rollback} to
+     * {@link Rollback#defaults()}.
+     *
+     * @since 1.3.1
+     * @deprecated since 1.3.6 — see the 11-arg overload's deprecation note. Prefer the canonical
+     *     12-arg constructor.
+     */
+    @Deprecated(since = "1.3.6", forRemoval = true)
+    public GuardianConfig(
+        Database database,
+        Queue queue,
+        LogFile logFile,
+        Actions actions,
+        Permissions permissions,
+        Lookup lookup,
+        Privacy privacy,
+        Purge purge,
+        String theme,
+        String language
+    ) {
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
+             Storage.defaults(), Rollback.defaults(), theme, language);
+    }
+
+    /**
+     * Backward-compat constructor for callers/tests written before {@code language} existed.
+     * Defaults {@code language} to {@code "en_us"}, {@code storage} to {@link Storage#defaults()},
+     * and {@code rollback} to {@link Rollback#defaults()}.
+     *
+     * @deprecated since 1.3.6 — see the 11-arg overload's deprecation note. Prefer the canonical
+     *     12-arg constructor.
+     */
+    @Deprecated(since = "1.3.6", forRemoval = true)
     public GuardianConfig(
         Database database,
         Queue queue,
@@ -58,7 +132,8 @@ public record GuardianConfig(
         Purge purge,
         String theme
     ) {
-        this(database, queue, logFile, actions, permissions, lookup, privacy, purge, theme, "en_us");
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
+             Storage.defaults(), Rollback.defaults(), theme, "en_us");
     }
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianConfig.class);
@@ -98,11 +173,49 @@ public record GuardianConfig(
      *                          {@code /vg migrate-db}.
      */
     public record Database(String type, String file, String jdbcUrl, String user, String password,
-                           MigrationTarget migrationTarget) {
+                           MigrationTarget migrationTarget, Hikari hikari) {
 
-        /** Backward-compat constructor for callers/tests written before {@code migrationTarget} existed. */
+        /**
+         * Backward-compat constructor for callers/tests written before {@code migrationTarget} existed.
+         *
+         * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree call site to the 7-arg
+         *     canonical constructor. Kept for one release cycle for out-of-tree consumers.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password) {
-            this(type, file, jdbcUrl, user, password, null);
+            this(type, file, jdbcUrl, user, password, null, Hikari.defaults());
+        }
+
+        /**
+         * Backward-compat constructor for callers/tests written before {@code hikari} existed (v1.3.1 X6).
+         *
+         * @deprecated since 1.3.6 — see the 5-arg overload's deprecation note.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
+        public Database(String type, String file, String jdbcUrl, String user, String password,
+                        MigrationTarget migrationTarget) {
+            this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults());
+        }
+    }
+
+    /**
+     * HikariCP connection-pool tuning (v1.3.1 X6). Ships with sensible defaults matching
+     * HikariCP's own out-of-the-box behaviour except for {@code maxPoolSize=10}, which is
+     * the historical hard-coded value from pre-X6.
+     *
+     * @param maxPoolSize          max connections in the pool. Default 10.
+     * @param connectionTimeoutMs  how long a borrower waits for a connection before giving up.
+     *                             Default 30_000 (HikariCP default).
+     * @param maxLifetimeMs        max lifetime of a connection in the pool before it's recycled.
+     *                             Default 1_800_000 (30 min, HikariCP default).
+     * @param leakDetectionMs      threshold to warn about connection leaks. {@code 0} disables.
+     *                             Default 0 (disabled — enable for DAO regression hunting).
+     * @since 1.3.1
+     */
+    public record Hikari(int maxPoolSize, long connectionTimeoutMs, long maxLifetimeMs, long leakDetectionMs) {
+        /** Canonical safe defaults: pool=10, 30s connect timeout, 30min lifetime, no leak detection. */
+        public static Hikari defaults() {
+            return new Hikari(10, 30_000L, 1_800_000L, 0L);
         }
     }
 
@@ -130,12 +243,31 @@ public record GuardianConfig(
     /**
      * JSON-Lines audit log file settings.
      *
-     * @param enabled        whether the rolling file is written
-     * @param directory      relative or absolute directory containing daily files
-     * @param gzipRotated    gzip yesterday's file on rotation
-     * @param retentionDays  retention horizon; {@code 0} = keep forever
+     * @param enabled            whether the rolling file is written
+     * @param directory          relative or absolute directory containing daily files
+     * @param gzipRotated        gzip yesterday's file on rotation
+     * @param retentionDays      retention horizon; {@code 0} = keep forever
+     * @param forceSyncOnFlush   v1.3.1 X6 (P3-4): call {@code FileChannel.force(false)}
+     *                           on every flush. Default {@code true}. Operators who
+     *                           store the audit log on slow/remote storage (NFS,
+     *                           network drives) and accept a &lt;flushIntervalMs&gt;
+     *                           durability window on JVM crash can set this to
+     *                           {@code false} to skip the per-batch fsync.
      */
-    public record LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays) {}
+    public record LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays,
+                          boolean forceSyncOnFlush) {
+
+        /**
+         * Backward-compat constructor pre-X6 (defaults forceSyncOnFlush=true).
+         *
+         * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree call site to the 5-arg
+         *     canonical constructor. Kept for one release cycle for out-of-tree consumers.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
+        public LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays) {
+            this(enabled, directory, gzipRotated, retentionDays, true);
+        }
+    }
 
     /**
      * Per-category logging toggles and exclusion lists.
@@ -200,6 +332,14 @@ public record GuardianConfig(
      *                               Default {@code true}. Added W5-07.
      * @param logCancelledChat       CP-parity: record chat events even when a listener cancels them
      *                               (e.g. spam-filter plugins). Default {@code false}. Added W5-07.
+     * @param mixinHotEvents         Master kill-switch for hot-tick mixin-sourced events (fire spread,
+     *                               natural block form/fade/decay/spread, dispenser mixins). When
+     *                               {@code false}, {@link network.vonix.guardian.core.Guardian#submit}
+     *                               short-circuits any action whose {@code sourceTag} begins with
+     *                               {@code "#fire"}, {@code "#natural"}, or {@code "#dispenser"}
+     *                               before it enters the gate/queue. Operators toggle this off under
+     *                               load when a mixin pipeline is drowning the queue. Default
+     *                               {@code true}. Added v1.3.0 W4.
      */
     public record Actions(
         boolean logBlocks,
@@ -233,7 +373,9 @@ public record GuardianConfig(
         boolean logCampfireStart,
         boolean logHopperMetaFilter,
         boolean logDuplicateSuppression,
-        boolean logCancelledChat
+        boolean logCancelledChat,
+        // ---- v1.3.0 W4: kill-switch for hot-tick mixin-sourced events ----
+        boolean mixinHotEvents
     ) {
         /**
          * Backward-compat constructor for callers/tests written before the W5-07 CP-parity toggles
@@ -288,7 +430,66 @@ public record GuardianConfig(
                 true,  // logCampfireStart
                 false, // logHopperMetaFilter — opt-in dedup
                 true,  // logDuplicateSuppression
-                false  // logCancelledChat    — opt-in
+                false, // logCancelledChat    — opt-in
+                true   // mixinHotEvents      — W4 default ON (kill-switch is opt-out)
+            );
+        }
+
+        /**
+         * Backward-compat 31-arg constructor for callers/tests written before v1.3.0 W4 added
+         * {@code mixinHotEvents}. Delegates to the canonical 32-arg constructor with
+         * {@code mixinHotEvents=true} (the safe default matching pre-W4 behaviour where the
+         * mixin pipeline was always live).
+         *
+         * @deprecated Prefer the canonical 32-arg constructor. This shim exists so cell/test
+         *     code that predates W4 keeps compiling until every call site is updated (tracked
+         *     as a v1.3.x cleanup — same policy as the W5-07 18-arg shim above).
+         */
+        @Deprecated
+        public Actions(
+            boolean logBlocks,
+            boolean logContainers,
+            boolean logItems,
+            boolean logEntities,
+            boolean logExplosions,
+            boolean logChat,
+            boolean logCommands,
+            boolean logSessions,
+            boolean logSigns,
+            boolean logInteractions,
+            boolean logWorldEvents,
+            List<String> worldBlacklist,
+            List<String> blockBlacklist,
+            List<String> sourceBlacklist,
+            long entityBlockChangeCoalesceWindowMs,
+            int entityBlockChangeMaxTracked,
+            List<String> entityChangeAllowlist,
+            boolean entityChangeLogAllEntities,
+            boolean logNaturalBreaks,
+            boolean logTreeGrowth,
+            boolean logMushroomGrowth,
+            boolean logVineGrowth,
+            boolean logSculkSpread,
+            boolean logPortals,
+            boolean logWaterFlow,
+            boolean logLavaFlow,
+            boolean logFireExtinguish,
+            boolean logCampfireStart,
+            boolean logHopperMetaFilter,
+            boolean logDuplicateSuppression,
+            boolean logCancelledChat
+        ) {
+            this(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                true   // v1.3.0 W4: mixinHotEvents default ON
             );
         }
     }
@@ -310,7 +511,13 @@ public record GuardianConfig(
         int defaultOpLevel,
         java.util.Map<String, Integer> perNodeOpLevels
     ) {
-        /** Backward-compat constructor for callers/tests written before {@code perNodeOpLevels} existed. */
+        /**
+         * Backward-compat constructor for callers/tests written before {@code perNodeOpLevels} existed.
+         *
+         * @deprecated since 1.3.6 — v1.3.6 CC1 canonicalized every in-tree call site to the 3-arg
+         *     canonical constructor. Kept for one release cycle for out-of-tree consumers.
+         */
+        @Deprecated(since = "1.3.6", forRemoval = true)
         public Permissions(boolean useLuckPerms, int defaultOpLevel) {
             this(useLuckPerms, defaultOpLevel, java.util.Map.of());
         }
@@ -363,6 +570,62 @@ public record GuardianConfig(
     }
 
     /**
+     * Storage-layer toggles (v1.3.1 X1). Separate from {@link Database} because these are
+     * about <em>what</em> gets persisted alongside the row, not <em>which backend</em>.
+     *
+     * @param persistNbt if {@code true}, event producers on the loader side capture
+     *                   full block-state properties + raw BE / item / entity NBT bytes
+     *                   and hand them to the {@link EventSubmitter} NBT-fidelity
+     *                   overloads. The DAO always reads NBT columns if present, so
+     *                   downgrading this toggle to {@code false} does not lose
+     *                   already-captured NBT for historical rows. <b>Default:
+     *                   {@code false}</b> — CoreProtect / Ledger parity for
+     *                   waterlogged fences, named enchanted swords, chest contents,
+     *                   named/tamed mobs is only meaningful for operators who want
+     *                   it, and the extra bytes-on-disk cost per event is significant
+     *                   on high-throughput servers (chest snapshots alone can be many
+     *                   KB per BLOCK_BREAK). Opt in by setting {@code true}.
+     * @since 1.3.1
+     */
+    public record Storage(boolean persistNbt) {
+        /** Canonical safe default: no NBT capture. */
+        public static Storage defaults() {
+            return new Storage(false);
+        }
+    }
+
+    /**
+     * Rollback engine tuning knobs.
+     *
+     * @param explosionSupplementalReach block-radius padding added to the primary spatial
+     *                                   predicate when the {@link
+     *                                   network.vonix.guardian.core.rollback.RollbackEngine}
+     *                                   W5 supplemental EXPLOSION scan runs. The primary
+     *                                   scan filters EXPLOSION rows by blast-center coord
+     *                                   against the caller's radius; the supplemental scan
+     *                                   catches blasts whose center sits outside the radius
+     *                                   but whose affected-list reaches into it. Instead of
+     *                                   dropping the spatial predicate entirely (which
+     *                                   turned the supplemental into an unbounded
+     *                                   "every EXPLOSION row in this world in the time
+     *                                   window" scan on griefing-storm servers), the DAO
+     *                                   predicate stays but is padded outward by this many
+     *                                   blocks. 16 mirrors vanilla's TNT reach; raise it
+     *                                   for modded mega-explosives whose affected radius
+     *                                   can exceed vanilla. Row admission still uses
+     *                                   {@code ExplosionAffectedList.anyWithinRadius},
+     *                                   so widening this only relaxes the pre-filter — it
+     *                                   never over-admits rows.
+     * @since 1.3.1 X8
+     */
+    public record Rollback(int explosionSupplementalReach) {
+        /** Canonical default: 16 blocks (matches vanilla TNT reach). */
+        public static Rollback defaults() {
+            return new Rollback(16);
+        }
+    }
+
+    /**
      * Build the canonical default config matching README &sect; Configuration.
      *
      * @return a freshly-populated default config
@@ -380,7 +643,7 @@ public record GuardianConfig(
         return new GuardianConfig(
             new Database("sqlite", "vonixguardian.db", null, null, null),
             new Queue(50_000, 5_000L, 1_000),
-            new LogFile(true, "logs/vonixguardian", true, 30),
+            new LogFile(true, "logs/vonixguardian", true, 30, true),
             new Actions(
                 true, true, true, true, true, true, true, true, true,
                 true, true,
@@ -401,12 +664,15 @@ public record GuardianConfig(
                 true,   // logCampfireStart           — CP defaults ON
                 false,  // logHopperMetaFilter        — opt-in NBT-aware dedup; costs an NBT compare per hopper tick
                 true,   // logDuplicateSuppression    — CP defaults ON (collapse dupe rows)
-                false   // logCancelledChat           — opt-in; log even chat cancelled by other plugins
+                false,  // logCancelledChat           — opt-in; log even chat cancelled by other plugins
+                true    // mixinHotEvents             — W4 kill-switch defaults ON (mixin pipeline live)
             ),
             new Permissions(true, 3, java.util.Map.of()),
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
             new Purge(86_400L, 2_592_000L, 0L, "03:30"),
+            Storage.defaults(),
+            Rollback.defaults(),
             "aqua",
             "en_us"
         );
@@ -481,6 +747,24 @@ public record GuardianConfig(
                         errors.add("database.migrationTarget.password: must be non-null for "
                             + mt.type + " backend");
                     }
+                }
+            }
+            if (database.hikari != null) {
+                Hikari h = database.hikari;
+                if (h.maxPoolSize < 1 || h.maxPoolSize > 256) {
+                    errors.add("database.hikari.maxPoolSize: must be in [1,256] (got " + h.maxPoolSize + ")");
+                }
+                if (h.connectionTimeoutMs < 250L) {
+                    errors.add("database.hikari.connectionTimeoutMs: must be >= 250 (got "
+                            + h.connectionTimeoutMs + ")");
+                }
+                if (h.maxLifetimeMs != 0L && h.maxLifetimeMs < 30_000L) {
+                    errors.add("database.hikari.maxLifetimeMs: must be 0 (disabled) or >= 30000 (got "
+                            + h.maxLifetimeMs + ")");
+                }
+                if (h.leakDetectionMs != 0L && h.leakDetectionMs < 2_000L) {
+                    errors.add("database.hikari.leakDetectionMs: must be 0 (disabled) or >= 2000 (got "
+                            + h.leakDetectionMs + ")");
                 }
             }
         }
@@ -617,6 +901,24 @@ public record GuardianConfig(
 
         if (theme == null || !KNOWN_THEMES.contains(theme)) {
             errors.add("theme: must be one of " + KNOWN_THEMES + " (got " + theme + ")");
+        }
+
+        if (storage == null) {
+            errors.add("storage: section missing");
+        }
+
+        if (rollback == null) {
+            errors.add("rollback: section missing");
+        } else {
+            if (rollback.explosionSupplementalReach < 0) {
+                errors.add("rollback.explosionSupplementalReach: must be >= 0 (got "
+                    + rollback.explosionSupplementalReach + ")");
+            } else if (rollback.explosionSupplementalReach > 1024) {
+                // 1024 is a sanity cap — beyond that the supplemental scan becomes
+                // effectively unbounded again, which is exactly what X8 fixes.
+                errors.add("rollback.explosionSupplementalReach: must be <= 1024 (got "
+                    + rollback.explosionSupplementalReach + ")");
+            }
         }
 
         if (language == null || !KNOWN_LANGUAGES.contains(language)) {
