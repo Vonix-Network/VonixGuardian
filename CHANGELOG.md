@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-07-03
+
+### Fixed
+
+- **Async command output now reaches the player** — `/vg lookup`, `/vg rollback`, `/vg restore`, `/vg purge`, `/vg undo`, `/vg status`, `/vg config`, `/vg consumer`, and `/vg migrate-db` all resolve the calling player by UUID inside `server.execute(...)` and deliver via the per-version `sendSystemMessage` / `sendMessage(Component, UUID)` API. Previously the captured `CommandSourceStack` was stale by the time the async worker returned, so `sendSuccess` fell back to the server console and players saw nothing in chat. Applies to all 8 cells (Fabric + Forge/NeoForge across 1.18.2, 1.19.2, 1.20.1, 1.21.1).
+- **Bare-command usage instead of Brigadier `<--[HERE]`** — running `/vg`, `/vg lookup`, `/vg rollback`, `/vg restore`, `/vg purge`, or any alias (`l`, `rb`, `rs`) with no arguments now prints a compact 3-line CoreProtect-style hint (usage + examples + filter-token summary) instead of the cryptic Brigadier `Unknown or incomplete command` error.
+- **`/vg status` output now reaches the player's chat**, not just the server console. Same underlying fix as the async paths — `sendSystemMessage` / `sendMessage` is used when a player is present.
+
+### Changed
+
+- **Inspector click radius widened from `r:0` to `r:2`** — left-clicking a block with `/vg inspect` on now returns the 5×5×5 window around the clicked block (matching CoreProtect's click semantics) instead of only exact-match rows on the clicked block, which almost always came back empty.
+- **Empty result messaging** — `/vg lookup` with zero rows now prints `No results found. Try a wider radius (r:20+) or longer time (t:24h+), or check filter tokens.` `/vg rollback` and `/vg restore` returning 0 affected actions print an explosion-aware hint: explosions record their blast CENTER, so try r:20+ or move to the source of the damage.
+- **Inspector toggle line clarity** — the ENABLED/disabled toggle lines now go through the theme's success/muted colors distinctly so operators can see at a glance which mode they're in.
+
+
 ## [1.2.6] - 2026-07-03
 
 ### Added
