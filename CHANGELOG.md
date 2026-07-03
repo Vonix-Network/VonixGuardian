@@ -10,13 +10,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.0] - 2026-07-03
 
 **Async / server-thread performance wave.** Full v1.3.0 release notes covering
-all five workstreams that landed against `feature/v1.3.0-integration`:
+all six workstreams that landed against `feature/v1.3.0-integration`:
 W1a (fire mixin tighten), W1b (spread mixin tighten), W1c (other natural / dispenser mixins),
-W2 (server-thread allocation cuts + version bump — this section is the release commit),
+W2 (server-thread allocation cuts + version bump),
+W3 (explosion off-thread join + EventGate fast-path + P2 cleanups),
 W4 (mixin diagnostics + kill-switch config), and W5 (explosion rollback fidelity).
 
 ### Added
 
+- **W3 — Off-thread `ExplosionJoinWorker`.** New core class
+  `network.vonix.guardian.core.event.ExplosionJoinWorker`, exposed via
+  `Guardian.explosionJoinWorker()`. Loader-side `onExplosionDetonate`
+  (all 4 Forge/NeoForge cells) and `FabricMixinBridge.explosion(...)`
+  (all 4 Fabric cells) now capture affected-block coordinates + resolved
+  block ids into a pooled `ThreadLocal<ExplosionScratch>` on the server
+  thread and hand the `StringBuilder` join + queue submit to a daemon
+  worker. A 5,000-block TNT chain that previously stalled the server
+  thread for tens of ms now returns in single-digit µs on the caller.
+  Regression: `ExplosionJoinWorkerTest` (6 cases) +
+  `BenchExplosionAffectedListJoin` (measured 94.24 % server-thread wall-time
+  reduction; target ≥ 90 %).
+- **W3 — Chunked EXPLOSION rows.** The join worker splits large explosions
+  into multiple EXPLOSION rows of ≤ 96 entries each, sharing the same
+  (center, sourceTag, actor). Prevents the pre-1.3.0 silent truncation at
+  the 4096-char storage cap. W5's rollback engine already iterates the
+  affected-list per row so chunking is transparent to `/vg rollback`.
+  Regression: `ExplosionAffectedListChunkedParsingTest`.
+- **W3 — `EventGate.addInternalHook(EventHook)`.** New opt-in hook list
+  consulted for mixin-authored events (`#fire`, `#natural`, `#dispenser`
+  sourceTag prefixes) that bypass the standard hook chain. Observers that
+  genuinely need visibility to hot-tick submits register here; the standard
+  chain (`PerWorldEventHook`, `BlacklistFileHook`, `PreLogEventHook`) never
+  sees these events. New counter: `EventGate.internalBypassCount()`.
+  Regression: `EventGateFastPathTest` (7 cases).
 - **W4 — Diagnostics + operator kill-switch (`actions.mixinHotEvents`).** New
   boolean config field (default `true`) that, when set to `false`, drops any
   submission whose `sourceTag` was authored by one of the W1a/b/c hot-tick
@@ -81,6 +107,25 @@ W4 (mixin diagnostics + kill-switch config), and W5 (explosion rollback fidelity
   drops the action before any type check, blacklist lookup, or hook-chain
   traversal. Behaviour is identical; the surface is smaller.
   Regression: `MixinHotEventsGateTest`.
+- **W3 — `onExplosionDetonate` moved off the server thread.** The per-block
+  `getBlockState` + `Registry.BLOCK.getKey().toString()` calls stay on the
+  server thread (they are not documented as thread-safe — Prism / Ledger /
+  CoreProtect all agree), but the `StringBuilder` join and the
+  `EventSubmitter.submitExplosion(...)` enqueue move to a daemon executor.
+  Applied consistently to all 4 Forge/NeoForge cells' `*Events.java` and all
+  4 Fabric cells' `FabricMixinBridge.explosion(...)`. Silent 4 KiB
+  truncation is gone — large explosions now emit multiple chunked
+  EXPLOSION rows (see Added).
+- **W3 — `onRightClickBlock` reads `BlockState` once.** The 4 Forge/NeoForge
+  cells now capture the block state at the top of the handler and reuse it
+  across the container-entity gate + CLICK submit. The container-entity
+  check is now guarded by `state.getBlock() instanceof EntityBlock`, so
+  right-clicks on plain terrain no longer hit the chunk `BlockEntity` map.
+- **W3 — `cleanupContainerSnapshots` amortized.** The full O(n) TTL scan now
+  runs at most every 32 opens; the bounded over-cap eviction still runs on
+  every open, so the snapshot map never grows unboundedly. Applied
+  consistently across all 4 Forge/NeoForge cells and all 4 Fabric bridges.
+  Regression: `ContainerCleanupAmortizationTest`.
 - **`Actions` config record widened to 32 fields** (adds `mixinHotEvents`,
   default `true`). Pre-existing 31-arg and 18-arg deprecated constructors
   keep every previous test call site source-compatible.
@@ -103,6 +148,22 @@ W4 (mixin diagnostics + kill-switch config), and W5 (explosion rollback fidelity
 - **Mixin kill-switch response is O(1)** — a disabled `mixinHotEvents`
   drops a hot-path action in 3 `startsWith` probes without touching the
   hook chain.
+- **W3 — Server-thread wall-time on explosion detonate reduced 94 %**
+  (`BenchExplosionAffectedListJoin`, 5,000-block × 200 iterations):
+  11,391 µs → 656 µs total caller time (56.9 µs → 3.3 µs per explosion).
+  Target ≥ 90 % met. A 5,000-block TNT chain that previously stalled the
+  server thread for tens of ms now hands the join off in single-digit µs.
+- **W3 — EventGate fast-path for internal (mixin-authored) events** skips
+  the standard hook chain entirely (`PerWorldEventHook`,
+  `BlacklistFileHook`, `PreLogEventHook`). Non-mixin actions still traverse
+  the full chain. Counter surfaced as `EventGate.internalBypassCount()`
+  for diagnostics.
+- **W3 — `onRightClickBlock` reads `BlockState` once** across container-entity
+  gate + CLICK submit; container-entity check now uses `state.getBlock()
+  instanceof EntityBlock` so plain-terrain RCs skip the chunk BE-map lookup.
+- **W3 — `cleanupContainerSnapshots` runs the O(n) TTL scan at most every
+  32 opens** (was: every open). Bounded over-cap eviction still runs on
+  every open, so the snapshot map never grows unboundedly.
 
 ## [1.2.7] - 2026-07-03
 
