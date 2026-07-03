@@ -4,6 +4,23 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+
+
+
+    /** v1.3.1 X4 — actor sentinel for portal-frame block creation. */
+    public static final String PORTAL         = "#portal";
+    /**
+     * v1.3.1 X4 — hopper/dropper-driven container transfers with no player
+     * attribution (vanilla hopper pull/push). Kept distinct from
+     * {@link #PISTON} to keep source classification honest.
+     */
+    public static final String HOPPER         = "#hopper";
+    /**
+     * v1.3.1 X4 — actor sentinel for {@code /fill} / {@code /setblock} per-block
+     * audit rows emitted when the source is a non-player (e.g. command block,
+     * automation). Player-invoked commands use the player's UUID/name directly.
+     */
+    public static final String COMMAND        = "#command";
 /**
  * Frozen registry of sentinel actor-name strings used when no real player UUID
  * exists for the source of an event (creepers, lava, pistons, etc.).
