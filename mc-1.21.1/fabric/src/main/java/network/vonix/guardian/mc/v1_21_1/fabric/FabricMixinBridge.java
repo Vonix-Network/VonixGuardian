@@ -477,6 +477,66 @@ public final class FabricMixinBridge {
 
     // ================================================================== helpers
 
+    // ================================================================== v1.3.1 X2 entity dispatchers
+
+    /**
+     * v1.3.1 X2: entity-caused block break (EnderDragon, Ravager,
+     * FallingBlockEntity fall-side). Produces ENTITY_CHANGE_BLOCK with a
+     * mob-scoped {@code actorName} from {@link EntitySentinel} and one of the
+     * {@code EntitySentinel.SRC_*} source tags.
+     */
+    public static void entityBreak(Entity entity, Level level, BlockPos pos, BlockState oldState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null) return;
+            String actor = EntitySentinel.of(entity);
+            s.submitEntityChangeBlock(null, actor,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), "minecraft:air",
+                    sourceTag == null ? actor : sourceTag);
+        } catch (Throwable t) {
+            warn("entityBreak", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X2: entity-caused block place (SnowGolem trail,
+     * FallingBlockEntity land, LightningBolt fire).
+     */
+    public static void entityPlace(Entity entity, Level level, BlockPos pos, BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || newState == null) return;
+            String actor = EntitySentinel.of(entity);
+            s.submitEntityChangeBlock(null, actor,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    "minecraft:air", blockId(newState),
+                    sourceTag == null ? actor : sourceTag);
+        } catch (Throwable t) {
+            warn("entityPlace", t);
+        }
+    }
+
+    /**
+     * v1.3.1 X2: Silverfish infest — full old→new state change.
+     */
+    public static void entityChange(Entity entity, Level level, BlockPos pos, BlockState oldState, BlockState newState, String sourceTag) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null || oldState == null || newState == null) return;
+            String actor = EntitySentinel.of(entity);
+            s.submitEntityChangeBlock(null, actor,
+                    WorldKey.of(level),
+                    pos.getX(), pos.getY(), pos.getZ(),
+                    blockId(oldState), blockId(newState),
+                    sourceTag == null ? actor : sourceTag);
+        } catch (Throwable t) {
+            warn("entityChange", t);
+        }
+    }
+
     public static String blockId(BlockState state) {
         try {
             ResourceLocation rl = BuiltInRegistries.BLOCK.getKey(state.getBlock());

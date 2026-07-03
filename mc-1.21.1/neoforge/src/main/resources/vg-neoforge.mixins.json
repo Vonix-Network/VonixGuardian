@@ -7,10 +7,16 @@
   "mixins": [
     "BucketItemMixin",
     "DispenserBlockMixin",
+    "EnderDragonMixin",
+    "FallingBlockEntityMixin",
     "FireBlockMixin",
     "IceBlockMixin",
     "LeavesBlockMixin",
+    "LightningBoltMixin",
     "MilkBucketItemMixin",
+    "RavagerMixin",
+    "SilverfishMixin",
+    "SnowGolemMixin",
     "SpreadingSnowyDirtBlockMixin"
   ],
   "server": [],

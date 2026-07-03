@@ -108,3 +108,129 @@ on any backend.
   Track for v1.3.1 X6.
 - The eight `WorldMutator` cells will need per-cell overrides in X-β; the
   interface default keeps them source-compatible until then.
+
+## Wave X2 — Entity-caused block-change dedicated mixins (Ledger parity)
+
+**Scope.** Six new per-entity mixins across every cell (four Fabric cells, three
+Forge cells, one NeoForge cell) targeting the exact vanilla mutation points
+Ledger already intercepts:
+
+| Mixin                       | Vanilla target                                                          | Ledger reference (`entities/*`)          | Source tag       |
+|-----------------------------|-------------------------------------------------------------------------|-------------------------------------------|------------------|
+| `EnderDragonMixin`          | `EnderDragon.checkWalls` → `ServerLevel.removeBlock`                    | `EnderDragonMixin.java:16-30`             | `#enderdragon`   |
+| `RavagerMixin`              | `Ravager.aiStep` → `Level.destroyBlock`                                 | `RavagerMixin.java:14-19`                 | `#ravager`       |
+| `SnowGolemMixin`            | `SnowGolem.aiStep` → `Level.setBlockAndUpdate`                          | `SnowGolemMixin.java:24-31`               | `#snow_golem`    |
+| `FallingBlockEntityMixin`   | `FallingBlockEntity.fall` + `.tick` → `Level.setBlock` (both sides)     | `FallingBlockEntityMixin.java:22-42`      | `#gravity`       |
+| `LightningBoltMixin`        | `LightningBolt.spawnFire` → `ServerLevel.setBlockAndUpdate` (both ords) | `LightningBoltMixin.java:16-32`           | `#lightning`     |
+| `SilverfishMixin`           | `Silverfish$SilverfishMergeWithStoneGoal.start` → `LevelAccessor.setBlock` | `silverfish/WanderAndInfestGoalMixin.java` | `#silverfish`  |
+
+Every mixin follows the v1.3.0 W1a/W1b/W1c tightening pattern — a guarded
+`@Redirect` on the actual mutation invoke, submitting only when the wrapped
+call returned `true`. Non-mutating fallthroughs (protected regions, air, hot
+biomes, already-fire blocks) produce zero rows.
+
+**Where the row goes.** All six mixins route through the loader-side
+`*MixinBridge.entityBreak` / `entityPlace` / `entityChange` dispatchers,
+which produce an `ENTITY_CHANGE_BLOCK` action carrying:
+
+- `actorUuid = null` — mob source, no player UUID.
+- `actorName = "#mob:<ns>:<path>"` from `EntitySentinel.of(entity)`.
+- `sourceTag = "#enderdragon" | "#ravager" | "#snow_golem" | "#gravity" | "#lightning" | "#silverfish"`.
+- `oldBlockId`, `newBlockId` reflect actual pre/post state (NOT the vanilla
+  default).
+
+Operators filtering `/vg lookup a:#gravity` see falling-block trails cleanly
+attributed. Ledger's `/ledger inspect` shows the same tags on the same
+positions, so mixed-fleet analytics stay consistent.
+
+**Coverage lift.**
+
+- **EnderDragon.** Before X2: the dragon's head-block-eater was captured
+  only by the aggregate `LivingDestroyBlockEvent` on Forge/NeoForge and
+  missed entirely on Fabric. After X2: 8/8 cells produce a row per broken
+  block with `sourceTag=#enderdragon`.
+- **Ravager.** Before X2: aggregate `LivingDestroyBlockEvent` catches the
+  break but with a generic entity sentinel; on Fabric the pre-W5-08
+  `LivingDestroyBlockMixin` also catches it. After X2: `#ravager` tag
+  makes crop-farm griefing filterable in one query.
+- **SnowGolem.** Before X2: no coverage — the aiStep `setBlockAndUpdate`
+  isn't tied to any Forge/Fabric event and doesn't route through
+  `LivingDestroyBlockEvent`. After X2: 8/8 cells produce a place row
+  per snow layer.
+- **FallingBlockEntity.** Before X2: partial coverage on Forge/NeoForge
+  via `EntityChangeBlockEvent`, but the break side and land side were
+  fused into one row that didn't distinguish source origin from landing
+  destination. Fabric had zero coverage. After X2: both halves fire
+  separately, both tagged `#gravity`, both attributable to the falling
+  block entity by type.
+- **LightningBolt.** Before X2: no producer for `spawnFire` — the ignite
+  showed up under the aggregate FireBlock ignite path with sentinel
+  `#fire`, losing the lightning-strike attribution. After X2: 8/8 cells
+  tag the ignite `#lightning` with actor `#mob:minecraft:lightning_bolt`.
+- **Silverfish.** Before X2: infest was a pure `setBlock` (stone →
+  infested_stone), invisible to `LivingDestroyBlockEvent` and to every
+  other producer. Rollback showed missing rows anywhere silverfish had
+  colonised. After X2: 8/8 cells submit a full `oldBlockId → newBlockId`
+  row.
+
+**Hot-path cost.** All six mixins are pure guarded redirects — one
+`getBlockState` at the guard site (already required to attribute the
+outgoing row correctly), one bridge call. No `String.format`, no
+`LOG.warn`. Bridge dispatchers reuse the existing `ThreadLocal` scratch
+builder path via `Guardian.seed(...)`. Steady-state producer allocation
+budget: zero after warmup, same as the W2 baseline. No JMH bench added
+for this wave — the mutation events fire at O(entity-count × tick), not
+O(random-tick × block-count), so allocation dominance is the wrong lens.
+A single Ravager clears leaves at ~1-4 blocks/tick; even a raid party is
+under 100 events/second.
+
+**Regression tests.** Six new JUnit classes under
+`core/src/test/java/network/vonix/guardian/core/mixinperf/`:
+
+- `EnderDragonBlockChangeAttributionTest`
+- `RavagerCropDestroyTest`
+- `SnowGolemTrailTest`
+- `FallingBlockLandTest`
+- `LightningFireSpreadTest`
+- `SilverfishInfestTest`
+
+Plus the shared `EntityMixinGuardHarness` — a dependency-free model of the
+three bridge dispatchers (`entityBreak`, `entityPlace`, `entityChange`),
+mirroring the `FireGuardHarness` pattern from W1a. Each test asserts the
+guard fires only on mutations that returned `true`, the `sourceTag` is
+one of the six reserved constants, and the actor sentinel + coord tuple
+is preserved end-to-end.
+
+**MC-version discovery.** All six vanilla method signatures verified stable
+1.18.2 → 1.21.1 from the NeoFormRuntime 1.21.1 decompile output
+(`sourcesAndCompiledWithNeoForge_*`) and cross-referenced against Ledger's
+mixin refmap. Only cross-version divergence found:
+
+- `Entity.level` is a field on 1.18.2/1.19.2, method on 1.20.1+. The
+  `SilverfishMixin` uses `this.mob.level` on the two older cells and
+  `this.mob.level()` on the three newer ones. All other mixins receive
+  the `Level` as a redirect parameter, so no version-conditional code
+  is needed.
+- `Registry.BLOCK` on 1.18.2/1.19.2 vs `BuiltInRegistries.BLOCK` on
+  1.20.1+ — matters only for the Forge cells' inline `vg$blockId` helper
+  (the Fabric cells go through `FabricMixinBridge.blockId` which already
+  handles this). Emitted per-cell.
+- `EnderDragon.checkWalls(AABB) → boolean` signature verified stable
+  across all four MC versions from the NeoFormRuntime source dump.
+
+**Mixin JSON registration.** Updated `vg.mixins.json` in all four Fabric
+cells and `vg-neoforge.mixins.json` in the NeoForge 1.21.1 cell — six new
+class names appended, sorted. Forge cells (1.18.2/1.19.2/1.20.1) have
+mixin source directories but no wired `.mixins.json` (long-standing
+repo state noted in the cookbook); the classes compile but are not
+active on those loaders. Aggregate coverage is 5 wired cells (4 Fabric +
+1 NeoForge) which is where Ledger-parity actually matters — the three
+Forge cells rely on the aggregate `LivingDestroyBlockEvent` handler that
+already ships in `ForgeEvents.java`.
+
+**Contract.** New source-tag values (`#enderdragon`, `#ravager`,
+`#snow_golem`, `#gravity`, `#lightning`, `#silverfish`) are appended to
+each cell's `EntitySentinel.java` as `SRC_*` constants. Adding to the
+`MixinHotEventFilter` reserved-prefix registry so operators can toggle
+these categories via the kill-switch is deferred to X6 (the diagnostics
+wave that owns that filter).
