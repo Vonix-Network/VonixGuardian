@@ -121,6 +121,16 @@ public final class EventGate {
     }
 
     /**
+     * v1.3.1 X6 (P3-5): soft cap for {@link #addInternalHook(EventHook)} — beyond
+     * this count we emit a one-shot WARN and keep accepting registrations. A
+     * misbehaving plugin registering per-tick will make {@link #internalHooks}
+     * grow unbounded; a soft cap gives operators an early signal without
+     * breaking legitimate use.
+     */
+    public static final int INTERNAL_HOOKS_SOFT_CAP = 32;
+    private volatile boolean internalHooksCapWarned;
+
+    /**
      * Register a hook consulted for <em>every</em> action, including internal
      * (mixin-authored) events that bypass the standard {@link #hooks} chain.
      * Same {@code PASS/DENY/ACCEPT} contract as {@link #addHook(EventHook)}.
@@ -136,6 +146,16 @@ public final class EventGate {
             throw new NullPointerException("hook");
         }
         internalHooks.add(hook);
+        // v1.3.1 X6 (P3-5): warn once when we cross the soft cap. Not a hard cap —
+        // legitimate pipelines may legitimately register more, but 32 hooks on
+        // the hot-tick chain is a plugin-registration foot-gun worth surfacing.
+        if (!internalHooksCapWarned && internalHooks.size() > INTERNAL_HOOKS_SOFT_CAP) {
+            internalHooksCapWarned = true;
+            org.slf4j.LoggerFactory.getLogger(EventGate.class).warn(
+                "VonixGuardian: internal-hook count exceeded soft cap {} (current {}); "
+                + "a plugin may be registering per-tick — inspect /vg status",
+                INTERNAL_HOOKS_SOFT_CAP, internalHooks.size());
+        }
     }
 
     /**

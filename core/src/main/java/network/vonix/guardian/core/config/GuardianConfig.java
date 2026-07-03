@@ -122,11 +122,38 @@ public record GuardianConfig(
      *                          {@code /vg migrate-db}.
      */
     public record Database(String type, String file, String jdbcUrl, String user, String password,
-                           MigrationTarget migrationTarget) {
+                           MigrationTarget migrationTarget, Hikari hikari) {
 
         /** Backward-compat constructor for callers/tests written before {@code migrationTarget} existed. */
         public Database(String type, String file, String jdbcUrl, String user, String password) {
-            this(type, file, jdbcUrl, user, password, null);
+            this(type, file, jdbcUrl, user, password, null, Hikari.defaults());
+        }
+
+        /** Backward-compat constructor for callers/tests written before {@code hikari} existed (v1.3.1 X6). */
+        public Database(String type, String file, String jdbcUrl, String user, String password,
+                        MigrationTarget migrationTarget) {
+            this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults());
+        }
+    }
+
+    /**
+     * HikariCP connection-pool tuning (v1.3.1 X6). Ships with sensible defaults matching
+     * HikariCP's own out-of-the-box behaviour except for {@code maxPoolSize=10}, which is
+     * the historical hard-coded value from pre-X6.
+     *
+     * @param maxPoolSize          max connections in the pool. Default 10.
+     * @param connectionTimeoutMs  how long a borrower waits for a connection before giving up.
+     *                             Default 30_000 (HikariCP default).
+     * @param maxLifetimeMs        max lifetime of a connection in the pool before it's recycled.
+     *                             Default 1_800_000 (30 min, HikariCP default).
+     * @param leakDetectionMs      threshold to warn about connection leaks. {@code 0} disables.
+     *                             Default 0 (disabled — enable for DAO regression hunting).
+     * @since 1.3.1
+     */
+    public record Hikari(int maxPoolSize, long connectionTimeoutMs, long maxLifetimeMs, long leakDetectionMs) {
+        /** Canonical safe defaults: pool=10, 30s connect timeout, 30min lifetime, no leak detection. */
+        public static Hikari defaults() {
+            return new Hikari(10, 30_000L, 1_800_000L, 0L);
         }
     }
 
@@ -154,12 +181,25 @@ public record GuardianConfig(
     /**
      * JSON-Lines audit log file settings.
      *
-     * @param enabled        whether the rolling file is written
-     * @param directory      relative or absolute directory containing daily files
-     * @param gzipRotated    gzip yesterday's file on rotation
-     * @param retentionDays  retention horizon; {@code 0} = keep forever
+     * @param enabled            whether the rolling file is written
+     * @param directory          relative or absolute directory containing daily files
+     * @param gzipRotated        gzip yesterday's file on rotation
+     * @param retentionDays      retention horizon; {@code 0} = keep forever
+     * @param forceSyncOnFlush   v1.3.1 X6 (P3-4): call {@code FileChannel.force(false)}
+     *                           on every flush. Default {@code true}. Operators who
+     *                           store the audit log on slow/remote storage (NFS,
+     *                           network drives) and accept a &lt;flushIntervalMs&gt;
+     *                           durability window on JVM crash can set this to
+     *                           {@code false} to skip the per-batch fsync.
      */
-    public record LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays) {}
+    public record LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays,
+                          boolean forceSyncOnFlush) {
+
+        /** Backward-compat constructor pre-X6 (defaults forceSyncOnFlush=true). */
+        public LogFile(boolean enabled, String directory, boolean gzipRotated, int retentionDays) {
+            this(enabled, directory, gzipRotated, retentionDays, true);
+        }
+    }
 
     /**
      * Per-category logging toggles and exclusion lists.
@@ -498,7 +538,7 @@ public record GuardianConfig(
         return new GuardianConfig(
             new Database("sqlite", "vonixguardian.db", null, null, null),
             new Queue(50_000, 5_000L, 1_000),
-            new LogFile(true, "logs/vonixguardian", true, 30),
+            new LogFile(true, "logs/vonixguardian", true, 30, true),
             new Actions(
                 true, true, true, true, true, true, true, true, true,
                 true, true,
@@ -601,6 +641,24 @@ public record GuardianConfig(
                         errors.add("database.migrationTarget.password: must be non-null for "
                             + mt.type + " backend");
                     }
+                }
+            }
+            if (database.hikari != null) {
+                Hikari h = database.hikari;
+                if (h.maxPoolSize < 1 || h.maxPoolSize > 256) {
+                    errors.add("database.hikari.maxPoolSize: must be in [1,256] (got " + h.maxPoolSize + ")");
+                }
+                if (h.connectionTimeoutMs < 250L) {
+                    errors.add("database.hikari.connectionTimeoutMs: must be >= 250 (got "
+                            + h.connectionTimeoutMs + ")");
+                }
+                if (h.maxLifetimeMs != 0L && h.maxLifetimeMs < 30_000L) {
+                    errors.add("database.hikari.maxLifetimeMs: must be 0 (disabled) or >= 30000 (got "
+                            + h.maxLifetimeMs + ")");
+                }
+                if (h.leakDetectionMs != 0L && h.leakDetectionMs < 2_000L) {
+                    errors.add("database.hikari.leakDetectionMs: must be 0 (disabled) or >= 2000 (got "
+                            + h.leakDetectionMs + ")");
                 }
             }
         }

@@ -41,6 +41,8 @@ public final class JsonLinesLogFile implements AutoCloseable {
     private final Path directory;
     private final boolean gzipRotated;
     private final int retentionDays;
+    /** v1.3.1 X6 (P3-4): opt-out toggle for the per-flush fsync (see doFlush). */
+    private final boolean forceSyncOnFlush;
     private final Clock clock;
     private final Gson gson;
     private final ReentrantLock lock = new ReentrantLock();
@@ -51,9 +53,15 @@ public final class JsonLinesLogFile implements AutoCloseable {
     private FileLock fileLock;
 
     public JsonLinesLogFile(Path directory, boolean gzipRotated, int retentionDays, Clock clock) {
+        this(directory, gzipRotated, retentionDays, true, clock);
+    }
+
+    public JsonLinesLogFile(Path directory, boolean gzipRotated, int retentionDays,
+                            boolean forceSyncOnFlush, Clock clock) {
         this.directory = directory;
         this.gzipRotated = gzipRotated;
         this.retentionDays = retentionDays;
+        this.forceSyncOnFlush = forceSyncOnFlush;
         this.clock = clock;
         this.gson = new GsonBuilder()
                 .registerTypeAdapter(Action.class, new ActionAdapter())
@@ -104,7 +112,7 @@ public final class JsonLinesLogFile implements AutoCloseable {
         }
         try {
             writer.flush();
-            if (channel != null && channel.isOpen()) {
+            if (forceSyncOnFlush && channel != null && channel.isOpen()) {
                 channel.force(false);
             }
         } catch (IOException e) {

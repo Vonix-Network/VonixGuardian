@@ -53,6 +53,17 @@ public final class EntityBlockChangeCoalescer {
     private final AtomicLong misses = new AtomicLong();
     private final AtomicLong evictions = new AtomicLong();
     private final AtomicLong capDrops = new AtomicLong();
+    /**
+     * v1.3.1 X6 (P2-3): timestamp (ns) of the most recent sweep that returned zero
+     * evictions. During a sustained high-cardinality burst the map is pinned at
+     * cap and every fresh key would otherwise pay an O(n) sweep on the tick thread;
+     * after a zero-return sweep we short-circuit and drop new events for
+     * {@link #ZERO_SWEEP_BACKOFF_NS} before probing again. Bounded amortization —
+     * the sweep still runs periodically so eventually-expired entries get cleaned up.
+     */
+    private final AtomicLong lastZeroSweepNs = new AtomicLong(Long.MIN_VALUE);
+    /** Back-off window (ns) after a zero-eviction sweep — 50ms. */
+    static final long ZERO_SWEEP_BACKOFF_NS = 50_000_000L;
 
     public EntityBlockChangeCoalescer() {
         this(DEFAULT_WINDOW_MS, DEFAULT_MAX_ENTRIES);
@@ -106,11 +117,28 @@ public final class EntityBlockChangeCoalescer {
         // unbounded. If no slot can be freed, fail closed and drop the new
         // event rather than trading a grief log row for heap pressure.
         if (lastSeen.size() >= maxEntries) {
-            int evicted = evictOldestSlice(now);
-            if (evicted == 0 && lastSeen.size() >= maxEntries) {
+            // v1.3.1 X6 (P2-3): short-circuit consecutive over-cap inserts. If we just
+            // ran a sweep that evicted nothing (map is packed with in-window entries),
+            // skip the O(n) scan for ZERO_SWEEP_BACKOFF_NS and drop the event instead.
+            // At burst end the timer expires and normal eviction resumes.
+            long zeroSweepAt = lastZeroSweepNs.get();
+            if (zeroSweepAt != Long.MIN_VALUE && (now - zeroSweepAt) < ZERO_SWEEP_BACKOFF_NS) {
                 capDrops.incrementAndGet();
                 hits.incrementAndGet();
                 return false;
+            }
+            int evicted = evictOldestSlice(now);
+            if (evicted == 0) {
+                lastZeroSweepNs.set(now);
+                if (lastSeen.size() >= maxEntries) {
+                    capDrops.incrementAndGet();
+                    hits.incrementAndGet();
+                    return false;
+                }
+            } else {
+                // Reset back-off after a productive sweep so a subsequent short burst
+                // isn't unfairly rejected.
+                lastZeroSweepNs.set(Long.MIN_VALUE);
             }
         }
 
@@ -169,6 +197,7 @@ public final class EntityBlockChangeCoalescer {
         misses.set(0);
         evictions.set(0);
         capDrops.set(0);
+        lastZeroSweepNs.set(Long.MIN_VALUE);
     }
 
     /** Composite key. {@code record} gives us equals/hashCode/toString for free. */

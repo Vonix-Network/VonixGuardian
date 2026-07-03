@@ -966,9 +966,33 @@ public final class NeoForgeEvents {
     }
 
     /** Clears the deferred dispatcher on server stop to avoid retaining the server graph
-     *  across an in-JVM restart. Idempotent. */
+     *  across an in-JVM restart. Idempotent.
+     *
+     *  <p>v1.3.1 X6 (P3-1): also shuts down the static {@link #WORKER} executor. Pre-X6
+     *  the worker was a static daemon that never terminated, leaking a thread across
+     *  every in-JVM server restart (dev mode). WORKER is {@code static final} — once
+     *  shut down it stays shut down for the JVM's lifetime; in production this is fine
+     *  because {@code reset()} runs at server-stop and the JVM exits shortly after. In
+     *  dev / test harnesses that do an in-JVM restart, the harness rebuilds the whole
+     *  {@code NeoForgeEvents} initialization path via a fresh classloader, so a fresh
+     *  WORKER is created for the new run.
+     */
     public static void reset() {
         pendingDispatcher = null;
+        try {
+            if (!WORKER.isShutdown()) {
+                WORKER.shutdown();
+                if (!WORKER.awaitTermination(2L, java.util.concurrent.TimeUnit.SECONDS)) {
+                    LOG.warn(Guardian.MARKER, "NeoForgeEvents.WORKER did not shut down in 2s; forcing shutdownNow");
+                    WORKER.shutdownNow();
+                }
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            WORKER.shutdownNow();
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "NeoForgeEvents.WORKER shutdown raised", t);
+        }
     }
 
     // ====================================================================== helpers

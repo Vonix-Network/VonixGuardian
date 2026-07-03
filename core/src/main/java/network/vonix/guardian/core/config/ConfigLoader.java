@@ -177,6 +177,25 @@ public final class ConfigLoader {
                 work.theme(), work.language()
             );
         }
+        // v1.3.1 X6: backfill database.hikari=Hikari.defaults() when the on-disk config
+        // predates the field. Absent JSON key → Gson leaves the record field null; we
+        // replace with the shipped defaults so downstream MysqlDao/PostgresDao ctors
+        // never NPE on cfg.hikari().maxPoolSize(). Operators who set explicit
+        // database.hikari knobs keep their setting.
+        if (work.database() != null && work.database().hikari() == null) {
+            LOG.info("Backfilling database.hikari=Hikari.defaults() (pre-v1.3.1 X6 config)");
+            var db = work.database();
+            var newDb = new GuardianConfig.Database(
+                db.type(), db.file(), db.jdbcUrl(), db.user(), db.password(),
+                db.migrationTarget(), GuardianConfig.Hikari.defaults()
+            );
+            work = new GuardianConfig(
+                newDb, work.queue(), work.logFile(), work.actions(),
+                work.permissions(), work.lookup(), work.privacy(), work.purge(),
+                work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.theme(), work.language() == null ? "en_us" : work.language()
+            );
+        }
         if (work.actions() == null) return work;
         var a = work.actions();
         boolean needsRewrite =

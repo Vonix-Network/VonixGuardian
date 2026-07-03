@@ -189,6 +189,20 @@ public final class ExplosionJoinWorker implements AutoCloseable {
 
     @Override
     public void close() {
+        // v1.3.1 X6 (P2-1): give queued join tasks a chance to land in the write
+        // queue before Guardian.shutdown() drains it. Without awaitTermination
+        // an in-flight submitExplosion(...) on the join thread races the queue's
+        // drainAndFlush and lands after dao.close() — the row is dropped.
+        // 5 seconds mirrors AutoPurgeScheduler.shutdown(5_000L).
         worker.shutdown();
+        try {
+            if (!worker.awaitTermination(5L, java.util.concurrent.TimeUnit.SECONDS)) {
+                LOG.warn("ExplosionJoinWorker: queued join tasks did not complete within 5s; forcing shutdownNow");
+                worker.shutdownNow();
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            worker.shutdownNow();
+        }
     }
 }
