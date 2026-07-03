@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Z2 — Forge natural-block event-bus fallback.** Round-3 audit finding P1-A:
+  the three Forge cells (1.18.2 / 1.19.2 / 1.20.1) shipped 15 mixin source
+  files (`FireBlockMixin`, `IceBlockMixin`, `LeavesBlockMixin`,
+  `SpreadingSnowyDirtBlockMixin`, `DispenserBlockMixin` × 3) that compiled
+  dormant — no `vg.mixins.json` wiring — so `BURN`, `IGNITE`, `FADE`, `FORM`,
+  `SPREAD`, `LEAVES_DECAY`, and `DISPENSE` action rows were never emitted on
+  Forge. Z2 wires the same coverage via `BlockEvent.NeighborNotifyEvent` +
+  a bounded LRU pre-state cache inside each cell's `ForgeEvents.java`. All
+  reserved `#fire` / `#natural` sourceTag prefixes preserved so the v1.3.0
+  W4 mixin-hot kill-switch still short-circuits the natural-block flood.
+  DISPENSE is explicitly not covered on Forge — see
+  `docs/PERF-NOTES-1.3.3.md` § Z2 for the acknowledged gap and rationale.
+
+### Changed
+
+- **Z2 — orphan mixin cleanup.** Fifteen dormant Forge mixin files deleted
+  (`Fire`/`Ice`/`Leaves`/`SpreadingSnowyDirt`/`DispenserBlockMixin.java` × 3
+  cells). Fabric + NeoForge cells unchanged — they still log the natural
+  block surface via their wired mixins.
+
 ## [1.3.2] - 2026-07-03
 
 **Wave-Y integration close-out.** Every X-series (v1.3.1) knob and producer

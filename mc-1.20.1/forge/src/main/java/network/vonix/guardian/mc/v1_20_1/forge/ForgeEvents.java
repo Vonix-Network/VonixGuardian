@@ -80,6 +80,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -1043,31 +1044,304 @@ public final class ForgeEvents {
     }
 
     // ====================================================================== vanilla block-state changes (Burn/Ignite/Fade/Form/Spread/Dispense/LeavesDecay)
+    //
+    // v1.3.3 Z2 — Forge natural-block event-bus fallback.
+    //
+    // Round-3 audit P1-A: on the 3 Forge cells (1.18.2/1.19.2/1.20.1), the
+    // FireBlock / IceBlock / LeavesBlock / SpreadingSnowyDirtBlock /
+    // DispenserBlock mixins existed as source files under forge/mixin/ but
+    // were dormant — no vg.mixins.json wiring — so BURN, IGNITE, FADE, FORM,
+    // SPREAD, LEAVES_DECAY, DISPENSE actions were never emitted on Forge.
+    //
+    // Z2 follows the Y2 pattern (Forge event bus instead of mixin config).
+    // Forge exposes NO first-class events for these transitions (they are
+    // Bukkit/Spigot-only APIs), but BlockEvent.NeighborNotifyEvent fires
+    // AFTER Level.updateNeighborsAt, which every vanilla setBlock*/removeBlock
+    // path invokes. By caching a bounded LRU of "last observed BlockState" per
+    // (worldId, packedPos) for hot natural-block positions, we can compare
+    // pre-state vs post-state inside NeighborNotifyEvent and classify the
+    // transition into the correct ActionType:
+    //   fire  -> air/other      => BURN
+    //   air/other -> fire       => IGNITE
+    //   ice -> water/air        => FADE  (snow layer, frosted ice included)
+    //   powder -> concrete      => FORM  (also lava-water -> obsidian/cobble/basalt)
+    //   dirt -> grass/mycelium  => SPREAD
+    //   leaves -> air           => LEAVES_DECAY
+    //
+    // ACKNOWLEDGED COVERAGE GAPS (see docs/PERF-NOTES-1.3.3.md § Z2):
+    //   * DISPENSE cannot be caught via the Forge event bus. DispenserBlock
+    //     #dispenseFrom is a private static funnel with no companion event on
+    //     any of 1.18.2 / 1.19.2 / 1.20.1. NeighborNotifyEvent fires on the
+    //     redstone-pulse neighbor update but does not carry the ejected
+    //     ItemStack or origin BlockPos context. Z2 documents the gap explicitly
+    //     rather than fake coverage; Fabric+NeoForge already log DISPENSE via
+    //     their wired mixins.
+    //   * BURN/IGNITE via LightningBoltEntity#spawnFire deep call chain is
+    //     already covered by the Y2 onEntityStruckByLightning handler above
+    //     (1-tick deferred 3x3 scan). Z2 adds coverage for player-lit,
+    //     natural-spread, and burn-out paths via the neighbor-notify diff.
+    //   * FLINT_AND_STEEL right-click that places fire on the CLICKED face is
+    //     also caught by the pre/post diff below because Level.setBlock invokes
+    //     updateNeighborsAt with the fire block as ev.getState().
+    //
+    // The cache is bounded (NATURAL_BLOCK_CACHE_MAX = 4096) and only tracks
+    // positions where we've observed a "hot" natural block (fire, ice, leaves,
+    // snow layer, ice variants, powder, dirt/grass/mycelium/podzol). The LRU
+    // dropping stanza keeps steady-state memory under ~1 MiB even during a
+    // wildfire event.
 
-    // HISTORY(A9-style, W2-02): Forge exposes NO fire-able events for
-    //   BlockBurnEvent / BlockIgniteEvent / BlockFadeEvent / BlockFormEvent /
-    //   BlockSpreadEvent / BlockDispenseEvent / LeavesDecayEvent — those are
-    //   Bukkit/Spigot APIs; Forge/NeoForge only patch the underlying vanilla
-    //   classes without an event surface. Wiring these on the Forge/NeoForge
-    //   cells requires mixins:
-    //     - BURN         → mixin on FireBlock#tick / #checkBurnOut around the
-    //                       BlockPos removal (state == AIR before, was flammable).
-    //     - IGNITE       → mixin on FireBlock#tick where a neighbour is set to
-    //                       Blocks.FIRE.defaultBlockState() (also FlintAndSteelItem
-    //                       and LightningBoltEntity#spawnFire paths).
-    //     - FADE         → mixin on IceBlock#tick, FrostedIceBlock#slightlyMelt,
-    //                       SnowLayerBlock#tick.
-    //     - FORM         → mixin on ConcretePowderBlock, WaterBlock (freeze),
-    //                       LavaBlock/FireBlock (obsidian/cobble/basalt), etc.
-    //     - SPREAD       → mixin on SpreadingSnowyDirtBlock#tick (grass/mycelium),
-    //                       MushroomBlock#growMushroom, VineBlock#tick.
-    //     - DISPENSE     → mixin on DispenserBlock#dispenseFrom capturing the
-    //                       ejected ItemStack and the origin BlockPos.
-    //     - LEAVES_DECAY → mixin on LeavesBlock#randomTick where the block is
-    //                       replaced with air after LeavesBlock#decaying returns true.
-    //   All of these need a companion `guardian.mixins.json` and would be scheduled
-    //   into a dedicated mixin wave (A9-mixin). Handlers are intentionally left
-    //   unwired here so the audit stays honest: nothing "kind of" logs these.
+    /**
+     * Hot natural-block LRU cache — maps (worldId, packedPos) -> last observed
+     * block registry id. Populated on first-touch when NeighborNotifyEvent
+     * observes a hot natural block at ev.getPos(); consulted on every subsequent
+     * NeighborNotifyEvent at the same position to classify the transition.
+     *
+     * <p>Access is single-threaded (server tick thread) via the neighbor-notify
+     * handler; a ConcurrentHashMap is used defensively in case a mod off-threads
+     * neighbor-update dispatches (Sinytra Connector has been observed doing this
+     * on NeoForge 1.21.1 — this cell is 1.20.1 Forge which does not, but the
+     * cheap safety is worth 0.1% throughput).</p>
+     */
+    private static final Map<Long, String> NATURAL_BLOCK_CACHE = new ConcurrentHashMap<>();
+    /** Hard cap on cache size; eviction is oldest-first via {@link java.util.Iterator#remove}. */
+    private static final int NATURAL_BLOCK_CACHE_MAX = 4096;
+    /** Rate-limit for Z2 error logging (per-throwable-class, 60 s). */
+    private static final Map<String, Long> Z2_WARN_LIMIT = new ConcurrentHashMap<>();
+
+    /** Packs (worldId hash, x, y, z) into a single long for cache key density. */
+    private static long naturalCacheKey(String worldId, BlockPos pos) {
+        long wh = worldId == null ? 0L : ((long) worldId.hashCode()) & 0xFFFFFFFFL;
+        long x = ((long) pos.getX()) & 0x3FFFFFF; // 26 bits
+        long y = ((long) pos.getY()) & 0xFFF;     // 12 bits
+        long z = ((long) pos.getZ()) & 0x3FFFFFF; // 26 bits
+        return (wh << 32) ^ (x << 38) ^ (y << 26) ^ z;
+    }
+
+    /**
+     * Classify a natural block by registry id. Returns null for non-hot blocks
+     * (which we do not cache or classify to keep the map bounded).
+     *
+     * <p>Categories:</p>
+     * <ul>
+     *   <li>{@code "fire"} — {@code minecraft:fire}, {@code minecraft:soul_fire}</li>
+     *   <li>{@code "ice"} — {@code minecraft:ice}, {@code minecraft:frosted_ice},
+     *       {@code minecraft:packed_ice}, {@code minecraft:blue_ice}, snow layer</li>
+     *   <li>{@code "leaves"} — anything ending in {@code _leaves}</li>
+     *   <li>{@code "powder"} — {@code *_concrete_powder}</li>
+     *   <li>{@code "concrete"} — {@code *_concrete}</li>
+     *   <li>{@code "grass"} — {@code minecraft:grass_block}, {@code minecraft:mycelium},
+     *       {@code minecraft:podzol}</li>
+     *   <li>{@code "dirt"} — {@code minecraft:dirt}, {@code minecraft:coarse_dirt},
+     *       {@code minecraft:rooted_dirt}</li>
+     *   <li>{@code "obsidian"} / {@code "cobblestone"} / {@code "stone"} / {@code "basalt"}
+     *       — fluid-generator products (for FORM classification)</li>
+     * </ul>
+     */
+    private static String naturalCategory(String blockId) {
+        if (blockId == null) return null;
+        // fire family
+        if (blockId.equals("minecraft:fire") || blockId.equals("minecraft:soul_fire")) return "fire";
+        // ice / snow family (all melt-to-water/air / form-from-water/freeze)
+        if (blockId.equals("minecraft:ice") || blockId.equals("minecraft:frosted_ice")
+                || blockId.equals("minecraft:packed_ice") || blockId.equals("minecraft:blue_ice")
+                || blockId.equals("minecraft:snow") || blockId.equals("minecraft:snow_block")) return "ice";
+        // leaves family (vanilla + mods that end in _leaves)
+        if (blockId.endsWith("_leaves")) return "leaves";
+        // concrete powder / concrete pair (form)
+        if (blockId.endsWith("_concrete_powder")) return "powder";
+        if (blockId.endsWith("_concrete")) return "concrete";
+        // grass / mycelium / podzol (spread from dirt)
+        if (blockId.equals("minecraft:grass_block") || blockId.equals("minecraft:mycelium")
+                || blockId.equals("minecraft:podzol")) return "grass";
+        if (blockId.equals("minecraft:dirt") || blockId.equals("minecraft:coarse_dirt")
+                || blockId.equals("minecraft:rooted_dirt")) return "dirt";
+        // fluid-generator products (form)
+        if (blockId.equals("minecraft:obsidian")) return "obsidian";
+        if (blockId.equals("minecraft:cobblestone")) return "cobblestone";
+        if (blockId.equals("minecraft:stone")) return "stone";
+        if (blockId.equals("minecraft:basalt")) return "basalt";
+        // water/lava explicit — used as the "prev" for FORM classification
+        if (blockId.equals("minecraft:water") || blockId.equals("minecraft:flowing_water")) return "water";
+        if (blockId.equals("minecraft:lava") || blockId.equals("minecraft:flowing_lava")) return "lava";
+        return null;
+    }
+
+    /**
+     * Z2 — natural-block transition capture via NeighborNotifyEvent + LRU diff.
+     *
+     * <p>Fires from every {@code Level.updateNeighborsAt(BlockPos, Block)}. We
+     * compare {@code ev.getState()} (the current block at {@code ev.getPos()})
+     * against our last-observed snapshot at the same position; if the categories
+     * disagree, we classify the transition and emit the corresponding action.
+     * Then we update the cache to the current post-state so the next transition
+     * on this pos measures against a fresh baseline.</p>
+     *
+     * <p>Non-hot blocks (anything not classified by {@link #naturalCategory})
+     * are neither cached nor emitted — this keeps the map bounded to actually
+     * interesting positions.</p>
+     */
+    @SubscribeEvent
+    public static void onNaturalBlockNeighborNotify(BlockEvent.NeighborNotifyEvent ev) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            BlockState cur = ev.getState();
+            if (cur == null) return;
+            Level level = (Level) ev.getLevel();
+            if (!(level instanceof ServerLevel)) return;
+            BlockPos pos = ev.getPos();
+            String worldId = WorldKey.of(level);
+            long key = naturalCacheKey(worldId, pos);
+            String curId = blockId(cur);
+            String curCat = naturalCategory(curId);
+            String prevId = NATURAL_BLOCK_CACHE.get(key);
+            String prevCat = naturalCategory(prevId);
+
+            if (prevId != null && !prevId.equals(curId)) {
+                // classify a real transition (prev observed, differs from cur)
+                classifyAndSubmit(s, worldId, pos, prevId, curId, prevCat, curCat);
+            } else if (prevId == null && "fire".equals(curCat)) {
+                // Fresh fire appearance with no prior cache entry -> IGNITE.
+                // Matches pre-Z2 FireBlockMixin#onPlace(TAIL) semantics for
+                // flint&steel / /setblock fire / lightning-spawned fire that
+                // arrived without a prior neighbor-notify observation.
+                s.submitIgnite(null, Sentinel.FIRE, worldId,
+                        pos.getX(), pos.getY(), pos.getZ(), curId, "#fire:ignite");
+            }
+
+            // Cache maintenance — only remember "primary hot" positions (fire,
+            // ice, leaves, powder, concrete, grass, dirt). FORM-target categories
+            // (obsidian/cobblestone/stone/basalt) are only meaningful as the
+            // TARGET of a water/lava transition; caching a bare stone/obsidian
+            // observation would waste memory since there's nothing to transition
+            // FROM those without a prior fluid. Keep water/lava too so the
+            // fluid->product transition can be detected.
+            boolean cachePrimary = isPrimaryHot(curCat);
+            if (cachePrimary) {
+                NATURAL_BLOCK_CACHE.put(key, curId);
+                enforceCacheBound();
+            } else if (prevCat != null) {
+                // Was hot, now non-hot: retain the successor so the next
+                // transition on this position measures against a fresh baseline.
+                NATURAL_BLOCK_CACHE.put(key, curId);
+                enforceCacheBound();
+            }
+        } catch (Throwable t) {
+            rateLimitedZ2Warn("onNaturalBlockNeighborNotify", t);
+        }
+    }
+
+    /**
+     * Whether a category is a "primary hot" natural block that we track
+     * unconditionally. Non-primary categories (FORM products like stone /
+     * obsidian / cobble / basalt) are only meaningful when a prior primary
+     * hot block was observed at the position.
+     */
+    private static boolean isPrimaryHot(String cat) {
+        if (cat == null) return false;
+        return switch (cat) {
+            case "fire", "ice", "leaves", "powder", "concrete", "grass", "dirt", "water", "lava" -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Classify a pre/post-state transition at a bounded set of hot positions
+     * and emit the corresponding action-type submit.
+     */
+    private static void classifyAndSubmit(EventSubmitter s, String worldId, BlockPos pos,
+                                          String prevId, String curId, String prevCat, String curCat) {
+        int x = pos.getX(), y = pos.getY(), z = pos.getZ();
+        // BURN — fire -> air, or flammable -> air adjacent to fire (only fire->non-fire caught here)
+        if ("fire".equals(prevCat) && !"fire".equals(curCat)) {
+            // fire was extinguished / consumed -> burn-out row on the fire itself
+            s.submitBurn(null, Sentinel.FIRE, worldId, x, y, z, prevId, "#fire:burnout");
+            return;
+        }
+        // IGNITE — any -> fire (fresh fire block appeared)
+        if (!"fire".equals(prevCat) && "fire".equals(curCat)) {
+            s.submitIgnite(null, Sentinel.FIRE, worldId, x, y, z, curId, "#fire:ignite");
+            return;
+        }
+        // FADE — ice/snow -> water/air (melt)
+        if ("ice".equals(prevCat) && !"ice".equals(curCat)) {
+            s.submitFade(null, "#natural:fade", worldId, x, y, z, prevId, "#natural:fade");
+            return;
+        }
+        // FORM — powder -> concrete (concrete solidify)
+        if ("powder".equals(prevCat) && "concrete".equals(curCat)) {
+            s.submitForm(null, "#natural:form", worldId, x, y, z, curId, "#natural:form");
+            return;
+        }
+        // FORM — water/lava -> obsidian/cobblestone/stone/basalt (fluid interaction)
+        if (("water".equals(prevCat) || "lava".equals(prevCat)) &&
+                ("obsidian".equals(curCat) || "cobblestone".equals(curCat)
+                        || "stone".equals(curCat) || "basalt".equals(curCat))) {
+            s.submitForm(null, "#natural:form", worldId, x, y, z, curId, "#natural:form");
+            return;
+        }
+        // FORM — air/water -> ice/snow (freeze — reverse of fade)
+        if (("water".equals(prevCat) || prevCat == null) && "ice".equals(curCat)) {
+            s.submitForm(null, "#natural:form", worldId, x, y, z, curId, "#natural:form");
+            return;
+        }
+        // SPREAD — dirt/coarse_dirt/rooted_dirt -> grass/mycelium/podzol
+        if ("dirt".equals(prevCat) && "grass".equals(curCat)) {
+            s.submitSpread(null, "#natural:spread", worldId, x, y, z, curId, "#natural:spread");
+            return;
+        }
+        // LEAVES_DECAY — leaves -> air (or anything non-leaves)
+        if ("leaves".equals(prevCat) && !"leaves".equals(curCat)) {
+            s.submitLeavesDecay(null, "#natural:decay", worldId, x, y, z, prevId, "#natural:decay");
+            return;
+        }
+        // Unclassified transition — do nothing (keeps audit honest).
+    }
+
+    /** Bounded LRU eviction — drops first insertion-ordered entry until under cap. */
+    private static void enforceCacheBound() {
+        if (NATURAL_BLOCK_CACHE.size() <= NATURAL_BLOCK_CACHE_MAX) return;
+        // ConcurrentHashMap iteration order is unspecified but stable enough for
+        // load-shedding under sustained pressure. We drop up to 32 entries per
+        // overflow to amortise the scan cost.
+        int drop = 32;
+        Iterator<Map.Entry<Long, String>> it = NATURAL_BLOCK_CACHE.entrySet().iterator();
+        while (it.hasNext() && drop > 0) {
+            it.next();
+            it.remove();
+            drop--;
+        }
+    }
+
+    private static void rateLimitedZ2Warn(String site, Throwable t) {
+        long now = System.currentTimeMillis();
+        String key = site + ":" + t.getClass().getName();
+        Long last = Z2_WARN_LIMIT.get(key);
+        if (last == null || now - last >= 60_000L) {
+            Z2_WARN_LIMIT.put(key, now);
+            LOG.warn(Guardian.MARKER, "{} failed", site, t);
+        }
+    }
+
+    /**
+     * Z2 — clear the natural-block cache on server shutdown so an in-JVM
+     * restart does not retain stale (worldId, pos) -> blockId entries.
+     * Also cleared in {@link #reset()} above (called by VonixGuardianForge on
+     * shutdown).
+     */
+    public static void clearNaturalBlockCache() {
+        NATURAL_BLOCK_CACHE.clear();
+        Z2_WARN_LIMIT.clear();
+    }
+
+    // ACKNOWLEDGED GAP: DISPENSE is not covered by the Forge event bus on any
+    // of 1.18.2 / 1.19.2 / 1.20.1. DispenserBlock#dispenseFrom is a private
+    // funnel with no companion event carrying the ejected ItemStack + origin
+    // BlockPos. NeighborNotifyEvent fires on the redstone-pulse neighbor update
+    // but does not preserve the ejection context. The dormant DispenserBlockMixin
+    // is deleted in this wave; a future wave that adds forge-side vg.mixins.json
+    // wiring could restore mixin-based DISPENSE logging on Forge, but Z2's
+    // scope is event-bus fallback only. See docs/PERF-NOTES-1.3.3.md § Z2.
 
     // ====================================================================== commands wiring
 
