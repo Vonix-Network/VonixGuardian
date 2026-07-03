@@ -584,7 +584,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // overrides briefly did not apply. Building locally means every submitter
         // sees either the fully old chain OR the fully new chain, never a
         // half-registered one.
-        this.config = merged;
+        //
+        // v1.3.3 Z4 (G-Y3-1 P2 close-out): `this.config = merged` MOVED to below the
+        // `this.gate = localGate` publish (see end of this method). Rationale: submit()
+        // reads `gate` on the hot path but `config` (for auxiliary fields like
+        // storage.persistNbt / rollback.explosionSupplementalReach / language) on
+        // cooler paths. Publishing `config` first briefly left submitters observing
+        // the NEW config with the OLD gate — e.g. the new persistNbt flag was live
+        // while the old event gate's hooks (blacklist/per-world) were still in
+        // effect. Ordering: gate first keeps hooks in old state during the config
+        // swap; there is no window in which a NEW hook could observe an OLD
+        // persistNbt / language, since hooks are terminal (do not read config()).
         EventGate localGate = new EventGate(merged.actions());
         this.theme = ThemeRegistry.get(merged.theme());
         network.vonix.guardian.core.i18n.Messages.setLanguage(merged.language());
@@ -700,7 +710,18 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // localGate; only now do we flip `this.gate` and `this.blacklistHook`.
         // Any submitter racing this method observes either the old fully-populated
         // gate or the new fully-populated gate.
+        //
+        // v1.3.3 Z4 (G-Y3-1 P2 close-out): publish `this.gate` BEFORE `this.config`.
+        // A submitter observes the gate (hot path) before it observes the new config
+        // (cool path). Reversing the pair (config-then-gate) would let a submitter
+        // read the new persistNbt/language while still routing through the old
+        // hook chain — a brief false-positive NBT capture window on any submit
+        // that races the reload. Ordered this way, hooks flip atomically to the
+        // new set and then config swaps under them; hooks are terminal (they do
+        // not read config()) so an in-flight decision under the new gate is
+        // unaffected by the imminent config swap.
         this.gate = localGate;
+        this.config = merged;
         this.blacklistHook = newBlacklistHook;
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on

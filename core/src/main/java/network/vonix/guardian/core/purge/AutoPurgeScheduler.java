@@ -90,6 +90,14 @@ public final class AutoPurgeScheduler {
 
     private ScheduledExecutorService exec;
     private ScheduledFuture<?> nextTask;
+    // v1.3.3 Z4 (G-Y3-2): monotonically-increasing generation stamp for every
+    // successful scheduleAt call. Guarded by {@code synchronized(this)}. Used
+    // by {@link #runScheduled()}'s finally guard to detect whether a
+    // concurrent {@link #applyConfig(GuardianConfig)} already installed a
+    // fresh nextTask while our runNow was in flight — if the generation
+    // observed at finally entry differs from the one captured at run entry,
+    // applyConfig owns the reschedule and we must NOT double-book.
+    private long scheduleGen;
 
     private AutoPurgeScheduler(PurgeEngine purgeEngine,
                                GuardianDao dao,
@@ -175,16 +183,67 @@ public final class AutoPurgeScheduler {
     private void scheduleAt(ZonedDateTime when) {
         long delayMs = Math.max(0L, Duration.between(ZonedDateTime.now(clock.withZone(zone)), when).toMillis());
         nextTask = exec.schedule(this::runScheduled, delayMs, TimeUnit.MILLISECONDS);
+        // v1.3.3 Z4 (G-Y3-2): stamp the generation so runScheduled's finally
+        // can detect a concurrent applyConfig-installed reschedule. Guarded
+        // by {@code synchronized(this)} on all callers (start / applyConfig /
+        // runScheduled finally).
+        scheduleGen++;
     }
 
     private void runScheduled() {
+        // v1.3.3 Z4 (G-Y3-2 P2 close-out): capture the schedule generation at
+        // run entry under the sync monitor. In the finally we re-read it; if
+        // it changed, a concurrent applyConfig(...) has already installed a
+        // fresh nextTask and we MUST NOT double-book.
+        final long myGen;
+        synchronized (this) {
+            myGen = scheduleGen;
+        }
         try {
             runNow();
         } catch (Throwable t) {
             LOG.error("AutoPurgeScheduler run threw", t);
         } finally {
-            // Always reschedule for tomorrow — even after a skip or error.
-            if (exec != null && !exec.isShutdown()) {
+            // Always reschedule for tomorrow — even after a skip or error —
+            // UNLESS a concurrent applyConfig owned the reschedule.
+            //
+            // v1.3.3 Z4 (G-Y3-2 P2 close-out): synchronize the entire finally
+            // reschedule on the same monitor as {@link #applyConfig(GuardianConfig)},
+            // {@link #start()}, and {@link #shutdown(long)}. Without the guard
+            // there is a race window between the try/finally boundary and the
+            // scheduleAt call:
+            //
+            //   T0  runNow() returns; we enter finally
+            //   T1  applyConfig() fires on another thread, cancels the
+            //       just-completed nextTask (cancel is a no-op on the running
+            //       task), sets a NEW nextTask via its own scheduleAt (call it
+            //       TASK-A)
+            //   T2  finally computes {@code next} and writes a SECOND nextTask
+            //       via scheduleAt (call it TASK-B), clobbering the field
+            //       reference to TASK-A
+            //
+            // TASK-A's ScheduledFuture reference is gone from the field — but
+            // TASK-A remains enqueued on the executor and will fire, producing
+            // a double-schedule (two purge cycles competing for the same
+            // retention horizon, both under the purge mutex — one succeeds,
+            // one wastes a tryLock cycle and logs a spurious "mutex held" skip).
+            //
+            // Fix: the generation stamp captured at run entry is compared to
+            // the current generation inside the synchronized finally block.
+            // If applyConfig fired between runNow-return and this section,
+            // {@code scheduleGen > myGen} and we skip our own scheduleAt.
+            // Otherwise we schedule as usual. The sync guarantees no
+            // interleaving with concurrent applyConfig for the check itself.
+            synchronized (this) {
+                if (exec == null || exec.isShutdown() || !enabled) {
+                    return;
+                }
+                if (scheduleGen != myGen) {
+                    // applyConfig(...) already installed a fresh next-run task.
+                    // Do NOT re-schedule; that would clobber it and leave a
+                    // ghost ScheduledFuture on the executor.
+                    return;
+                }
                 ZonedDateTime now = ZonedDateTime.now(clock.withZone(zone));
                 ZonedDateTime next = nextRunOf(runTime, zone, now);
                 LOG.info("AutoPurgeScheduler next run scheduled at {}", LOG_FMT.format(next));
@@ -266,10 +325,15 @@ public final class AutoPurgeScheduler {
      *       {@link #runTime}.</li>
      * </ul>
      *
-     * <p>{@code retentionSeconds} is captured atomically for the next run —
-     * an in-flight {@link #runNow()} continues under the old cutoff and the
-     * next scheduled run picks up the new one. This avoids splitting a chunked
-     * purge across two retention windows.
+     * <p>{@code retentionSeconds} is declared {@code volatile} and read INSIDE
+     * {@link #runNow()} (captured to a local {@code cutoff} at the start of the
+     * chunked-DELETE loop). A concurrent {@code applyConfig} that arrives
+     * BEFORE that capture is observed by the run about to start; one that
+     * arrives AFTER the capture is not observed until the next scheduled run.
+     * The exact interleaving is not guaranteed — but it is benign: either
+     * retention window is a valid delete horizon, and the next fully scheduled
+     * run picks up the new cutoff cleanly. No mid-loop cutoff drift can happen
+     * because {@code cutoff} is a local {@code long}.
      *
      * @param cfg reloaded config; must not be {@code null}
      * @return {@code true} if the schedule was actually changed (nothing was
