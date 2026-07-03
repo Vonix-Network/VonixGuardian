@@ -42,6 +42,12 @@ public final class ActionBuilder {
     private String signSide;
     private String signDyeColor;
     private Boolean signWaxed;
+    // ---- v1.3.1 X1: NBT fidelity ----
+    private String oldBlockState;
+    private String newBlockState;
+    private byte[] blockEntityNbt;
+    private byte[] itemNbt;
+    private byte[] entityNbt;
 
     /** Creates a new empty builder. */
     public ActionBuilder() {
@@ -83,6 +89,16 @@ public final class ActionBuilder {
         this.signSide = null;
         this.signDyeColor = null;
         this.signWaxed = null;
+        // v1.3.1 X1: clear NBT byte[] references so the previous submit's
+        // (potentially large) block-entity / item / entity payload does not
+        // survive across a reused scratch builder. Nulling the reference is
+        // enough — the underlying array is either DAO-owned (already batched)
+        // or unreachable elsewhere.
+        this.oldBlockState = null;
+        this.newBlockState = null;
+        this.blockEntityNbt = null;
+        this.itemNbt = null;
+        this.entityNbt = null;
         return this;
     }
 
@@ -294,6 +310,86 @@ public final class ActionBuilder {
         return this;
     }
 
+    // ------------------------------------------------------------------------
+    // v1.3.1 X1 — NBT fidelity setters. All nullable; producers only populate
+    // when the operator has opted in to storage.persistNbt=true. Callers pass
+    // the byte[] payload by reference; the DAO takes ownership on submit.
+    // ------------------------------------------------------------------------
+
+    /**
+     * Sets the pre-change block-state property string (Ledger-parity).
+     *
+     * <p>Format: compact {@code k=v,k=v} produced by the loader-side
+     * {@code BlockStateProperties.serialize()} helper. Not JSON — commas are a
+     * top-level separator and must not appear inside values.
+     *
+     * @param oldBlockState property string; may be {@code null}
+     * @return this builder
+     * @since 1.3.1
+     */
+    public ActionBuilder oldBlockState(String oldBlockState) {
+        this.oldBlockState = oldBlockState;
+        return this;
+    }
+
+    /**
+     * Sets the post-change block-state property string; symmetric counterpart
+     * to {@link #oldBlockState(String)}.
+     *
+     * @param newBlockState property string; may be {@code null}
+     * @return this builder
+     * @since 1.3.1
+     */
+    public ActionBuilder newBlockState(String newBlockState) {
+        this.newBlockState = newBlockState;
+        return this;
+    }
+
+    /**
+     * Sets the raw block-entity NBT bytes (chest contents, spawner data, sign
+     * back text, brewing stand fuel, etc.). Encoded by the loader via
+     * {@code net.minecraft.nbt.NbtIo.write(CompoundTag, DataOutputStream)}
+     * and decoded on rollback via {@code NbtIo.read(...)}.
+     *
+     * <p>The DAO takes ownership of the byte[] reference; callers should not
+     * mutate it after this call.
+     *
+     * @param blockEntityNbt raw NBT bytes; may be {@code null}
+     * @return this builder
+     * @since 1.3.1
+     */
+    public ActionBuilder blockEntityNbt(byte[] blockEntityNbt) {
+        this.blockEntityNbt = blockEntityNbt;
+        return this;
+    }
+
+    /**
+     * Sets the raw item NBT bytes so named / enchanted / damaged items
+     * round-trip byte-parity with CoreProtect apply semantics.
+     *
+     * @param itemNbt raw NBT bytes; may be {@code null}
+     * @return this builder
+     * @since 1.3.1
+     */
+    public ActionBuilder itemNbt(byte[] itemNbt) {
+        this.itemNbt = itemNbt;
+        return this;
+    }
+
+    /**
+     * Sets the raw entity NBT bytes so {@code /vg restore} can respawn a mob
+     * with its original attributes (custom name, tame owner, potion effects,
+     * equipment, etc.).
+     *
+     * @param entityNbt raw NBT bytes; may be {@code null}
+     * @return this builder
+     * @since 1.3.1
+     */
+    public ActionBuilder entityNbt(byte[] entityNbt) {
+        this.entityNbt = entityNbt;
+        return this;
+    }
+
     /**
      * Builds the immutable {@link Action} from the current builder state, applying
      * defaults as described in the class Javadoc.
@@ -330,7 +426,12 @@ public final class ActionBuilder {
             sourceTag,
             signSide,
             signDyeColor,
-            signWaxed
+            signWaxed,
+            oldBlockState,
+            newBlockState,
+            blockEntityNbt,
+            itemNbt,
+            entityNbt
         );
     }
 }

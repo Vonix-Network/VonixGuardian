@@ -26,6 +26,7 @@ import java.util.Set;
  * @param lookup       {@code /vg lookup} UX settings
  * @param privacy      IP hashing settings for SESSION_JOIN rows
  * @param purge        minimum-age floors for {@code /vg purge}
+ * @param storage      storage-layer toggles (v1.3.1 X1); currently just NBT capture
  * @param theme        chat theme key; must be a known {@link ThemeRegistry} entry
  * @param language     player-facing message bundle key; one of {@link #KNOWN_LANGUAGES}
  * @since 0.1.0
@@ -39,13 +40,35 @@ public record GuardianConfig(
     Lookup lookup,
     Privacy privacy,
     Purge purge,
+    Storage storage,
     String theme,
     String language
 ) {
 
     /**
+     * Backward-compat constructor for callers/tests written before {@code storage} existed.
+     * Defaults {@code storage} to {@link Storage#defaults()}.
+     * @since 1.3.1
+     */
+    public GuardianConfig(
+        Database database,
+        Queue queue,
+        LogFile logFile,
+        Actions actions,
+        Permissions permissions,
+        Lookup lookup,
+        Privacy privacy,
+        Purge purge,
+        String theme,
+        String language
+    ) {
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
+             Storage.defaults(), theme, language);
+    }
+
+    /**
      * Backward-compat constructor for callers/tests written before {@code language} existed.
-     * Defaults {@code language} to {@code "en_us"}.
+     * Defaults {@code language} to {@code "en_us"} and {@code storage} to {@link Storage#defaults()}.
      */
     public GuardianConfig(
         Database database,
@@ -58,7 +81,8 @@ public record GuardianConfig(
         Purge purge,
         String theme
     ) {
-        this(database, queue, logFile, actions, permissions, lookup, privacy, purge, theme, "en_us");
+        this(database, queue, logFile, actions, permissions, lookup, privacy, purge,
+             Storage.defaults(), theme, "en_us");
     }
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianConfig.class);
@@ -432,6 +456,31 @@ public record GuardianConfig(
     }
 
     /**
+     * Storage-layer toggles (v1.3.1 X1). Separate from {@link Database} because these are
+     * about <em>what</em> gets persisted alongside the row, not <em>which backend</em>.
+     *
+     * @param persistNbt if {@code true}, event producers on the loader side capture
+     *                   full block-state properties + raw BE / item / entity NBT bytes
+     *                   and hand them to the {@link EventSubmitter} NBT-fidelity
+     *                   overloads. The DAO always reads NBT columns if present, so
+     *                   downgrading this toggle to {@code false} does not lose
+     *                   already-captured NBT for historical rows. <b>Default:
+     *                   {@code false}</b> — CoreProtect / Ledger parity for
+     *                   waterlogged fences, named enchanted swords, chest contents,
+     *                   named/tamed mobs is only meaningful for operators who want
+     *                   it, and the extra bytes-on-disk cost per event is significant
+     *                   on high-throughput servers (chest snapshots alone can be many
+     *                   KB per BLOCK_BREAK). Opt in by setting {@code true}.
+     * @since 1.3.1
+     */
+    public record Storage(boolean persistNbt) {
+        /** Canonical safe default: no NBT capture. */
+        public static Storage defaults() {
+            return new Storage(false);
+        }
+    }
+
+    /**
      * Build the canonical default config matching README &sect; Configuration.
      *
      * @return a freshly-populated default config
@@ -477,6 +526,7 @@ public record GuardianConfig(
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
             new Purge(86_400L, 2_592_000L, 0L, "03:30"),
+            Storage.defaults(),
             "aqua",
             "en_us"
         );
@@ -687,6 +737,10 @@ public record GuardianConfig(
 
         if (theme == null || !KNOWN_THEMES.contains(theme)) {
             errors.add("theme: must be one of " + KNOWN_THEMES + " (got " + theme + ")");
+        }
+
+        if (storage == null) {
+            errors.add("storage: section missing");
         }
 
         if (language == null || !KNOWN_LANGUAGES.contains(language)) {

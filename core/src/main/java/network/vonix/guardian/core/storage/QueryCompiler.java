@@ -30,6 +30,7 @@ public final class QueryCompiler {
         "id", "ts", "type", "user_id", "world_id", "x", "y", "z",
         "target", "meta", "amount", "rolled_back", "source_tag",
         "sign_side", "sign_dye_color", "sign_waxed",
+        "old_block_state", "new_block_state", "block_entity_nbt", "item_nbt", "entity_nbt",
         "uuid", "name", "world_key"
     );
 
@@ -37,7 +38,8 @@ public final class QueryCompiler {
     public static final String SELECT_PROJECTION =
         "a.id, a.ts, a.type, u.uuid, u.name, w.world_key, "
       + "a.x, a.y, a.z, a.target, a.meta, a.amount, a.rolled_back, a.source_tag, "
-      + "a.sign_side, a.sign_dye_color, a.sign_waxed";
+      + "a.sign_side, a.sign_dye_color, a.sign_waxed, "
+      + "a.old_block_state, a.new_block_state, a.block_entity_nbt, a.item_nbt, a.entity_nbt";
 
     private static final String FROM_JOIN =
         " FROM vg_actions a "

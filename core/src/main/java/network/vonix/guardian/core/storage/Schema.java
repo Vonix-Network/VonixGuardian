@@ -38,12 +38,26 @@ import java.util.List;
  *       Fresh installs get the widened schema via the DDL below; existing v3
  *       databases are upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V4SignMetadata}.</li>
+ *   <li><b>v5</b> — additive Ledger-parity NBT fidelity columns on
+ *       {@code vg_actions}: five new nullable columns
+ *       ({@code old_block_state TEXT}, {@code new_block_state TEXT},
+ *       {@code block_entity_nbt BLOB}, {@code item_nbt BLOB},
+ *       {@code entity_nbt BLOB}) carrying the full block-state property
+ *       string and raw NBT byte snapshots needed to restore modded /
+ *       waterlogged / enchanted / named things exactly as they were. Producers
+ *       only populate these when {@code storage.persistNbt=true}; the DAO
+ *       always reads them if present, so downgrading persistNbt to false does
+ *       not lose already-captured NBT for historical rows. Fresh installs get
+ *       the widened schema via the DDL below; existing v4 databases are
+ *       upgraded in place by
+ *       {@link network.vonix.guardian.core.storage.migration.V5NbtFidelity}.
+ *       Added v1.3.1 X1.</li>
  * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 4;
+    public static final int CURRENT_VERSION = 5;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -204,6 +218,15 @@ public final class Schema {
         // accept the literal keyword "BOOLEAN" in DDL, so we use that for readability and
         // let the driver do the right thing under the hood.
         String bool = (d == Dialect.POSTGRES) ? "BOOLEAN" : "BOOLEAN";
+        // v5 NBT bytes: on MySQL we want LONGBLOB (up to 4GB) — MEDIUMBLOB caps at 16MB
+        // which is enough today for any single entity/BE, but LONGBLOB costs nothing extra
+        // and future-proofs against very large modded NBTs. Postgres uses BYTEA. SQLite
+        // uses the BLOB affinity keyword directly.
+        String blob = switch (d) {
+            case MYSQL    -> "LONGBLOB";
+            case POSTGRES -> "BYTEA";
+            case SQLITE   -> "BLOB";
+        };
         return "CREATE TABLE IF NOT EXISTS vg_actions ("
             + "id " + pk(d) + ", "
             + "ts BIGINT NOT NULL, "
@@ -220,7 +243,12 @@ public final class Schema {
             + "source_tag VARCHAR(64) NULL, "
             + "sign_side VARCHAR(8) NULL, "
             + "sign_dye_color VARCHAR(16) NULL, "
-            + "sign_waxed " + bool + " NULL"
+            + "sign_waxed " + bool + " NULL, "
+            + "old_block_state " + textType(d) + " NULL, "
+            + "new_block_state " + textType(d) + " NULL, "
+            + "block_entity_nbt " + blob + " NULL, "
+            + "item_nbt " + blob + " NULL, "
+            + "entity_nbt " + blob + " NULL"
             + ")";
     }
 
