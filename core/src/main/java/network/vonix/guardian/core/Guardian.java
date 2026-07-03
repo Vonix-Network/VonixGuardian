@@ -448,6 +448,55 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * @return a summary of what changed and how — never {@code null}
      */
     public ReloadResult reloadConfig(Path path) {
+        // v1.3.7 DD1 (round-7 P1): serialize the entire reload critical section.
+        // Pre-v1.3.6, /vg config set called reloadConfig on the server thread; that
+        // was serialized by the tick loop. v1.3.6 CC2 routed /vg config set onto
+        // WORKER (pool size 2), so two config-set commands OR a config-set racing
+        // /vg reload can now interleave the read-old / build-merged / publish-new
+        // sequence and clobber each other's gate/config/perWorldStore/rollbackEngine
+        // /autoPurgeScheduler updates. Guard the whole path under CONFIG_MUTATION_LOCK
+        // (shared across cells' /vg config set path via {@link #withConfigMutationLock}).
+        synchronized (CONFIG_MUTATION_LOCK) {
+            return doReloadConfig(path);
+        }
+    }
+
+    /**
+     * v1.3.7 DD1: shared monitor guarding all config mutation paths. Loader-side
+     * /vg config set implementations MUST hold this monitor while performing the
+     * read-current-config / build-merged / persist-to-disk / reloadConfig sequence
+     * to prevent lost updates when concurrent set commands race on WORKER.
+     * <p>Use {@link #withConfigMutationLock(Runnable)} rather than exposing the
+     * monitor object across module boundaries.</p>
+     */
+    public static final Object CONFIG_MUTATION_LOCK = new Object();
+
+    /**
+     * v1.3.7 DD1: convenience for loader cells to run a config-mutation critical
+     * section under the shared monitor. Wraps read-current-config / build-merged /
+     * ConfigLoader.save / reloadConfig so no interleaving is possible.
+     */
+    public static void withConfigMutationLock(Runnable r) {
+        synchronized (CONFIG_MUTATION_LOCK) {
+            r.run();
+        }
+    }
+
+    /**
+     * v1.3.7 DD1: reload variant for callers that already hold
+     * {@link #CONFIG_MUTATION_LOCK}. Used by the /vg config set critical section
+     * to avoid re-entering the monitor (Java monitors are reentrant so this
+     * is technically safe today — but naming the boundary makes the intent
+     * explicit and lets us swap to a non-reentrant Lock later without breaking
+     * loader cells).
+     */
+    public ReloadResult reloadConfigUnlocked(Path path) {
+        assert Thread.holdsLock(CONFIG_MUTATION_LOCK)
+                : "reloadConfigUnlocked called without CONFIG_MUTATION_LOCK";
+        return doReloadConfig(path);
+    }
+
+    private ReloadResult doReloadConfig(Path path) {
         List<String> hot = new ArrayList<>();
         List<String> restart = new ArrayList<>();
         List<String> errs = new ArrayList<>();

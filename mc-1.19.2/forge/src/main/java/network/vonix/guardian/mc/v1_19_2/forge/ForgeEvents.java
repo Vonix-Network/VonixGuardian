@@ -2167,6 +2167,11 @@ public final class ForgeEvents {
             // src.getLevel() check below is redundant belt-and-braces.
             CommandSourceStack srcGate = res.getContext().getSource();
             if (srcGate == null || srcGate.getLevel() == null) return;
+            // v1.3.7 DD1 (round-7 P1): also gate on isSameThread to guard against
+            // Sinytra Connector / integrated server dispatching CommandEvent off
+            // the server thread, which would let level.getBlockState scans race
+            // chunk mutation on up to 32,768 positions.
+            if (srcGate.getServer() == null || !srcGate.getServer().isSameThread()) return;
             String raw = res.getReader().getString();
             if (raw == null) return;
             String trimmed = raw.startsWith("/") ? raw.substring(1) : raw;

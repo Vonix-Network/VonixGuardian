@@ -795,11 +795,30 @@ public final class GuardianCommands {
             final GuardianConfig finalNext = next;
             final java.nio.file.Path finalPath = path;
             final String finalKey = key;
+            final String finalValue = value;
             final net.minecraft.server.MinecraftServer server = src.getServer();
             WORKER.submit(() -> {
                 try {
-                    ConfigLoader.save(finalPath, finalNext);
-                    Guardian.ReloadResult r = g.reloadConfig(finalPath);
+                    // v1.3.7 DD1 (round-7 P1): serialize the whole read-build-save-reload
+                    // sequence under Guardian.CONFIG_MUTATION_LOCK so concurrent /vg config
+                    // set calls on the WORKER pool (size 2) can't clobber each other's
+                    // full-file save with a stale finalNext computed from an older snapshot.
+                    // We must ALSO re-read + re-build under the lock, so recompute merged
+                    // from the current live config rather than trusting the captured next.
+                    Guardian.ReloadResult r;
+                    synchronized (Guardian.CONFIG_MUTATION_LOCK) {
+                        GuardianConfig freshNext = withValue(g.config(), finalKey, finalValue);
+                        if (freshNext == null) {
+                            if (server != null) {
+                                server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                        "[VonixGuardian] Config key vanished under concurrent update: " + finalKey)));
+                            }
+                            return;
+                        }
+                        freshNext.validate();
+                        ConfigLoader.save(finalPath, freshNext);
+                        r = g.reloadConfigUnlocked(finalPath);
+                    }
                     if (server == null) return;
                     server.execute(() -> {
                         if (!r.errors().isEmpty()) {

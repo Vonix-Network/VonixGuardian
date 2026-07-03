@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-07-03
+
+**Round-7 review close-out (inline DD1 sweep).** Small, focused pass in response to the round-7 review agents' converged findings — no subagent waves needed. Closes the reload-and-config-set race window that CC2's WORKER offload introduced, plus three sister thread-safety gates on `onCommandFillSetblock`.
+
+### Fixed
+
+- **DD1-P1-1: `onCommandFillSetblock` missing `isSameThread()` gate.** All 3 Forge cells (mc-1.18.2 / mc-1.19.2 / mc-1.20.1) now short-circuit when the CommandEvent dispatches off the server thread — previously only the `getLevel() == null` half of the CC2 P1-5 fix landed, leaving Sinytra Connector / integrated-server cases free to run up to 32,768 `getBlockState` reads off-tick. NeoForge cell has no `onCommandFillSetblock` handler by design.
+- **DD1-P1-2: `Guardian.reloadConfig` not internally serialized.** New `Guardian.CONFIG_MUTATION_LOCK` static monitor + `withConfigMutationLock` convenience + `reloadConfigUnlocked` variant. `reloadConfig` now enters the monitor before any state mutation — prevents two WORKER-thread `/vg config set` calls or a WORKER-thread set racing a server-thread `/vg reload` from interleaving the read-old / build-merged / publish-new sequence.
+- **DD1-P1-3: `/vg config set` lost-update.** All 8 loader cells' `Config.set` critical section now re-reads the current live config *inside* `CONFIG_MUTATION_LOCK` before calling `withValue` — no more clobbering a sibling set command with a stale `finalNext` computed pre-lock. Persist + reload happen inside the same critical section via `reloadConfigUnlocked`.
+
+### Notes
+
+- No behavior change on the release-critical happy path (single operator, one config command at a time). The fix is only observable under concurrent operator sessions or panel-driven bulk sets.
+- No changes to test surface — CC1's canonical-ctor sweep from v1.3.6 remains intact.
+- Boot log still emits `PLUGIN_VERSION` (added in CC2).
+
+
 ### Added
 
 - **Z3 — Forge hopper + `/fill`/`/setblock` event-bus fallback.** Round-3
