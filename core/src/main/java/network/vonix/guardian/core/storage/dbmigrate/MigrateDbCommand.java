@@ -90,12 +90,15 @@ public final class MigrateDbCommand {
         // and open a fresh DAO for it. This DAO is short-lived: initialised, migrated
         // to, then closed.
         GuardianConfig.Database destCfg = new GuardianConfig.Database(
-            mt.type(), mt.file(), mt.jdbcUrl(), mt.user(), mt.password(), null);
+            mt.type(), mt.file(), mt.jdbcUrl(), mt.user(), mt.password(), null,
+            g.config().database() == null ? GuardianConfig.Hikari.defaults() : g.config().database().hikari());
         GuardianConfig destWrapper = new GuardianConfig(
             destCfg,
             g.config().queue(), g.config().logFile(), g.config().actions(),
             g.config().permissions(), g.config().lookup(), g.config().privacy(),
-            g.config().purge(), g.config().theme());
+            g.config().purge(),
+            g.config().storage(), g.config().rollback(),
+            g.config().theme(), g.config().language());
 
         printLine.accept("[VonixGuardian] migrate-db: opening destination backend (" + target + ")...");
         try (GuardianDao destDao = StorageFactory.open(destWrapper)) {
