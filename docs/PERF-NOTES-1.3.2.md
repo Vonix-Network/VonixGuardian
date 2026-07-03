@@ -131,3 +131,77 @@ the "extend ActionType" recipe.
 `GuardianConfig.java` (X1 shipped `Storage.persistNbt` already), `Schema.java`
 (X1 finalized v5), `EventGate.java`, mixins, `ActionBuilder.java` (X1 already
 added NBT setters).
+
+## Y5 — Attribution memory amortization (2026-07-03)
+
+**Wave scope.** Round-2 audit P1-3 and P1-4 — two attribution-side caches
+introduced in v1.3.1 that put O(n) or lock-cycle work on the server-thread hot
+path. Y5 amortizes both without changing behavior.
+
+**P1-3 — `TntPrimeMemory.hardEvict` amortization.** X7 in v1.3.1 shipped
+`TntPrimeMemory` for the TNT-prime → detonate attribution chain. Under
+sustained over-cap pressure (a modded server priming thousands of TNT per
+minute) every `record()` above the cap paid a full `entrySet().removeIf(...)`
+plus an unbounded arbitrary-drop loop on the server tick. Y5 gates the real
+sweep behind a `hardEvictCounter % HARD_EVICT_STRIDE` check (`STRIDE = 64`) —
+mirrors the `DamageHistory.EVICT_STRIDE` pattern from X6 — and caps the
+second-pass arbitrary-drop loop at `HARD_EVICT_ARBITRARY_CAP = 128`
+iterations. Steady-state size can transiently overshoot the cap by up to
+`STRIDE + ARBITRARY_CAP` entries (~192 entries × ~150 B = ~28 KiB) before the
+next sweep catches up — trivially cheaper than 63 wasted O(n) scans on the
+tick. `clear()` also resets the amortization counter so a reload starts fresh.
+
+**P1-4 — `FluidSourceMemory.lookup` empty fast-path.** X3 in v1.3.1 shipped
+`FluidSourceMemory` for bucket-empty → fluid-spread traceback. Every fluid
+tick calls `lookup()`; on a non-griefed server the map is empty forever and
+each tick was paying a `ReentrantLock.lock()`/`unlock()` cycle plus map
+iterator alloc for nothing. Y5 adds a `volatile int size` field — written
+inside the lock in `recordBucketEmpty()` and inside the lock in `lookup()`'s
+TTL-eviction branch, read outside the lock at the top of `lookup()` — and
+short-circuits the whole method when size is zero. On the happy path (no
+bucket-empty ever recorded) `lookup()` now does one volatile read + null
+return, sub-ns amortized. The public `size()` accessor becomes lock-free by
+the same mechanism.
+
+**Amortization bounds.**
+- `TntPrimeMemory.record` worst-case amortized cost per call is now
+  `O(HARD_EVICT_ARBITRARY_CAP / HARD_EVICT_STRIDE)` = `O(2)` scan steps
+  regardless of `maxEntries`. Prior surface: `O(maxEntries)` per over-cap
+  insert.
+- `FluidSourceMemory.lookup` on empty is now one volatile read (no lock, no
+  alloc); prior surface: one `ReentrantLock` cycle + one map-iterator alloc
+  per call.
+
+**Tests + benchmark added:**
+- `TntPrimeMemoryHardEvictAmortizedTest`: 6 cases — stride constant, arbitrary
+  cap constant, under-cap-never-sweeps, over-cap-fires-exactly-once at STRIDE,
+  20× cap insert storm stays bounded and amortizes, half-TTL pass still evicts
+  stale entries, `clear()` resets the amortization counter.
+- `FluidSourceMemoryEmptyFastPathTest`: 6 cases — fresh instance reports size
+  0 without lock, empty lookup returns null without lock acquisition,
+  record → lookup still hits, volatile size tracks byPos across TTL eviction,
+  volatile size tracks byPos across over-cap eviction, reflective check that
+  the `size` field carries the `volatile` modifier.
+- `BenchAttributionMemoriesHotPath`: micro-bench harness plus 3 CI-visible
+  `@Test`s enforcing a `< 1000 ns/op` CI ceiling (target `< 100 ns/op`
+  amortized; loose 10× ceiling absorbs shared-runner jitter). Also asserts
+  the `ReentrantLock` was never acquired after 10k empty `lookup()` calls.
+
+**Owned files (Y5):**
+- `core/src/main/java/network/vonix/guardian/core/attribution/TntPrimeMemory.java`
+  (hardEvict amortize + arbitrary-loop cap + `clear()` counter reset).
+- `core/src/main/java/network/vonix/guardian/core/attribution/FluidSourceMemory.java`
+  (volatile size + empty fast-path + lock-free `size()`).
+- `core/src/test/java/network/vonix/guardian/core/attribution/TntPrimeMemoryHardEvictAmortizedTest.java`
+  (new).
+- `core/src/test/java/network/vonix/guardian/core/attribution/FluidSourceMemoryEmptyFastPathTest.java`
+  (new).
+- `core/src/test/java/network/vonix/guardian/core/bench/BenchAttributionMemoriesHotPath.java`
+  (new).
+
+**Did NOT touch:** any Y1/Y2/Y3 files, `Guardian.java`, `RollbackEngine.java`,
+`WorldMutator*.java`, cell events, cell mixins, config. Behavior is unchanged:
+`record()` and `lookup()` return identical results to X7/X3 — only the cost
+profile changes.
+
+**Build tail:** `./gradlew -PbuildProfile=coreonly :core:build` passes.

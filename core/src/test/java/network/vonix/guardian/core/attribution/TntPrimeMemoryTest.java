@@ -174,17 +174,30 @@ class TntPrimeMemoryTest {
         assertThat(UniversalAttribution.resolveTntPrime(mem, "minecraft:overworld", 0, 64, 0, "#tnt")).isNotNull();
     }
 
-    /** Over-cap puts trigger eviction so the map never grows unboundedly. */
+    /**
+     * Over-cap puts trigger eviction so the map never grows unboundedly.
+     *
+     * <p>v1.3.2 Y5 (P1-3): the sweep is now amortized behind
+     * {@link TntPrimeMemory#HARD_EVICT_STRIDE}, so a small burst that never
+     * crosses STRIDE over-cap inserts will legitimately stay above cap until
+     * the next sweep fires. The invariant we still hold is that the map is
+     * bounded — the {@code TntPrimeMemoryHardEvictAmortizedTest} pins the
+     * quantitative bound. Here we just assert we didn't grow past the
+     * amortized ceiling.
+     */
     @Test
     void overCapEvictsOldestEntries() {
         AtomicLong now = new AtomicLong(0L);
-        TntPrimeMemory mem = new TntPrimeMemory(10_000L, 4, now::get);
+        int cap = 4;
+        TntPrimeMemory mem = new TntPrimeMemory(10_000L, cap, now::get);
         for (int i = 0; i < 20; i++) {
             now.set(1_000L + i);
             mem.record(WORLD, i, 0, 0,
                     TntPrimeMemory.PrimeRecord.player(UUID.randomUUID(), "P" + i, now.get()));
         }
-        assertThat(mem.size()).isLessThanOrEqualTo(4);
+        int upperBound = cap + TntPrimeMemory.HARD_EVICT_STRIDE
+                + TntPrimeMemory.HARD_EVICT_ARBITRARY_CAP;
+        assertThat(mem.size()).isLessThanOrEqualTo(upperBound);
     }
 
     /** Null worldId / null actor are ignored (defensive). */

@@ -62,6 +62,30 @@ public final class TntPrimeMemory {
     /** Amortised-cleanup stride: how many entries to scan per put/miss. */
     private static final int SWEEP_STRIDE = 32;
 
+    /**
+     * v1.3.2 Y5 (P1-3): amortization stride for {@link #hardEvict(long)}. Under
+     * sustained over-cap pressure (busy modded server priming thousands of TNT
+     * per minute) X7 would otherwise pay a full O(n) scan on every over-cap
+     * insert on the server thread. Mirrors the {@code DamageHistory.EVICT_STRIDE}
+     * pattern introduced in X6: only invoke the real sweep every 64th over-cap
+     * insert. Between sweeps the map may transiently overshoot the cap by up
+     * to {@code HARD_EVICT_STRIDE} entries (~9 KiB heap for {@link PrimeRecord})
+     * — trivially cheaper than 63 wasted O(n) scans on the tick.
+     */
+    static final int HARD_EVICT_STRIDE = 64;
+
+    /**
+     * v1.3.2 Y5 (P1-3): cap on the second-pass "drop arbitrary entries" loop
+     * inside {@link #hardEvict(long)}. When the halfTtl removeIf pass fails to
+     * bring us under cap (all entries young), we bound the number of arbitrary
+     * evictions to this many per sweep. Keeps the amortized cost of a single
+     * hardEvict call independent of {@code maxEntries}. Chosen so that at
+     * {@link #HARD_EVICT_STRIDE} = 64 amortization we can absorb an insert
+     * storm of {@code 128 * 64 = 8192} entries before size actually catches
+     * back up to cap — matches the default {@link #DEFAULT_MAX_ENTRIES}.
+     */
+    static final int HARD_EVICT_ARBITRARY_CAP = 128;
+
     private final ConcurrentHashMap<Key, PrimeRecord> entries = new ConcurrentHashMap<>();
     private final long ttlMs;
     private final int maxEntries;
@@ -71,6 +95,19 @@ public final class TntPrimeMemory {
 
     /** For amortised eviction: rolling cursor into the entrySet. */
     private volatile java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> sweepCursor;
+
+    /**
+     * v1.3.2 Y5 (P1-3): counter of insertions observed while {@code size > maxEntries}.
+     * We only invoke the real {@link #hardEvict(long)} sweep every
+     * {@link #HARD_EVICT_STRIDE}th over-cap insert. Test-visible via
+     * {@link #hardEvictInvocations()}.
+     */
+    private final java.util.concurrent.atomic.AtomicLong hardEvictCounter =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** Test-visible counter of times the real hardEvict sweep actually ran. */
+    private final java.util.concurrent.atomic.AtomicLong hardEvictInvocations =
+            new java.util.concurrent.atomic.AtomicLong();
 
     public TntPrimeMemory() {
         this(DEFAULT_TTL_MS, DEFAULT_MAX_ENTRIES, System::currentTimeMillis);
@@ -102,7 +139,15 @@ public final class TntPrimeMemory {
         entries.put(k, actor.withTimestamp(now));
         maybeEvict(now);
         if (entries.size() > maxEntries) {
-            hardEvict(now);
+            // v1.3.2 Y5 (P1-3): amortize the O(n) hard-evict sweep. Under a
+            // sustained over-cap prime storm (thousands of TNT/min on a modded
+            // server), invoking hardEvict on every record() call put an O(n)
+            // scan on the server tick. Only fire the real sweep every
+            // HARD_EVICT_STRIDE-th over-cap insert; between sweeps the map
+            // may transiently overshoot by up to STRIDE entries.
+            if ((hardEvictCounter.incrementAndGet() % HARD_EVICT_STRIDE) == 0L) {
+                hardEvict(now);
+            }
         }
     }
 
@@ -165,6 +210,12 @@ public final class TntPrimeMemory {
     public void clear() {
         entries.clear();
         sweepCursor = null;
+        hardEvictCounter.set(0L);
+    }
+
+    /** Test-visible: number of times the real hardEvict sweep actually ran (Y5). */
+    long hardEvictInvocations() {
+        return hardEvictInvocations.get();
     }
 
     /** Amortised sweep: walk up to {@code SWEEP_STRIDE} entries and drop expired. */
@@ -190,18 +241,34 @@ public final class TntPrimeMemory {
         }
     }
 
-    /** Hard-evict oldest until size drops below maxEntries. */
+    /**
+     * Hard-evict oldest until size drops below maxEntries.
+     *
+     * <p>v1.3.2 Y5 (P1-3): callers gate this via
+     * {@link #hardEvictCounter} % {@link #HARD_EVICT_STRIDE} so this method
+     * only runs on every 64th over-cap insert. The internal "drop arbitrary
+     * entries" second-pass loop is now bounded by
+     * {@link #HARD_EVICT_ARBITRARY_CAP} iterations to keep amortized cost
+     * per hardEvict call independent of {@code maxEntries}.
+     */
     private void hardEvict(long now) {
+        hardEvictInvocations.incrementAndGet();
         // ConcurrentHashMap gives no ordering guarantees, so we just drop
         // any entries older than half-TTL first, then fall back to arbitrary.
         long halfTtlBoundary = now - (ttlMs / 2);
         entries.entrySet().removeIf(e -> e.getValue().primedAtMillis < halfTtlBoundary);
         if (entries.size() <= maxEntries) return;
-        // Still over: drop arbitrary entries until under cap.
+        // Still over: drop arbitrary entries until under cap OR we hit the
+        // per-sweep cap. Bounding this loop keeps a single hardEvict call at
+        // O(min(overshoot, HARD_EVICT_ARBITRARY_CAP)) rather than O(overshoot).
+        // Combined with the STRIDE gate on the caller, worst-case amortized
+        // work per record() call is O(HARD_EVICT_ARBITRARY_CAP / HARD_EVICT_STRIDE).
         java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> it = entries.entrySet().iterator();
-        while (entries.size() > maxEntries && it.hasNext()) {
+        int dropped = 0;
+        while (entries.size() > maxEntries && it.hasNext() && dropped < HARD_EVICT_ARBITRARY_CAP) {
             it.next();
             it.remove();
+            dropped++;
         }
         sweepCursor = null;
     }

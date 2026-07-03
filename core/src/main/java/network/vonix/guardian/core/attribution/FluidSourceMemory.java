@@ -77,6 +77,23 @@ public final class FluidSourceMemory {
     /** Insertion-order FIFO for cheap over-cap eviction. */
     private final Deque<Key> insertOrder = new ArrayDeque<>();
 
+    /**
+     * v1.3.2 Y5 (P1-4): lock-free size snapshot mirroring {@link #byPos#size()}.
+     *
+     * <p>The X3 fluid-tick lookup was paying a {@link ReentrantLock#lock()}
+     * cycle on every fluid tick even when no bucket-empty had ever been
+     * recorded — the common case on non-griefed servers. This volatile is
+     * updated inside the lock (so it strictly follows {@code byPos.size()})
+     * and read outside the lock in the fast-path guard: if we observe zero
+     * we can skip the lock entirely. A stale read of zero is impossible in
+     * practice because a bucket-empty happens-before its subsequent
+     * fluid-tick lookup on the same thread (server tick); worst case on
+     * off-thread readers is a single extra unlocked lookup — still safe
+     * because the actual lookup path continues to guard the map with the
+     * lock.
+     */
+    private volatile int size;
+
     public FluidSourceMemory() {
         this(TTL_MS, MAX_RADIUS_MANHATTAN, MAX_ENTRIES);
     }
@@ -119,6 +136,10 @@ public final class FluidSourceMemory {
                 Key evict = insertOrder.pollFirst();
                 if (evict != null) byPos.remove(evict);
             }
+            // v1.3.2 Y5 (P1-4): publish new size for the lock-free fast-path
+            // in lookup(). Written inside the lock so it strictly reflects
+            // byPos.size(); read outside the lock via the volatile.
+            size = byPos.size();
         } finally {
             lock.unlock();
         }
@@ -140,12 +161,20 @@ public final class FluidSourceMemory {
      */
     public Record lookup(String worldId, int x, int y, int z, long nowMs) {
         if (worldId == null) return null;
+        // v1.3.2 Y5 (P1-4): lock-free fast-path for the overwhelmingly common
+        // "no bucket-empty ever recorded" case. Every fluid tick calls this;
+        // on a non-griefed server byPos is empty and paying a ReentrantLock
+        // cycle is pure waste. Reading the volatile size (published under the
+        // lock in recordBucketEmpty / size()) lets us skip the lock entirely
+        // when there is nothing to look up.
+        if (size == 0) return null;
         long cutoff = nowMs - ttlMs;
         lock.lock();
         try {
             Record best = null;
             int bestDist = Integer.MAX_VALUE;
             Iterator<Map.Entry<Key, Record>> it = byPos.entrySet().iterator();
+            boolean anyRemoved = false;
             while (it.hasNext()) {
                 Map.Entry<Key, Record> e = it.next();
                 Record r = e.getValue();
@@ -153,6 +182,7 @@ public final class FluidSourceMemory {
                     // TTL-expired: opportunistically evict.
                     it.remove();
                     insertOrder.remove(e.getKey());
+                    anyRemoved = true;
                     continue;
                 }
                 Key k = e.getKey();
@@ -164,17 +194,26 @@ public final class FluidSourceMemory {
                     bestDist = dist;
                 }
             }
+            // v1.3.2 Y5 (P1-4): keep the volatile size snapshot in sync when
+            // we've opportunistically evicted TTL-expired entries. Ensures
+            // the next lookup can hit the empty fast-path.
+            if (anyRemoved) size = byPos.size();
             return best;
         } finally {
             lock.unlock();
         }
     }
 
-    /** @return current entry count. Test helper. */
+    /**
+     * @return current entry count. Test helper.
+     *
+     * <p>v1.3.2 Y5 (P1-4): reads the lock-free {@code size} volatile — same
+     * value written under the lock in {@link #recordBucketEmpty} and
+     * {@link #lookup}. Avoids a lock cycle on hot paths that only need to
+     * know "is there anything in here?".
+     */
     public int size() {
-        lock.lock();
-        try { return byPos.size(); }
-        finally { lock.unlock(); }
+        return size;
     }
 
     /** Immutable value class for a recorded bucket-empty. */
