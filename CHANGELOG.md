@@ -50,6 +50,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cells). Fabric + NeoForge cells unchanged — they still log the natural
   block surface via their wired mixins.
 
+## [1.3.5] - 2026-07-03
+
+### Fixed
+
+- **BB1 — `ConfigLoader.migrateForwardCompat` rollback thread.** Round-5
+  parity audit found that all six `new GuardianConfig(...)` sites inside
+  `migrateForwardCompat` (lines 137, 150, 159, 173, 192, 273) were still
+  using the pre-X8 11-arg back-compat constructor introduced in v1.3.1,
+  which silently reset `rollback` to `Rollback.defaults()` on every
+  invocation. Any pre-X8 upgrade path — `purge.autoPurgeTime` backfill
+  (W3-B4), `permissions.perNodeOpLevels` backfill (W3-B8), `language`
+  backfill (W5-06), `storage` backfill (X1), `database.hikari` backfill
+  (X6), or the W5-07 CP-parity terminal rewrite — would clobber an
+  operator's customised `rollback.explosionSupplementalReach` back to
+  16. This is the same defect class as v1.3.3 Z1 (outer 9→12 widening)
+  and v1.3.4 AA1 (sub-record 4→5 / 18→32 widening), at a top-level
+  `GuardianConfig` boundary that neither wave covered. Fix threads
+  `work.rollback() == null ? Rollback.defaults() : work.rollback()` at
+  the 10th positional arg of each of the six sites, matching the
+  canonical 12-arg order (database, queue, logFile, actions, permissions,
+  lookup, privacy, purge, storage, rollback, theme, language). Two new
+  regression tests exercise the survival guarantee:
+  `PreX8ConfigPreservesRollbackTest` (custom
+  `explosionSupplementalReach=64` survives the W5-07 rewrite branch;
+  `=32` survives the purge backfill branch) and
+  `FullyPreX8ConfigMigratesRollbackDefaultsTest` (a config with no
+  `rollback` section at all migrates cleanly to `Rollback.defaults()`
+  through both a backfill branch and a clean-pass, with no NPE).
+
+### Corrected
+
+- **docs/PERF-NOTES-1.3.4.md** — retraction added for the false
+  "ConfigLoader.java was verified canonical" claim. The AA1 doc was
+  written on the assumption that the round-4 "backfill-safe" audit had
+  already covered the top-level `GuardianConfig` ctor sites in
+  `ConfigLoader.migrateForwardCompat`. It hadn't — the audit checked
+  that the sub-record backfill values were correct, not that the
+  outer-record widening threaded through `rollback`. See
+  `docs/PERF-NOTES-1.3.5.md` § BB1 for the full analysis.
+
 ## [1.3.4] - 2026-07-03
 
 ### Fixed

@@ -138,6 +138,7 @@ public final class ConfigLoader {
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), newPurge,
                 work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
                 work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
@@ -151,6 +152,7 @@ public final class ConfigLoader {
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 newPerms, work.lookup(), work.privacy(), work.purge(),
                 work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
                 work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
@@ -160,6 +162,7 @@ public final class ConfigLoader {
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
                 work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
                 work.theme(), "en_us"
             );
         }
@@ -174,6 +177,7 @@ public final class ConfigLoader {
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
                 GuardianConfig.Storage.defaults(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
                 work.theme(), work.language()
             );
         }
@@ -193,6 +197,7 @@ public final class ConfigLoader {
                 newDb, work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
                 work.storage() == null ? GuardianConfig.Storage.defaults() : work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
                 work.theme(), work.language() == null ? "en_us" : work.language()
             );
         }
@@ -274,6 +279,7 @@ public final class ConfigLoader {
                 work.database(), work.queue(), work.logFile(), newActions,
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),
                 work.storage(),
+                work.rollback() == null ? GuardianConfig.Rollback.defaults() : work.rollback(),
                 work.theme(), work.language()
         );
     }
