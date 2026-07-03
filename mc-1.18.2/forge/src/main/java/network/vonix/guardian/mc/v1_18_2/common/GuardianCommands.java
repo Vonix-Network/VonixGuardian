@@ -826,6 +826,7 @@ public final class GuardianCommands {
                 case "actions.entityBlockChangeCoalesceWindowMs" -> Long.toString(c.actions().entityBlockChangeCoalesceWindowMs());
                 case "actions.entityBlockChangeMaxTracked" -> Integer.toString(c.actions().entityBlockChangeMaxTracked());
                 case "actions.entityChangeLogAllEntities" -> Boolean.toString(c.actions().entityChangeLogAllEntities());
+                case "actions.mixinHotEvents" -> Boolean.toString(c.actions().mixinHotEvents());
                 default -> null;
             };
         }
@@ -861,6 +862,7 @@ public final class GuardianCommands {
                 case "actions.entityBlockChangeCoalesceWindowMs" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), parseLong(value, key), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
                 case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities()));
                 case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key)));
+                case "actions.mixinHotEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), parseBool(value, key)));
                 default -> null;
             };
         }

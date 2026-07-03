@@ -14,6 +14,7 @@ import network.vonix.guardian.core.blacklist.BlacklistMatcher;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.PerWorldConfigStore;
+import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 import network.vonix.guardian.core.event.BlacklistFileHook;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventSubmitter;
@@ -592,6 +593,18 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     @Override
     public void submit(Action a) {
         if (a == null) {
+            return;
+        }
+        // ---- v1.3.0 W4: mixin hot-event kill-switch ----
+        // When actions.mixinHotEvents=false, bypass any action whose sourceTag was tagged
+        // by a hot-tick mixin ("#fire", "#natural", "#dispenser" prefixes agreed with W1a/b/c).
+        // This lets operators disable the mixin pipeline under load without an EventGate rebuild.
+        // NOTE(W2): move this predicate into EventGate as a short-circuiting built-in check so
+        // shouldLog(a) can bail before any hook chain work. Keeping it here for W4 keeps the
+        // change surface small and doesn't touch EventGate wiring (W2 owns Guardian.java and
+        // will fold this into a proper gate step during its allocation-cut pass).
+        if (!config.actions().mixinHotEvents() && MixinHotEventFilter.isMixinSourced(a.sourceTag())) {
+            gated.incrementAndGet();
             return;
         }
         if (!gate.shouldLog(a)) {

@@ -200,6 +200,14 @@ public record GuardianConfig(
      *                               Default {@code true}. Added W5-07.
      * @param logCancelledChat       CP-parity: record chat events even when a listener cancels them
      *                               (e.g. spam-filter plugins). Default {@code false}. Added W5-07.
+     * @param mixinHotEvents         Master kill-switch for hot-tick mixin-sourced events (fire spread,
+     *                               natural block form/fade/decay/spread, dispenser mixins). When
+     *                               {@code false}, {@link network.vonix.guardian.core.Guardian#submit}
+     *                               short-circuits any action whose {@code sourceTag} begins with
+     *                               {@code "#fire"}, {@code "#natural"}, or {@code "#dispenser"}
+     *                               before it enters the gate/queue. Operators toggle this off under
+     *                               load when a mixin pipeline is drowning the queue. Default
+     *                               {@code true}. Added v1.3.0 W4.
      */
     public record Actions(
         boolean logBlocks,
@@ -233,7 +241,9 @@ public record GuardianConfig(
         boolean logCampfireStart,
         boolean logHopperMetaFilter,
         boolean logDuplicateSuppression,
-        boolean logCancelledChat
+        boolean logCancelledChat,
+        // ---- v1.3.0 W4: kill-switch for hot-tick mixin-sourced events ----
+        boolean mixinHotEvents
     ) {
         /**
          * Backward-compat constructor for callers/tests written before the W5-07 CP-parity toggles
@@ -288,7 +298,66 @@ public record GuardianConfig(
                 true,  // logCampfireStart
                 false, // logHopperMetaFilter — opt-in dedup
                 true,  // logDuplicateSuppression
-                false  // logCancelledChat    — opt-in
+                false, // logCancelledChat    — opt-in
+                true   // mixinHotEvents      — W4 default ON (kill-switch is opt-out)
+            );
+        }
+
+        /**
+         * Backward-compat 31-arg constructor for callers/tests written before v1.3.0 W4 added
+         * {@code mixinHotEvents}. Delegates to the canonical 32-arg constructor with
+         * {@code mixinHotEvents=true} (the safe default matching pre-W4 behaviour where the
+         * mixin pipeline was always live).
+         *
+         * @deprecated Prefer the canonical 32-arg constructor. This shim exists so cell/test
+         *     code that predates W4 keeps compiling until every call site is updated (tracked
+         *     as a v1.3.x cleanup — same policy as the W5-07 18-arg shim above).
+         */
+        @Deprecated
+        public Actions(
+            boolean logBlocks,
+            boolean logContainers,
+            boolean logItems,
+            boolean logEntities,
+            boolean logExplosions,
+            boolean logChat,
+            boolean logCommands,
+            boolean logSessions,
+            boolean logSigns,
+            boolean logInteractions,
+            boolean logWorldEvents,
+            List<String> worldBlacklist,
+            List<String> blockBlacklist,
+            List<String> sourceBlacklist,
+            long entityBlockChangeCoalesceWindowMs,
+            int entityBlockChangeMaxTracked,
+            List<String> entityChangeAllowlist,
+            boolean entityChangeLogAllEntities,
+            boolean logNaturalBreaks,
+            boolean logTreeGrowth,
+            boolean logMushroomGrowth,
+            boolean logVineGrowth,
+            boolean logSculkSpread,
+            boolean logPortals,
+            boolean logWaterFlow,
+            boolean logLavaFlow,
+            boolean logFireExtinguish,
+            boolean logCampfireStart,
+            boolean logHopperMetaFilter,
+            boolean logDuplicateSuppression,
+            boolean logCancelledChat
+        ) {
+            this(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                true   // v1.3.0 W4: mixinHotEvents default ON
             );
         }
     }
@@ -401,7 +470,8 @@ public record GuardianConfig(
                 true,   // logCampfireStart           — CP defaults ON
                 false,  // logHopperMetaFilter        — opt-in NBT-aware dedup; costs an NBT compare per hopper tick
                 true,   // logDuplicateSuppression    — CP defaults ON (collapse dupe rows)
-                false   // logCancelledChat           — opt-in; log even chat cancelled by other plugins
+                false,  // logCancelledChat           — opt-in; log even chat cancelled by other plugins
+                true    // mixinHotEvents             — W4 kill-switch defaults ON (mixin pipeline live)
             ),
             new Permissions(true, 3, java.util.Map.of()),
             new Lookup(7, 10_000, 100_000, 4),

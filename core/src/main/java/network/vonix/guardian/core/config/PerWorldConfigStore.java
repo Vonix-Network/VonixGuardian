@@ -157,7 +157,21 @@ public final class PerWorldConfigStore {
             longVal(o, "entityBlockChangeCoalesceWindowMs", root.entityBlockChangeCoalesceWindowMs()),
             intVal(o, "entityBlockChangeMaxTracked", root.entityBlockChangeMaxTracked()),
             stringList(o, "entityChangeAllowlist", root.entityChangeAllowlist()),
-            bool(o, "entityChangeLogAllEntities", root.entityChangeLogAllEntities())
+            bool(o, "entityChangeLogAllEntities", root.entityChangeLogAllEntities()),
+            bool(o, "logNaturalBreaks", root.logNaturalBreaks()),
+            bool(o, "logTreeGrowth", root.logTreeGrowth()),
+            bool(o, "logMushroomGrowth", root.logMushroomGrowth()),
+            bool(o, "logVineGrowth", root.logVineGrowth()),
+            bool(o, "logSculkSpread", root.logSculkSpread()),
+            bool(o, "logPortals", root.logPortals()),
+            bool(o, "logWaterFlow", root.logWaterFlow()),
+            bool(o, "logLavaFlow", root.logLavaFlow()),
+            bool(o, "logFireExtinguish", root.logFireExtinguish()),
+            bool(o, "logCampfireStart", root.logCampfireStart()),
+            bool(o, "logHopperMetaFilter", root.logHopperMetaFilter()),
+            bool(o, "logDuplicateSuppression", root.logDuplicateSuppression()),
+            bool(o, "logCancelledChat", root.logCancelledChat()),
+            bool(o, "mixinHotEvents", root.mixinHotEvents())
         );
     }
 

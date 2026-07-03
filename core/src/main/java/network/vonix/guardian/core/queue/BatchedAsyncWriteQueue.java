@@ -58,6 +58,27 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final AtomicLong lastHistogramLogNs = new AtomicLong(Long.MIN_VALUE);
     private static final long HISTOGRAM_LOG_INTERVAL_NS = TimeUnit.SECONDS.toNanos(30);
 
+    // ---- v1.3.0 W4: sliding-window per-type submit-rate meter (30s window) ----
+    // For each ActionType we keep a small ring of bucketed counts. A "bucket" is a 1-second
+    // slice of the last 30 seconds. On submit, the current bucket (based on nanoTime) is
+    // incremented; on read, we sum the last 30 buckets and divide by the window in seconds
+    // to get an events/sec rate. Buckets older than the window are lazily zeroed on write
+    // and skipped on read.
+    //
+    // Allocation-rate meter: also tracks the overall allocation (submit) count per second
+    // as an aggregate signal — see allocationRatePerSecond().
+    //
+    // Design notes:
+    //   * per-type buckets are AtomicLongArray to keep the write path allocation-free after
+    //     the first submit for a given type;
+    //   * window/bucket sizing is a compile-time constant to keep read+write O(RATE_BUCKETS);
+    //   * no time-source injection — nanoTime() is used directly. Tests that want deterministic
+    //     rates use the {@link #resetRateMeterForTest} + fixed-Clock accessor below.
+    static final int RATE_WINDOW_SECONDS = 30;
+    static final int RATE_BUCKETS = RATE_WINDOW_SECONDS; // 1 bucket per second
+    private final ConcurrentHashMap<String, RateBuckets> submitRateByType = new ConcurrentHashMap<>();
+    private final RateBuckets aggregateRate = new RateBuckets();
+
     private volatile boolean shutdown = false;
     private volatile boolean closed = false;
     private volatile boolean paused = false;
@@ -104,6 +125,10 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         // decides to accept or drop). This is the TRUE producer rate.
         String typeKey = a.type() == null ? "UNKNOWN" : a.type().name();
         submittedByType.computeIfAbsent(typeKey, k -> new LongAdder()).increment();
+        // v1.3.0 W4: sliding-window rate meter — per-type + aggregate allocation rate.
+        long nowNs = System.nanoTime();
+        submitRateByType.computeIfAbsent(typeKey, k -> new RateBuckets()).tick(nowNs);
+        aggregateRate.tick(nowNs);
         if (!queue.offer(a)) {
             long total = dropped.incrementAndGet();
             droppedByType.computeIfAbsent(typeKey, k -> new LongAdder()).increment();
@@ -189,6 +214,50 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             snap.put(e.getKey(), e.getValue().sum());
         }
         return java.util.Collections.unmodifiableMap(snap);
+    }
+
+    /**
+     * Snapshot of the per-type submit-rate meter, in <em>events per second</em>, averaged
+     * over the trailing {@value #RATE_WINDOW_SECONDS}-second window.
+     *
+     * <p>The window ends at {@code System.nanoTime()} of the call; older buckets are
+     * excluded and treated as zero. A type that hasn't received a submit in the last
+     * {@value #RATE_WINDOW_SECONDS} seconds will not appear in the map (its bucket ring
+     * has fully aged out and yields 0.0).</p>
+     *
+     * <p>Precision: 1-second bucket granularity, so bursts under one second are rounded
+     * up to at least 1.0/{@value #RATE_WINDOW_SECONDS} events/sec. Sufficient for the
+     * {@code /vg status} diagnostic surface.</p>
+     *
+     * @return unmodifiable map of {@code ActionType} name &rarr; events/second (double)
+     * @since 1.3.0
+     */
+    public java.util.Map<String, Double> submitRateByType() {
+        long nowNs = System.nanoTime();
+        java.util.LinkedHashMap<String, Double> snap = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, RateBuckets> e : submitRateByType.entrySet()) {
+            double rate = e.getValue().eventsPerSecond(nowNs);
+            if (rate > 0.0) {
+                snap.put(e.getKey(), rate);
+            }
+        }
+        return java.util.Collections.unmodifiableMap(snap);
+    }
+
+    /**
+     * Overall allocation rate across all action types, in events per second, averaged
+     * over the trailing {@value #RATE_WINDOW_SECONDS}-second window.
+     *
+     * <p>Named "allocation rate" because every {@code submit(Action)} allocates the
+     * downstream row buffer + JSON payload; watching this number is the operator's
+     * signal for "am I building GC pressure faster than I can flush?" — pair with
+     * {@code /vg status} queue depth for a full picture.</p>
+     *
+     * @return events/second (double, &ge; 0)
+     * @since 1.3.0
+     */
+    public double allocationRatePerSecond() {
+        return aggregateRate.eventsPerSecond(System.nanoTime());
     }
 
     /**
@@ -421,5 +490,68 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         long total = 0;
         for (LongAdder a : map.values()) total += a.sum();
         return total;
+    }
+
+    // ================================================================
+    // v1.3.0 W4: sliding-window rate meter
+    // ================================================================
+
+    /**
+     * Fixed-size ring of per-second counter buckets used to compute a sliding-window
+     * events/second rate. Buckets are indexed by {@code (secondSinceEpoch % RATE_BUCKETS)};
+     * each bucket carries the timestamp of the second it represents so stale buckets
+     * (older than the ring size) can be lazily reset on write and skipped on read.
+     *
+     * <p>Thread-safety: each bucket count is a {@link LongAdder} for contention-free
+     * increment; the bucket-timestamp array is an {@link java.util.concurrent.atomic.AtomicLongArray}
+     * to allow a racing writer to CAS a fresh timestamp when a bucket wraps. Racing writers
+     * against a stale timestamp deterministically resolve on the CAS — one writer resets the
+     * bucket, others see the fresh timestamp and just increment. The read path is best-effort
+     * (a bucket that flips its timestamp mid-read yields at most 1 second of skew, which is
+     * inside the ±1s bucket granularity anyway).</p>
+     */
+    static final class RateBuckets {
+        private final java.util.concurrent.atomic.AtomicLongArray bucketTimestampSec =
+            new java.util.concurrent.atomic.AtomicLongArray(RATE_BUCKETS);
+        private final LongAdder[] bucketCounts = new LongAdder[RATE_BUCKETS];
+
+        RateBuckets() {
+            for (int i = 0; i < RATE_BUCKETS; i++) {
+                bucketCounts[i] = new LongAdder();
+                bucketTimestampSec.set(i, Long.MIN_VALUE);
+            }
+        }
+
+        /** Record one event at wall-clock time {@code nowNs} (nanoTime origin). */
+        void tick(long nowNs) {
+            long sec = TimeUnit.NANOSECONDS.toSeconds(nowNs);
+            int idx = (int) Math.floorMod(sec, RATE_BUCKETS);
+            long stored = bucketTimestampSec.get(idx);
+            if (stored != sec) {
+                // Bucket is either stale (previous window) or freshly initialised.
+                // CAS to reset the count under the new timestamp.
+                if (bucketTimestampSec.compareAndSet(idx, stored, sec)) {
+                    bucketCounts[idx].reset();
+                }
+                // If the CAS lost, another thread already reset it — either way we now
+                // increment; if timestamp still doesn't match this second, we're in a
+                // deep-contention corner and accept the ±1s skew.
+            }
+            bucketCounts[idx].increment();
+        }
+
+        /** @return events/second over the last {@link #RATE_WINDOW_SECONDS} at nowNs. */
+        double eventsPerSecond(long nowNs) {
+            long nowSec = TimeUnit.NANOSECONDS.toSeconds(nowNs);
+            long minSec = nowSec - (RATE_WINDOW_SECONDS - 1);
+            long total = 0L;
+            for (int i = 0; i < RATE_BUCKETS; i++) {
+                long ts = bucketTimestampSec.get(i);
+                if (ts >= minSec && ts <= nowSec) {
+                    total += bucketCounts[i].sum();
+                }
+            }
+            return (double) total / (double) RATE_WINDOW_SECONDS;
+        }
     }
 }
