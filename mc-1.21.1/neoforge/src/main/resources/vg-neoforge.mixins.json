@@ -11,7 +11,9 @@
     "IceBlockMixin",
     "LeavesBlockMixin",
     "MilkBucketItemMixin",
-    "SpreadingSnowyDirtBlockMixin"
+    "PrimedTntEntityMixin",
+    "SpreadingSnowyDirtBlockMixin",
+    "TntBlockMixin"
   ],
   "server": [],
   "client": [],

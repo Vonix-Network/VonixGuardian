@@ -108,3 +108,95 @@ on any backend.
   Track for v1.3.1 X6.
 - The eight `WorldMutator` cells will need per-cell overrides in X-β; the
   interface default keeps them source-compatible until then.
+
+## X7 — TNT-prime attribution chain (P1 CoreProtect-parity gap G-CP-2)
+
+**Problem.** `ExplosionEvent.Detonate` exposes only the direct source entity.
+For `PrimedTnt`, that's the TNT itself — the actor chain (right-click F&S,
+dispenser F&S, redstone charge, fire spread) is lost, and every TNT explosion
+attributes to sentinel `#tnt` with no player scope. CoreProtect closes the
+gap via `TNTPrimeListener` / `TNTPrimeUtil.getFireUser`; VonixGuardian on
+NeoForge/Fabric had no equivalent.
+
+**Fix.** Two new mixins per cell + a shared core-side 5-minute-TTL memory:
+
+- `TntBlockMixin` — HEAD-injects on the private static
+  `TntBlock.explode(Level, BlockPos, LivingEntity)`. Every prime path in
+  vanilla funnels through this method (fire spread, redstone, dispenser F&S,
+  player right-click F&S, wasExploded from chained TNT, projectile hit). When
+  the igniter is a Player, records into `TntPrimeMemory` keyed by
+  `(worldId, blockPos)`.
+- `PrimedTntEntityMixin` — TAIL-injects on the
+  `PrimedTnt(<init>(Level, DDD, LivingEntity))` constructor as belt-and-braces
+  for modded TNT variants that spawn `PrimedTnt` directly, skipping the
+  `TntBlock.explode` path.
+- `TntPrimeMemory` — `ConcurrentHashMap<(worldId, packedPos), PrimeRecord>`
+  with 5-minute default TTL (accommodates modded fuse extenders up to that
+  bound), amortised eviction on every put/miss (`SWEEP_STRIDE=32`), hard cap
+  at 8k entries. Record carries actor UUID/name, `AttributionKind`, and a
+  `sourceTagHint` string for future fire-chain wiring.
+- `UniversalAttribution.resolveTntPrime(...)` / `.consumeTntPrime(...)` —
+  loader-agnostic core helper the detonate handler consults BEFORE running
+  the normal resolver chain. On hit, returns a fully-populated
+  `Attribution` (kind preserved from the record, `entitySentinel="#tnt"` so
+  `/vg lookup #tnt` continues to surface the row — CoreProtect parity).
+
+**Wiring.**
+- `Guardian.tntPrimeMemory()` accessor exposes the shared instance.
+- `Guardian.shutdown()` clears the memory (deterministic teardown).
+- NeoForge cell: `onExplosionDetonate` in `NeoForgeEvents` calls
+  `UniversalAttribution.resolveTntPrime(...)` first when
+  `source instanceof PrimedTnt`; falls back to
+  `NeoForgeBootstrap.resolver.resolve(...)` on miss. Same shape on Forge
+  cells (`ForgeEvents.onExplosionDetonate`) with the per-version source
+  getter (`getSourceMob` on 1.18.2, `getExploder` on 1.19.2,
+  `getDirectSourceEntity` on 1.20.1). Fabric cells wire the same logic in
+  `FabricMixinBridge.explosion(...)` (which the `ExplosionMixin` calls).
+- `NeoForgeMixinBridge.recordTntPrimePlayer(...)` /
+  `FabricMixinBridge.recordTntPrimePlayer(...)` — new bridge entrypoints
+  the mixins call. Forge cells inline the record call since there's no
+  ForgeMixinBridge (matches the existing pattern of `vg$submitBurn` etc).
+
+**Mixin JSON registration.** All 4 fabric cells + neoforge 1.21.1 register
+both mixins in `vg.mixins.json` / `vg-neoforge.mixins.json`. Forge cells
+have no mixin JSON in this repo — mixins are present but dormant (matches
+pre-existing FireBlockMixin/etc pattern).
+
+**MC-version signature stability.** `TntBlock.explode(Level, BlockPos,
+LivingEntity)` and `PrimedTnt.<init>(Level, DDD, LivingEntity)` are
+byte-stable from 1.18.2 through 1.21.1 (verified via javap on
+`server-*-srg.jar`). `require = 0` on both `@Inject` calls so missing
+targets (e.g. Sinytra Connector remap edge cases) degrade gracefully
+instead of crashing boot.
+
+**Hot-path cost.**
+- `TntBlockMixin.vg$onTntPrime` — 1 instanceof + 1 `ConcurrentHashMap.put`
+  per TNT prime. Amortized eviction adds at most 32 entrySet iterations per
+  put. TNT prime is not a high-frequency event (worst-case chain reaction
+  = O(fuse-count/tick) which is still O(hundreds)).
+- Detonate side — 1 `instanceof PrimedTnt` + 1 `ConcurrentHashMap.remove`
+  per explosion when the source is PrimedTnt. Miss is O(1), hit is O(1) +
+  the `Attribution` constructor (record allocation). Net cost is well
+  under the existing per-explosion overhead of the affected-list capture.
+
+**Regression coverage.** `TntPrimeMemoryTest` — 13 tests, all four scenarios
+(player F&S, redstone null-igniter, dispenser round-trip, fire round-trip)
+plus memory semantics (TTL expiry, consume-removes, peek-preserves,
+position-exact-match, world-scoping, over-cap eviction, null-input safety,
+clear, and CoreProtect-parity sentinel preservation).
+
+**Followups (out of X7 scope).**
+- Fire-chain memory — extend `TntPrimeMemory` (or a sibling) to record who
+  lit fire at pos, so `TntBlockMixin` can look up an adjacent fire's actor
+  when igniter is null. That closes the dispenser F&S + spreading-fire
+  attribution paths. Requires either adding to X-owned FireBlockMixin (X-β
+  wave file, off-limits this task) or a new `FireIgnitionMixin`. Track
+  for v1.3.2.
+- Redstone-chain walking — track the last player to activate the button /
+  pressure plate / lever driving a redstone circuit. Broader change;
+  probably not worth the complexity vs the false-positive risk on
+  clock-driven farms.
+- Modded TNT variants that extend `TntBlock` but override `explode(...)`
+  bypass the block-side hook. `PrimedTntEntityMixin` catches the modded
+  ones that hit vanilla `PrimedTnt.<init>(Level,DDD,LivingEntity)`; the
+  remainder need per-mod plumbing (documented in `docs/COREPROTECT-COMPARISON.md`).

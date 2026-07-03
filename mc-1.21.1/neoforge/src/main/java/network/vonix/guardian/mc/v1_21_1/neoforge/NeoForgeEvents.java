@@ -293,12 +293,34 @@ public final class NeoForgeEvents {
                 idx++;
             }
             Entity source = ev.getExplosion().getDirectSourceEntity();
-            Attribution attr = (source != null && NeoForgeBootstrap.resolver != null)
-                    ? NeoForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
-                    : Attribution.unknown(EntitySentinel.UNKNOWN);
             BlockPos center = BlockPos.containing(ev.getExplosion().center());
             String worldId = WorldKey.of((Level) ev.getLevel());
-            String sourceTag = source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION;
+            // v1.3.1 X7: PrimedTnt has no vanilla igniter accessor from
+            // ExplosionEvent.Detonate, so consult TntPrimeMemory populated by
+            // TntBlockMixin / PrimedTntEntityMixin at prime-time. Do the
+            // lookup against the exploding entity's own block position when
+            // the source is a PrimedTnt.
+            Attribution attr = null;
+            String sourceTagOverride = null;
+            Guardian gEarly = g();
+            if (gEarly != null && source instanceof net.minecraft.world.entity.item.PrimedTnt) {
+                BlockPos originPos = source.blockPosition();
+                Attribution primed = network.vonix.guardian.core.attribution.UniversalAttribution
+                        .resolveTntPrime(gEarly.tntPrimeMemory(), worldId,
+                                originPos.getX(), originPos.getY(), originPos.getZ(),
+                                Sentinel.TNT);
+                if (primed != null) {
+                    attr = primed;
+                    sourceTagOverride = "#tnt";
+                }
+            }
+            if (attr == null) {
+                attr = (source != null && NeoForgeBootstrap.resolver != null)
+                        ? NeoForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
+                        : Attribution.unknown(EntitySentinel.UNKNOWN);
+            }
+            String sourceTag = sourceTagOverride != null ? sourceTagOverride
+                    : (source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION);
             String actorName = attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION;
             Guardian g = g();
             if (g == null) return;
