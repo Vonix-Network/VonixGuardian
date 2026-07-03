@@ -108,3 +108,80 @@ on any backend.
   Track for v1.3.1 X6.
 - The eight `WorldMutator` cells will need per-cell overrides in X-β; the
   interface default keeps them source-compatible until then.
+
+
+## X8 — Bounded W5 supplemental EXPLOSION scan (P1 perf)
+
+**Wave.** X8 (v1.3.1). Base commit `74a84d7`.
+
+**Problem.** The v1.3.0 W5 supplemental EXPLOSION scan in
+`RollbackEngine.streamPlan` catches blasts whose center sits outside the
+caller's radius but whose affected-list reaches into it (piston chains,
+WorldEdit-shaped effects, TNT chain reactions). To do so it built a
+"supplemental" `QueryFilter` that **dropped the DAO spatial predicate
+entirely** (`radius=null`, `centerX/Y/Z=null`) and then filtered rows in
+Java via `ExplosionAffectedList.anyWithinRadius`. Correct semantics, wrong
+shape: on a griefing-storm server with 200k unrelated EXPLOSION rows in
+the caller's time window, the DAO returned all 200k rows and the shared
+`RollbackOptions.maxScannedActions` budget was blown before the
+interesting rows were reached — surfacing as `RollbackLimitExceededException`.
+
+**Fix.** Keep the spatial predicate but widen it by `MAX_TNT_REACH = 16`
+blocks (config-overridable via
+`GuardianConfig.Rollback.explosionSupplementalReach`, sanity-capped at
+`[0, 1024]`). Vanilla TNT's affected-list stays within a ~7-block radius
+of its blast-center, so a blast whose center is farther than 16 blocks
+from the caller's radius edge cannot have an affected-list that reaches
+into that radius. Modded mega-explosives that exceed 16 blocks can raise
+the config knob without loader changes.
+
+Row admission still uses `ExplosionAffectedList.anyWithinRadius` — the
+DAO predicate is just a bounding-box pre-filter to keep the scan bounded.
+This means widening only relaxes the pre-filter; it never over-admits
+rows. The primary/supplemental double-add guard (skip rows whose center
+sits inside the un-widened box) is unchanged.
+
+**API shape.**
+- `RollbackEngine` gains an `explosionSupplementalReach` int field and a
+  new public constructor
+  `RollbackEngine(GuardianDao, WorldMutator, Executor, int)`; the pre-1.3.1
+  three-arg constructor delegates to it with `MAX_TNT_REACH` so no cell
+  needs to be touched.
+- `GuardianConfig.Rollback(int explosionSupplementalReach)` is a new
+  nested record; a legacy on-disk config with a missing `rollback` section
+  is defensively backfilled to `Rollback.defaults()` in the compact
+  canonical constructor (Gson deserialises absent JSON keys to `null`),
+  so no companion `ConfigLoader.migrateForwardCompat` change is required.
+- `GuardianConfig.validate()` rejects values outside `[0, 1024]`.
+
+**Regression coverage.** `SupplementalScanBoundedTest` (6 cases):
+1. `supplementalDaoQuery_carriesWidenedSpatialPredicate` — the DAO
+   query captured for the supplemental scan has `radius = 5 + MAX_TNT_REACH`
+   and the caller's center preserved, NOT `null`.
+2. `supplementalReach_isConfigDriven` — a tighter constructor override
+   (`reach = 4`) shows up in the DAO predicate.
+3. `supplementalScanCatchesFarBlast_withinTntReach` — vanilla-reach
+   correctness: a blast at (125,64,0) whose affected-list reaches back to
+   (108,64,0) is still admitted when the caller runs `r:5` at (108,64,0).
+4. `supplementalScanRespectsBudget_griefingStormDoesNotBlowIt` — a
+   griefing-storm scenario (200 far-away rows) modelled by an empty
+   supplemental page completes with `maxScannedActions=500` and no
+   `RollbackLimitExceededException`.
+5. `globalRadius_stillSkipsSupplemental` — `#global` rollbacks still
+   skip the supplemental entirely.
+6. `supplementalScanDoesNotAdmitBlastsBeyondWidenedBox` — asserts the
+   widened radius makes it into the DAO call, guarding against a future
+   regression that silently drops the predicate again.
+
+All six pass; the pre-existing `ExplosionRollbackFidelityTest` (6 cases)
+continues to pass — the widened predicate is a strict superset of the
+"drop predicate" shape for the correctness-tested cases, and the
+`RecordingMutator`-backed engine tests stub the DAO directly so they are
+insensitive to the widened predicate shape.
+
+**Estimated impact.** On a server that has ever done
+`/vg rollback r:50 t:24h` in a world with N unrelated EXPLOSION rows in
+the same 24h window, the DAO scan drops from **O(N)** to **O(rows whose
+blast-center is within 66 blocks of the caller's center)**, which on a
+non-pathological world is a couple of orders of magnitude smaller. Row
+admission logic is unchanged; only the pre-filter tightens.

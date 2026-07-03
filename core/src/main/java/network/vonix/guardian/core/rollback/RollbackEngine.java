@@ -55,9 +55,20 @@ public final class RollbackEngine {
 
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
+    /**
+     * Default reach (block-radius) padding for the W5 supplemental EXPLOSION scan.
+     * Vanilla TNT clears roughly a 7-block radius; 16 gives comfortable headroom
+     * without unbounding the scan. Overridable via
+     * {@link network.vonix.guardian.core.config.GuardianConfig.Rollback#explosionSupplementalReach}.
+     * @since 1.3.1 X8
+     */
+    public static final int MAX_TNT_REACH = 16;
+
     private final GuardianDao dao;
     private final WorldMutator mutator;
     private final Executor mainThreadExecutor;
+    /** Extra block radius applied to the supplemental EXPLOSION scan's spatial pre-filter. */
+    private final int explosionSupplementalReach;
 
     /**
      * @param dao                action store; must not be {@code null}
@@ -66,9 +77,32 @@ public final class RollbackEngine {
      *                           must not be {@code null}
      */
     public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor) {
+        this(dao, mutator, mainThreadExecutor, MAX_TNT_REACH);
+    }
+
+    /**
+     * X8 constructor variant that lets callers override the supplemental-scan
+     * reach padding. Loader wiring passes
+     * {@code GuardianConfig.rollback().explosionSupplementalReach()}; unit tests
+     * that want to exercise a tight bound pass a smaller value here.
+     *
+     * @param dao                        action store; must not be {@code null}
+     * @param mutator                    loader-supplied world mutator; must not be {@code null}
+     * @param mainThreadExecutor         server-tick executor; must not be {@code null}
+     * @param explosionSupplementalReach block-radius padding for the W5 supplemental EXPLOSION
+     *                                   scan's DAO spatial predicate; must be {@code >= 0}
+     * @since 1.3.1 X8
+     */
+    public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor,
+                          int explosionSupplementalReach) {
         this.dao = Objects.requireNonNull(dao, "dao");
         this.mutator = Objects.requireNonNull(mutator, "mutator");
         this.mainThreadExecutor = Objects.requireNonNull(mainThreadExecutor, "mainThreadExecutor");
+        if (explosionSupplementalReach < 0) {
+            throw new IllegalArgumentException(
+                "explosionSupplementalReach must be >= 0 (got " + explosionSupplementalReach + ")");
+        }
+        this.explosionSupplementalReach = explosionSupplementalReach;
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
@@ -307,12 +341,22 @@ public final class RollbackEngine {
      * W5 — after the primary paged scan, sweep EXPLOSION rows whose center is
      * OUTSIDE the caller's radius but whose affected-list reaches into it.
      *
-     * <p>The supplemental filter clones {@code base} but drops the spatial
-     * predicate and restricts to EXPLOSION rows, so rows already picked up by
-     * the primary scan (center inside radius) are re-checked with a cheap
-     * "center inside box?" test and skipped instead of double-added. Rows
-     * whose center is outside the box are then filtered by
-     * {@link ExplosionAffectedList#anyWithinRadius}.</p>
+     * <p><b>X8 (v1.3.1)</b>: the supplemental filter clones {@code base} but
+     * <em>widens</em> the spatial predicate by {@link #explosionSupplementalReach}
+     * blocks (default {@link #MAX_TNT_REACH}) rather than dropping it. This keeps
+     * the DAO scan bounded on griefing-storm servers — instead of "every
+     * EXPLOSION row in this world in the time window", the DAO reads only rows
+     * whose blast-center could plausibly reach into the caller's radius. Row
+     * admission still uses {@link ExplosionAffectedList#anyWithinRadius}, so
+     * widening the pre-filter is a strict superset of the correct answer:
+     * blasts whose center is far outside the padded box cannot have an
+     * affected-list that reaches into the original radius (vanilla TNT's
+     * affected-list stays within its blast radius; modded mega-explosives that
+     * exceed 16 blocks can raise {@code rollback.explosionSupplementalReach}).</p>
+     *
+     * <p>Rows already picked up by the primary scan (center inside the
+     * un-widened box) are re-checked with a cheap "center inside box?" test and
+     * skipped instead of double-added.</p>
      *
      * <p>Skipped when the filter has no spatial constraint ({@code radius==null}
      * or {@code #global}), when no center is set, or when the filter's action
@@ -328,10 +372,12 @@ public final class RollbackEngine {
         if (base.centerX() == null || base.centerZ() == null) return;
         if (!filterAdmitsExplosion(base)) return;
 
-        QueryFilter supp = withExplosionOnlyNoSpatial(base);
+        QueryFilter supp = withExplosionOnlyWidenedSpatial(base, explosionSupplementalReach);
         int centerX = base.centerX();
         Integer centerY = base.centerY();
         int centerZ = base.centerZ();
+        // Un-widened box (the caller's original radius) is what we use to detect
+        // rows the primary scan already covered.
         int minX = centerX - r, maxX = centerX + r;
         int minZ = centerZ - r, maxZ = centerZ + r;
         Integer minY = centerY == null ? null : centerY - r;
@@ -416,18 +462,30 @@ public final class RollbackEngine {
     }
 
     /**
-     * Copy of {@code base} with (a) the spatial predicate cleared and
-     * (b) the action list forced to EXPLOSION only. Used by the W5
-     * supplemental scan.
+     * X8 (v1.3.1): copy of {@code base} with (a) the spatial predicate
+     * <em>widened</em> outward by {@code reach} blocks on x/y/z (the y widening
+     * is skipped when {@code centerY} is unset, matching the primary scan's
+     * behavior) and (b) the action list forced to EXPLOSION only. Used by the
+     * W5 supplemental scan so the DAO stays bounded while still catching
+     * blasts whose center sits outside the caller's radius but whose
+     * affected-list reaches into it.
+     *
+     * <p>The final row admission is still done in-Java via
+     * {@link ExplosionAffectedList#anyWithinRadius}; this method only relaxes
+     * the DAO pre-filter, it never over-admits rows.</p>
      */
-    private static QueryFilter withExplosionOnlyNoSpatial(QueryFilter base) {
+    private static QueryFilter withExplosionOnlyWidenedSpatial(QueryFilter base, int reach) {
+        Integer r = base.radius();
+        Integer widenedRadius = (r == null || r < 0) ? r : r + reach;
         return new QueryFilter(
             base.users(),
             base.sinceMillis(),
             base.untilMillis(),
-            null,                 // radius cleared
+            widenedRadius,        // widened by reach — was: null
             base.worldSel(),
-            null, null, null,     // center cleared
+            base.centerX(),       // preserved — was: null
+            base.centerY(),       // preserved — was: null
+            base.centerZ(),       // preserved — was: null
             List.of(new QueryFilter.ActionSelect(ActionType.EXPLOSION, QueryFilter.ActionSelect.Sign.ANY)),
             base.include(),
             base.exclude(),
@@ -437,7 +495,7 @@ public final class RollbackEngine {
             base.verbose(),
             base.silent(),
             base.optimize(),
-            null                  // worldEditPlayer cleared — we handle spatial matching in-Java
+            null                  // worldEditPlayer cleared — WE region already covers primary
         );
     }
 
