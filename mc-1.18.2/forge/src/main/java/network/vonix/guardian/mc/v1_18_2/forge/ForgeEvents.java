@@ -127,6 +127,38 @@ public final class ForgeEvents {
     private static final int MAX_CONTAINER_SNAPSHOTS = 512;
     /** Hard cap on per-container slots retained to keep modded mega-containers bounded. */
     private static final int MAX_CONTAINER_SLOTS = 216;
+    /**
+     * v1.3.0 W3: counter for cleanupContainerSnapshots amortization. Old path
+     * scanned the full CONTAINER_SNAPSHOT_AT map on EVERY container open — O(n)
+     * per open. Now we only run the full TTL scan every
+     * {@link #CONTAINER_CLEANUP_EVERY} opens OR when the map exceeds
+     * {@link #MAX_CONTAINER_SNAPSHOTS} (bounded-work fast-path eviction).
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger CONTAINER_CLEANUP_TICK
+            = new java.util.concurrent.atomic.AtomicInteger();
+    /** Run cleanupContainerSnapshots' full TTL scan every N opens; power-of-two so we can mask. */
+    private static final int CONTAINER_CLEANUP_EVERY = 32;
+
+    /**
+     * v1.3.0 W3: pooled scratch buffer for onExplosionDetonate capture. One
+     * per server thread — reused across explosions to avoid re-allocating
+     * 3× int[] + 1× String[] per detonation.
+     */
+    private static final ThreadLocal<ExplosionScratch> EXPLOSION_SCRATCH =
+            ThreadLocal.withInitial(ExplosionScratch::new);
+
+    private static final class ExplosionScratch {
+        int[] xs = new int[512];
+        int[] ys = new int[512];
+        int[] zs = new int[512];
+        String[] ids = new String[512];
+        void grow(int need) {
+            if (xs.length >= need) return;
+            int n = xs.length;
+            while (n < need) n <<= 1;
+            xs = new int[n]; ys = new int[n]; zs = new int[n]; ids = new String[n];
+        }
+    }
 
     private ForgeEvents() {
         // utility
@@ -248,6 +280,14 @@ public final class ForgeEvents {
         return sentinel.substring(5);
     }
 
+    /**
+     * Explosion detonate — v1.3.0 W3: server thread does the per-pos
+     * {@code getBlockState} + registry key lookup into pooled scratch arrays,
+     * then hands the {@link StringBuilder} join + queue enqueue to
+     * {@link network.vonix.guardian.core.event.ExplosionJoinWorker}. A 5,000-block
+     * TNT chain no longer builds a 4 KiB {@link StringBuilder} on the tick;
+     * the worker splits the join into chunked {@code EXPLOSION} rows.
+     */
     @SubscribeEvent
     public static void onExplosionDetonate(ExplosionEvent.Detonate ev) {
         try {
@@ -255,29 +295,31 @@ public final class ForgeEvents {
             if (s == null) return;
             var affected = ev.getAffectedBlocks();
             if (affected == null || affected.isEmpty()) return;
-            StringBuilder sb = new StringBuilder();
-            int cap = 4096;
-            int count = 0;
+            ExplosionScratch scratch = EXPLOSION_SCRATCH.get();
+            int n = affected.size();
+            scratch.grow(n);
+            int idx = 0;
             for (BlockPos p : affected) {
-                if (sb.length() > cap) break;
-                if (count++ > 0) sb.append(',');
-                BlockState oldState = ev.getWorld().getBlockState(p);
-                sb.append(p.getX()).append(':').append(p.getY()).append(':').append(p.getZ())
-                        .append('=').append(blockId(oldState));
+                scratch.xs[idx] = p.getX();
+                scratch.ys[idx] = p.getY();
+                scratch.zs[idx] = p.getZ();
+                scratch.ids[idx] = blockId(ev.getWorld().getBlockState(p));
+                idx++;
             }
-            // 1.18.2: no getDirectSourceEntity — use getSourceMob() (LivingEntity).
             Entity source = ev.getExplosion().getSourceMob();
             Attribution attr = (source != null && ForgeBootstrap.resolver != null)
                     ? ForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
                     : Attribution.unknown(EntitySentinel.UNKNOWN);
             Vec3 c = ev.getExplosion().getPosition();
             BlockPos center = new BlockPos(c);
-            s.submitExplosion(attr.actorUuid(),
-                    attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION,
-                    WorldKey.of(ev.getWorld()),
-                    center.getX(), center.getY(), center.getZ(),
-                    sb.toString(),
-                    source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION);
+            String worldId = WorldKey.of(ev.getWorld());
+            String sourceTag = source != null ? SourceTagger.tag(source) : Sentinel.EXPLOSION;
+            String actorName = attr.actorName() != null ? attr.actorName() : Sentinel.EXPLOSION;
+            Guardian g = g();
+            if (g == null) return;
+            g.explosionJoinWorker().submit(s, attr.actorUuid(), actorName, worldId,
+                    center.getX(), center.getY(), center.getZ(), sourceTag,
+                    scratch.xs, scratch.ys, scratch.zs, scratch.ids, idx);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onExplosionDetonate failed", t);
         }
@@ -531,17 +573,31 @@ public final class ForgeEvents {
 
     // ====================================================================== interaction
 
+    /**
+     * Right-click block -&gt; CLICK if {@code logInteractions}; also snapshot
+     * container pos for delta tracking.
+     *
+     * <p><b>v1.3.0 W3:</b> reads {@link BlockState} once and reuses it across
+     * container-entity detection and CLICK submit. Old path called
+     * {@code getBlockState}/{@code getBlockEntity} twice.</p>
+     */
     @SubscribeEvent
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock ev) {
         try {
             Player p = ev.getPlayer();
             if (p == null) return;
+            BlockPos pos = ev.getPos();
+            // v1.3.0 W3: single BlockState read reused below.
+            BlockState state = ev.getWorld().getBlockState(pos);
             // Container snapshot tracking (independent of logInteractions config).
             try {
-                if (p instanceof ServerPlayer sp) {
-                    BlockEntity be = ev.getWorld().getBlockEntity(ev.getPos());
+                if (p instanceof ServerPlayer sp
+                        && state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock) {
+                    // EntityBlock gate — cheap Block-class check rather than a
+                    // chunk-BE-map hit for every RC on plain terrain.
+                    BlockEntity be = ev.getWorld().getBlockEntity(pos);
                     if (be instanceof Container) {
-                        LAST_CONTAINER_RC.put(sp.getUUID(), ev.getPos().immutable());
+                        LAST_CONTAINER_RC.put(sp.getUUID(), pos.immutable());
                         LAST_CONTAINER_RC_AT.put(sp.getUUID(), System.currentTimeMillis());
                     }
                 }
@@ -552,8 +608,6 @@ public final class ForgeEvents {
             GuardianConfig c = cfg();
             if (s == null || c == null) return;
             if (!c.actions().logInteractions()) return;
-            BlockPos pos = ev.getPos();
-            BlockState state = ev.getWorld().getBlockState(pos);
             s.submitClick(p.getUUID(), p.getName().getString(),
                     WorldKey.of(ev.getWorld()),
                     pos.getX(), pos.getY(), pos.getZ(),
@@ -623,7 +677,23 @@ public final class ForgeEvents {
     }
 
 
+    /**
+     * v1.3.0 W3: amortized cleanup. Old path scanned the full
+     * {@code CONTAINER_SNAPSHOT_AT} map on every container open. Now we run
+     * the TTL scan only every {@link #CONTAINER_CLEANUP_EVERY} opens, PLUS an
+     * immediate fast-path eviction when the map exceeds
+     * {@link #MAX_CONTAINER_SNAPSHOTS} (bounded work per open).
+     */
     private static void cleanupContainerSnapshots() {
+        // Fast-path: bounded eviction if we're over cap.
+        while (CONTAINER_SNAPSHOT.size() > MAX_CONTAINER_SNAPSHOTS) {
+            evictOldestContainerSnapshot();
+        }
+        // Amortized: only run the TTL scan every N opens (mask; N is power-of-two).
+        int tick = CONTAINER_CLEANUP_TICK.incrementAndGet();
+        if ((tick & (CONTAINER_CLEANUP_EVERY - 1)) != 0) {
+            return;
+        }
         long cutoff = System.currentTimeMillis() - CONTAINER_SNAPSHOT_TTL_MS;
         CONTAINER_SNAPSHOT_AT.entrySet().removeIf(e -> {
             Long ts = e.getValue();
@@ -635,9 +705,6 @@ public final class ForgeEvents {
             LAST_CONTAINER_RC_AT.remove(id);
             return true;
         });
-        while (CONTAINER_SNAPSHOT.size() > MAX_CONTAINER_SNAPSHOTS) {
-            evictOldestContainerSnapshot();
-        }
     }
 
     private static void evictOldestContainerSnapshot() {

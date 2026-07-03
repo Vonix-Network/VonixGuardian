@@ -85,6 +85,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     private final UndoStack undoStack;
     private volatile Theme theme;
     private final EntityBlockChangeCoalescer entityBlockCoalescer;
+    /**
+     * v1.3.0 W3: shared off-thread joiner for explosion affected-block lists.
+     * Loader-side event handlers hand pre-captured pos/id arrays here and the
+     * per-affected-block {@link StringBuilder} join + queue enqueue moves off
+     * the server thread. See {@link network.vonix.guardian.core.event.ExplosionJoinWorker}.
+     */
+    private final network.vonix.guardian.core.event.ExplosionJoinWorker explosionJoinWorker;
     /** Latched at boot when logFile.enabled; hot-swap of enabled flag flips this AtomicReference. */
     private final AtomicReference<JsonLinesLogFile> logFileRef;
     /** Server data-dir root, kept so reload can rebuild a JsonLinesLogFile at the same relative path. */
@@ -127,6 +134,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.undoStack = undoStack;
         this.theme = theme;
         this.entityBlockCoalescer = entityBlockCoalescer;
+        this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker();
         this.logFileRef = logFileRef;
         this.dataDir = dataDir;
         this.autoPurgeScheduler = autoPurgeScheduler;
@@ -267,6 +275,15 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public EventGate gate()                { return gate; }
     /** Live coalescer, or {@code null} when disabled by config. Diagnostics only. */
     public EntityBlockChangeCoalescer entityBlockCoalescer() { return entityBlockCoalescer; }
+    /**
+     * v1.3.0 W3: off-thread joiner for {@code EXPLOSION} affected-block lists.
+     * Loader-side event handlers call {@code explosionJoinWorker().submit(...)}
+     * with pre-captured pos/id arrays; the join + queue enqueue happens off
+     * the server thread. Never {@code null}.
+     */
+    public network.vonix.guardian.core.event.ExplosionJoinWorker explosionJoinWorker() {
+        return explosionJoinWorker;
+    }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }
     /** CP-1:1 purge entry point — enforces config.purge() minimum-age floor. */
@@ -1018,6 +1035,11 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             dao.close();
         } catch (Exception e) {
             LOG.warn(MARKER, "DAO close raised", e);
+        }
+        try {
+            explosionJoinWorker.close();
+        } catch (Exception e) {
+            LOG.warn(MARKER, "ExplosionJoinWorker close raised", e);
         }
         LOG.info(MARKER, "VonixGuardian offline.");
     }

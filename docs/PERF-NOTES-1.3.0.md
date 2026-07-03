@@ -212,3 +212,109 @@ strings, per-mixin sourceTag interns) that this bench doesn't recreate.
 - `MixinHotEventsGateTest` — 5 tests: kill-switch dropped `#fire` / `#natural`
   / `#dispenser` sourceTag actions; non-mixin tags still log; kill-switch=true
   passes everything.
+
+
+## W3 — Explosion off-thread join, EventGate fast-path, P2 cleanups (2026-07-03)
+
+**Motivation.** The 2026-07-03 audit flagged one P0 and three P1/P2 findings
+on the loader-side event hot paths:
+
+1. **P0 — `onExplosionDetonate` per-block work on server thread.** Every
+   affected block cost one `ServerLevel.getBlockState(pos)` (chunk read) plus
+   one `Registry.BLOCK.getKey(...).toString()` (registry hit + `String` alloc)
+   plus one `StringBuilder.append(x:y:z=id)` step, all synchronously on the
+   tick. A 5,000-block TNT chain stalled the server thread for tens of ms.
+2. **P2 — 4 KiB StringBuilder silently truncated.** The old join stopped at
+   4096 chars mid-list, so audit fidelity on large explosions was lost.
+3. **P2 — `onRightClickBlock` read `BlockState` twice.** Once for container
+   detection, once for the CLICK submit.
+4. **P2 — `cleanupContainerSnapshots` iterated the full map on every open.**
+   O(n) per open even when nothing was expired.
+5. **P1 — `EventGate.shouldLog` ran the full hook chain per submit for
+   internal (mixin-authored) events.** No external mod has a legitimate
+   veto path over a fire-tick / grass-spread / dispenser event, yet every
+   submit paid PerWorldEventHook + BlacklistFileHook + PreLogEventHook
+   traversal.
+
+**Fixes.**
+
+1. **Off-thread `ExplosionJoinWorker`.** New core class at
+   `core/src/main/java/network/vonix/guardian/core/event/ExplosionJoinWorker.java`.
+   Loader-side `onExplosionDetonate` (all 4 Forge/NeoForge cells) plus the
+   Fabric `FabricMixinBridge.explosion(...)` path (all 4 Fabric cells) now
+   captures the per-affected-block `(x, y, z, resolvedBlockId)` into pooled
+   `ThreadLocal<ExplosionScratch>` int[]/String[] arrays on the server thread
+   — the `getBlockState` call itself is unavoidable synchronously (Prism /
+   Ledger / CoreProtect all take the same conservative view: `ServerLevel`'s
+   block-state accessors are not documented as thread-safe), but the
+   `StringBuilder` join and the `EventSubmitter.submitExplosion(...)` enqueue
+   both move to a daemon executor (`VonixGuardian-ExplosionJoin`).
+2. **Chunked EXPLOSION rows.** The worker splits the join at
+   `MAX_ENTRIES_PER_CHUNK = 96` entries per row (with a defensive
+   ~3800-char per-row limit) so a single explosion that would have silently
+   truncated at 4096 chars now emits N EXPLOSION rows sharing the same
+   (center, sourceTag, actor). W5's rollback engine already iterates the
+   affected-list per row, so chunking is transparent to `/vg rollback`.
+3. **`EventGate` internal-event fast-path.** Actions whose `sourceTag` starts
+   with one of the reserved mixin prefixes (`#fire`, `#natural`, `#dispenser`)
+   now skip the standard hook chain entirely and only consult a separate
+   `internalHooks` opt-in list. Standard hooks (PerWorldEventHook,
+   BlacklistFileHook, PreLogEventHook) never see mixin-authored hot-tick
+   events — they're un-vetoable by external policy anyway. Observers that
+   genuinely need visibility (e.g. a diagnostic rate meter) register on the
+   internal list via `EventGate.addInternalHook(...)`.
+4. **`onRightClickBlock` BlockState dedup.** Read `BlockState` once and reuse
+   across the container-entity gate + CLICK submit. The container-entity
+   check is now guarded by `state.getBlock() instanceof EntityBlock` — a
+   cheap class check that skips the chunk `BlockEntity`-map lookup for every
+   RC on plain terrain (which is the vast majority of RCs).
+5. **`cleanupContainerSnapshots` amortization.** Added an `AtomicInteger`
+   counter that runs the full TTL scan only every 32 opens (mask by
+   power-of-two). The over-cap eviction fast-path (bounded work per open)
+   still runs on every open, so the map never grows unboundedly.
+
+**Thread-safety note.** We evaluated whether `ServerLevel.getBlockState`
+could safely move off-thread. Neither Mojang nor NeoForge documents it as
+thread-safe; Prism, Ledger, and CoreProtect all capture states synchronously
+and defer only the aggregation step. We follow the same conservative
+discipline — the win is still ≥ 90 % because the join + enqueue dominates
+server-thread wall time.
+
+**Measured impact (`BenchExplosionAffectedListJoin`).** 5,000-block
+explosions × 200 iterations, JDK 17 on the dev host:
+
+```
+OLD (server thread join): 11,390,948 ns  (avg 56,954 ns / explosion)
+NEW (off-thread join):       655,589 ns  (avg  3,277 ns / explosion)
+Server-thread wall-time reduction: 94.24 % (target ≥ 90 %)
+```
+
+**Regression tests.**
+- `ExplosionJoinWorkerTest` (6 tests): small explosion single row, 5000-block
+  chunked rows sharing center, null-actor Sentinel default, empty-id skip,
+  count-zero no-submit, and an async-worker "caller returns before submit
+  fires" ordering proof.
+- `EventGateFastPathTest` (7 tests): mixin-sourced skip standard chain,
+  non-mixin still runs standard chain, internal hook sees mixin actions,
+  internal hook can deny, standard hook can deny non-mixin, internal not
+  consulted for non-mixin, null sourceTag treated as non-mixin.
+- `ContainerCleanupAmortizationTest` (6 tests): pure-Java model of the
+  loader-side pattern; proves 100 opens run ≤ 5 TTL scans (not 100), over-cap
+  still evicts on every open, exactly-32nd open triggers the first scan.
+- `ExplosionAffectedListChunkedParsingTest` (3 tests): W5's parser round-trips
+  chunked emissions per row, both chunks pass `anyWithinRadius`, 96-entry
+  chunk stays under 4096 chars.
+- `BenchExplosionAffectedListJoinTest`: CI shim that fails the build if the
+  ≥ 90 % reduction target regresses.
+
+**Files touched.**
+- Core: `Guardian.java` (add `explosionJoinWorker` field + getter + close hook),
+  `EventGate.java` (fast-path + `addInternalHook`), new
+  `event/ExplosionJoinWorker.java`.
+- Forge/NeoForge cells (4 total): each `*Events.java` — new
+  `EXPLOSION_SCRATCH` pool + `CONTAINER_CLEANUP_TICK` counter,
+  refactored `onExplosionDetonate`, `onRightClickBlock`, and
+  `cleanupContainerSnapshots`.
+- Fabric bridges (4 total): each `FabricMixinBridge.java` — same scratch pool
+  + counter, refactored `explosion(...)` + `cleanupContainerSnapshots`.
+- Migration scripts under `scripts/w3-migrate-*.py` preserved for auditing.
