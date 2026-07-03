@@ -27,12 +27,14 @@
     "LivingDestroyBlockMixin",
     "PistonMixin",
     "PortalShapeMixin",
+    "PrimedTntEntityMixin",
     "RavagerMixin",
     "SetBlockCommandMixin",
     "SignChangeMixin",
     "SilverfishMixin",
     "SnowGolemMixin",
-    "SpreadingSnowyDirtBlockMixin"
+    "SpreadingSnowyDirtBlockMixin",
+    "TntBlockMixin"
   ],
   "server": [],
   "client": [],

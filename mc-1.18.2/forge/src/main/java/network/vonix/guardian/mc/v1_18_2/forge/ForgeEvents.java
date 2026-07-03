@@ -307,9 +307,28 @@ public final class ForgeEvents {
                 idx++;
             }
             Entity source = ev.getExplosion().getSourceMob();
-            Attribution attr = (source != null && ForgeBootstrap.resolver != null)
-                    ? ForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
-                    : Attribution.unknown(EntitySentinel.UNKNOWN);
+            // v1.3.1 X7: PrimedTnt loses its igniter by the time
+            // ExplosionEvent.Detonate fires. Consult TntPrimeMemory
+            // (populated by TntBlockMixin / PrimedTntEntityMixin) at
+            // the entity's block position before falling back to the
+            // resolver. Closes CoreProtect-parity gap G-CP-2.
+            String worldIdForPrime = WorldKey.of(ev.getWorld());
+            Attribution attr = null;
+            if (source instanceof net.minecraft.world.entity.item.PrimedTnt) {
+                Guardian gEarly = g();
+                if (gEarly != null) {
+                    BlockPos originPos = source.blockPosition();
+                    attr = network.vonix.guardian.core.attribution.UniversalAttribution
+                            .resolveTntPrime(gEarly.tntPrimeMemory(), worldIdForPrime,
+                                    originPos.getX(), originPos.getY(), originPos.getZ(),
+                                    Sentinel.TNT);
+                }
+            }
+            if (attr == null) {
+                attr = (source != null && ForgeBootstrap.resolver != null)
+                        ? ForgeBootstrap.resolver.resolve(source, System.currentTimeMillis())
+                        : Attribution.unknown(EntitySentinel.UNKNOWN);
+            }
             Vec3 c = ev.getExplosion().getPosition();
             BlockPos center = new BlockPos(c);
             String worldId = WorldKey.of(ev.getWorld());

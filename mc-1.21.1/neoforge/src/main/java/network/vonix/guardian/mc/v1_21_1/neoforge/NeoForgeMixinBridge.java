@@ -124,6 +124,34 @@ public final class NeoForgeMixinBridge {
         }
     }
 
+    // ==================================================================== X7 TNT-prime memory
+    // v1.3.1 X7: record the actor priming a TNT block so the eventual
+    // explosion-detonate handler can attribute correctly. See
+    // network.vonix.guardian.core.attribution.TntPrimeMemory.
+
+    /**
+     * Record a player as the priming actor for the TNT block at {@code pos}.
+     *
+     * @param player the priming player (never {@code null}); called from
+     *               {@code TntBlockMixin.explode(Level,BlockPos,LivingEntity)}
+     *               HEAD when the igniter is a Player, and from
+     *               {@code PrimedTntEntityMixin.<init>} TAIL when the igniter
+     *               argument on the constructor is a Player.
+     */
+    public static void recordTntPrimePlayer(Level level, BlockPos pos, Player player) {
+        try {
+            Guardian g = VonixGuardianNeoForge.guardian();
+            if (g == null || level == null || pos == null || player == null) return;
+            long now = System.currentTimeMillis();
+            g.tntPrimeMemory().record(
+                    WorldKey.of(level), pos.getX(), pos.getY(), pos.getZ(),
+                    network.vonix.guardian.core.attribution.TntPrimeMemory.PrimeRecord.player(
+                            player.getUUID(), player.getName().getString(), now));
+        } catch (Throwable t) {
+            warn("recordTntPrimePlayer", t);
+        }
+    }
+
     public static void bucketFill(Player player, BlockPos pos, String fluidId) {
         try {
             EventSubmitter s = sub();

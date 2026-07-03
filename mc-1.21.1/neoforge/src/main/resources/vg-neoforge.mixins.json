@@ -18,11 +18,13 @@
     "LiquidBlockMixin",
     "MilkBucketItemMixin",
     "PortalShapeMixin",
+    "PrimedTntEntityMixin",
     "RavagerMixin",
     "SetBlockCommandMixin",
     "SilverfishMixin",
     "SnowGolemMixin",
-    "SpreadingSnowyDirtBlockMixin"
+    "SpreadingSnowyDirtBlockMixin",
+    "TntBlockMixin"
   ],
   "server": [],
   "client": [],
