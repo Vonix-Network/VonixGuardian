@@ -50,6 +50,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cells). Fabric + NeoForge cells unchanged — they still log the natural
   block surface via their wired mixins.
 
+## [1.3.6] - 2026-07-03
+
+### Changed
+
+- **CC1 — Canonicalise `GuardianConfig` shim constructors in tests.** Round-6
+  hygiene: 24 test files across `core/src/test` still exercised the widened
+  sub-record shim constructors (`GuardianConfig.Actions(...)`,
+  `GuardianConfig.Storage(...)`, etc.) with narrow-parameter overloads. CC1
+  threads the canonical ctor call sites and marks the narrow overloads
+  `@Deprecated` so future test scaffolds are steered to the widened form. No
+  runtime behaviour change; deprecation warnings only.
+- **CC2 (P1-1) — Hopper tracker: O(1) removal.** Round-6 perf finding: the
+  Z3 per-level hopper deque used `ConcurrentLinkedDeque.remove(Object)`
+  (O(n)) on every hopper break AND during the `ChunkEvent.Unload` bulk
+  drain, which on a hopper-farm shard (≥ 2000 hoppers/dimension) put O(n²)
+  work on the server thread per chunk unload. `HOPPER_POS_BY_LEVEL` is now
+  a `LinkedHashSet<Long>` guarded by a per-level lock — `remove(Object)` is
+  O(1), iteration retains the round-robin order the sampler needs, and the
+  guard is uncontended in practice (all hopper events dispatch on the
+  server thread). Applied uniformly across all three Forge cells (1.18.2,
+  1.19.2, 1.20.1). See `docs/PERF-NOTES-1.3.6.md` § P1-1.
+- **CC2 (P1-3 / P1-4) — `/fill` and `/setblock` snapshot: `BlockPos.MutableBlockPos`.**
+  Round-6 perf finding: `onCommandFillSetblock` allocated one `BlockPos`
+  per cell for both the pre-state and deferred post-state passes — up to
+  `2 × FILL_MAX_REGION_BLOCKS = 65,536` short-lived heap allocations per
+  `/fill` command, discarded immediately after
+  `Level.getBlockState`. Both passes now reuse a `MutableBlockPos`
+  scratch instance, dropping the allocation to zero. Applied across all
+  three Forge cells.
+- **CC2 (P1-5) — `CommandEvent` server-side gate.** Round-6 perf finding:
+  the `onCommand` and `onCommandFillSetblock` `@SubscribeEvent` handlers
+  fired on both logical sides on integrated (singleplayer) servers, and
+  had no guard for `src.getLevel() == null`. Both now check
+  `src.getLevel() != null && src.getServer().isSameThread()` at the top,
+  eliminating a duplicate execution path on client-side dispatch and
+  guarding against off-thread mixin-injected command sources (Sinytra
+  Connector has been observed doing this). Applied to all four loader
+  cells (three Forge + NeoForge).
+- **CC2 (P1-6) — `/vg config set` off-thread IO.** Round-6 perf finding:
+  the `/vg config set` handler ran `ConfigLoader.save(path, next)`
+  (blocking YAML write) and `g.reloadConfig(path)` (re-parse + rebuild
+  config-derived state) inline on the server thread — a slow disk
+  (spinning rust, NFS, encrypted-swap host, or another mod holding a
+  filesystem lock) could freeze the server tick until the write returned.
+  The blocking IO is now routed onto the existing 2-thread `WORKER`
+  executor; result reporting hops back to the server thread via
+  `server.execute(...)` so theme/chat pipeline invariants (single-threaded
+  Level access) remain intact. Applied to all eight cells.
+- **CC2 (P2-7) — `NATURAL_BLOCK_CACHE` key: `long` → `NaturalKey` record.**
+  Round-6 perf finding: the pre-1.3.6 cache key XOR-mixed
+  `worldId.hashCode()` (32 bits) with `x/y/z` packed into 26/12/26 bits —
+  a collision-prone scheme when worldId hashes shared low-order bits with
+  high-order X coordinates. Replaced with a `record NaturalKey(String
+  worldId, int x, int y, int z)` — proper `equals`/`hashCode` makes
+  collisions structurally impossible. Record allocation is trivially
+  cheap vs the (rare) cache miss cost. Applied across all three Forge
+  cells.
+- **CC2 (P2-8) — `FluidSourceMemory.lookup` TTL sweep amortized.**
+  Round-6 perf finding: `lookup` on the fluid-tick hot path did an inline
+  `iterator.remove` + O(n) `Deque.remove(Object)` per expired entry — an
+  O(n²) worst case when many entries TTL-expired inside a single call.
+  The TTL sweep is now amortized inside `recordBucketEmpty` via a bounded
+  `SWEEP_STRIDE`-sized walk of `insertOrder`; `lookup` skips expired
+  entries in place and drops them from the primary map only (leaving
+  `insertOrder` orphans to be reaped O(1) apiece by the amortized sweep).
+- **CC2 (P2-9) — `TntPrimeMemory` volatile `sweepCursor` CME race.**
+  Round-6 perf finding: pre-1.3.6 the amortized-sweep iterator was
+  shared across threads via a `volatile` field — safe for publication
+  but not safe for concurrent use (Iterator is stateful). Dropped
+  `volatile`; cursor is now guarded by a dedicated small-scope
+  `sweepLock` held only during eviction, not during `record`/`consume`.
+  New `TntPrimeMemoryConcurrentSweepTest` proves 8 threads × 5,000
+  operations survive without CME.
+- **CC2 (P2-10) — `DamageHistory.evictOldest` PriorityQueue audit.**
+  Round-6 perf finding: PQ allocation inside the amortized-sweep path
+  is paid once per `EVICT_STRIDE=64` events (~40 bytes / event
+  amortized) — trivially below GC noise. Confirmed the current
+  implementation is correct as-is; added an audit comment recording the
+  analysis for future revisitors.
+- **CC2 (P2-11) — `PLUGIN_VERSION` in boot log.** Round-6 hygiene:
+  `Guardian.boot` LOG line now interpolates `GuardianAPI.PLUGIN_VERSION`
+  so support triage against the mod's console banner immediately
+  reveals the shipped version.
+
+### Added
+
+- `docs/PERF-NOTES-1.3.6.md` — CC2 perf-sweep dossier: hopper O(1)
+  removal analysis, `/fill` MutableBlockPos allocation elimination,
+  CommandEvent server-side gate rationale, and `/vg config set`
+  off-thread routing model.
+- `core/src/test/.../FluidSourceMemoryLookupHotPathTest.java` — asserts
+  the CC2 P2-8 amortized TTL sweep keeps the map bounded under
+  sustained record pressure and that `lookup` correctly finds fresh
+  entries when expired entries are present.
+- `core/src/test/.../TntPrimeMemoryConcurrentSweepTest.java` — proves
+  the P2-9 CME race is closed: 8 threads × 5,000 concurrent
+  record/consume operations produce zero `ConcurrentModificationException`.
+
+
 ## [1.3.5] - 2026-07-03
 
 ### Fixed

@@ -570,6 +570,14 @@ public final class ForgeEvents {
             ParseResults<CommandSourceStack> res = ev.getParseResults();
             if (res == null) return;
             CommandSourceStack src = res.getContext().getSource();
+            // v1.3.6 CC2 (P1-5): server-side gate. CommandEvent fires on both
+            // logical sides on integrated servers; a client-side dispatch has
+            // src.getLevel() == null and we would blow up on the WorldKey.of
+            // call below. Also guard the server-thread invariant so an off-
+            // thread dispatcher (rare, but Sinytra Connector has done this)
+            // does not race the submitter.
+            if (src == null || src.getLevel() == null) return;
+            if (src.getServer() == null || !src.getServer().isSameThread()) return;
             String raw = res.getReader().getString();
             if (src.getEntity() instanceof ServerPlayer p) {
                 s.submitCommand(p.getUUID(), p.getName().getString(),
@@ -1113,19 +1121,31 @@ public final class ForgeEvents {
      * on NeoForge 1.21.1 — this cell is 1.20.1 Forge which does not, but the
      * cheap safety is worth 0.1% throughput).</p>
      */
-    private static final Map<Long, String> NATURAL_BLOCK_CACHE = new ConcurrentHashMap<>();
+    private static final Map<NaturalKey, String> NATURAL_BLOCK_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * v1.3.6 CC2 (P2-7): composite key replacing the pre-1.3.6 packed-long
+     * key. The old encoding XOR-mixed worldId.hashCode() (32 bits) with
+     * x/y/z packed into 26/12/26 bits — a collision-prone scheme when
+     * worldId hashes shared low-order bits with high-order X coordinates
+     * (routinely hit at spawn on servers with mod-added dimensions).
+     * A record with proper equals/hashCode makes collisions structurally
+     * impossible without adding hot-path allocation cost — the record is
+     * allocated once per NeighborNotifyEvent, well below GC noise.
+     */
+    private record NaturalKey(String worldId, int x, int y, int z) { }
     /** Hard cap on cache size; eviction is oldest-first via {@link java.util.Iterator#remove}. */
     private static final int NATURAL_BLOCK_CACHE_MAX = 4096;
     /** Rate-limit for Z2 error logging (per-throwable-class, 60 s). */
     private static final Map<String, Long> Z2_WARN_LIMIT = new ConcurrentHashMap<>();
 
     /** Packs (worldId hash, x, y, z) into a single long for cache key density. */
-    private static long naturalCacheKey(String worldId, BlockPos pos) {
-        long wh = worldId == null ? 0L : ((long) worldId.hashCode()) & 0xFFFFFFFFL;
-        long x = ((long) pos.getX()) & 0x3FFFFFF; // 26 bits
-        long y = ((long) pos.getY()) & 0xFFF;     // 12 bits
-        long z = ((long) pos.getZ()) & 0x3FFFFFF; // 26 bits
-        return (wh << 32) ^ (x << 38) ^ (y << 26) ^ z;
+    private static NaturalKey naturalCacheKey(String worldId, BlockPos pos) {
+        // v1.3.6 CC2 (P2-7): return a composite record instead of a packed
+        // long — see NaturalKey javadoc for the collision analysis. Record
+        // allocation is trivially cheap vs the (rare) cache miss cost.
+        return new NaturalKey(worldId == null ? "" : worldId,
+                pos.getX(), pos.getY(), pos.getZ());
     }
 
     /**
@@ -1202,7 +1222,7 @@ public final class ForgeEvents {
             if (!(level instanceof ServerLevel)) return;
             BlockPos pos = ev.getPos();
             String worldId = WorldKey.of(level);
-            long key = naturalCacheKey(worldId, pos);
+            NaturalKey key = naturalCacheKey(worldId, pos);
             String curId = blockId(cur);
             String curCat = naturalCategory(curId);
             String prevId = NATURAL_BLOCK_CACHE.get(key);
@@ -1316,7 +1336,7 @@ public final class ForgeEvents {
         // load-shedding under sustained pressure. We drop up to 32 entries per
         // overflow to amortise the scan cost.
         int drop = 32;
-        Iterator<Map.Entry<Long, String>> it = NATURAL_BLOCK_CACHE.entrySet().iterator();
+        Iterator<Map.Entry<NaturalKey, String>> it = NATURAL_BLOCK_CACHE.entrySet().iterator();
         while (it.hasNext() && drop > 0) {
             it.next();
             it.remove();
@@ -1834,8 +1854,30 @@ public final class ForgeEvents {
      * per-tick sampler. Populated on {@code ChunkEvent.Load} block-entity walk
      * and on hopper block-place; drained on hopper break + hopper chunk-unload.
      */
-    private static final Map<String, java.util.concurrent.ConcurrentLinkedDeque<Long>> HOPPER_POS_BY_LEVEL =
+    /**
+     * v1.3.6 CC2 (P1-1): per-level tracked hopper packed-keys.
+     *
+     * <p>Pre-1.3.6 used {@code ConcurrentLinkedDeque<Long>}, whose
+     * {@code remove(Object)} is O(n). Under a dense hopper-farm topology
+     * (thousands of hoppers per dimension) both {@link #z3Unregister} on
+     * a hopper break AND the {@link #onChunkUnloadDropHoppers} bulk drain
+     * paid O(hoppers × unloaded_hoppers) on the server thread.</p>
+     *
+     * <p>Replaced with a {@code LinkedHashSet<Long>} guarded by a per-level
+     * lock (see {@link #hopperLockFor}): {@code remove(Object)} is O(1),
+     * iteration retains insertion order for the round-robin sampler, and
+     * the guard is uncontended in practice because all hopper events are
+     * dispatched on the server thread.</p>
+     */
+    private static final Map<String, java.util.LinkedHashSet<Long>> HOPPER_POS_BY_LEVEL =
             new ConcurrentHashMap<>();
+    /** v1.3.6 CC2 (P1-1): per-level guard for {@link #HOPPER_POS_BY_LEVEL}. */
+    private static final Map<String, Object> HOPPER_LOCK_BY_LEVEL = new ConcurrentHashMap<>();
+
+    /** v1.3.6 CC2 (P1-1): fetch or lazily create the per-level lock. */
+    private static Object hopperLockFor(String worldId) {
+        return HOPPER_LOCK_BY_LEVEL.computeIfAbsent(worldId, w -> new Object());
+    }
     /**
      * Z3 — Per-position slot-contents snapshot. Value is a length-5 array of
      * "item_id:count" strings (null-slot == empty).
@@ -1887,12 +1929,18 @@ public final class ForgeEvents {
 
     private static void z3Register(String worldId, BlockPos pos) {
         long k = hopperKey(worldId, pos);
-        java.util.concurrent.ConcurrentLinkedDeque<Long> deque = HOPPER_POS_BY_LEVEL.computeIfAbsent(
-                worldId, w -> new java.util.concurrent.ConcurrentLinkedDeque<>());
-        if (deque.size() >= HOPPER_TRACKER_MAX_PER_LEVEL) return;
-        if (HOPPER_SNAPSHOT.putIfAbsent(k, new String[HOPPER_SLOTS]) == null) {
-            HOPPER_POS_LOOKUP.put(k, pos.immutable());
-            deque.add(k);
+        java.util.LinkedHashSet<Long> set = HOPPER_POS_BY_LEVEL.computeIfAbsent(
+                worldId, w -> new java.util.LinkedHashSet<>());
+        // v1.3.6 CC2 (P1-1): guard under per-level lock; LinkedHashSet is
+        // not thread-safe. In practice all hopper events dispatch on the
+        // server thread so contention is zero, but the lock ensures we do
+        // not corrupt the set if a mod off-threads a chunk-load event.
+        synchronized (hopperLockFor(worldId)) {
+            if (set.size() >= HOPPER_TRACKER_MAX_PER_LEVEL) return;
+            if (HOPPER_SNAPSHOT.putIfAbsent(k, new String[HOPPER_SLOTS]) == null) {
+                HOPPER_POS_LOOKUP.put(k, pos.immutable());
+                set.add(k);
+            }
         }
     }
 
@@ -1900,8 +1948,13 @@ public final class ForgeEvents {
         long k = hopperKey(worldId, pos);
         HOPPER_SNAPSHOT.remove(k);
         HOPPER_POS_LOOKUP.remove(k);
-        java.util.concurrent.ConcurrentLinkedDeque<Long> deque = HOPPER_POS_BY_LEVEL.get(worldId);
-        if (deque != null) deque.remove(k);
+        // v1.3.6 CC2 (P1-1): O(1) removal via LinkedHashSet, guarded by
+        // the per-level lock to serialize with z3Register and the sampler.
+        java.util.LinkedHashSet<Long> set = HOPPER_POS_BY_LEVEL.get(worldId);
+        if (set == null) return;
+        synchronized (hopperLockFor(worldId)) {
+            set.remove(k);
+        }
     }
 
     /**
@@ -1995,15 +2048,34 @@ public final class ForgeEvents {
             EventSubmitter s = sub();
             if (s == null) return;
             String worldId = WorldKey.of(serverLevel);
-            java.util.concurrent.ConcurrentLinkedDeque<Long> deque = HOPPER_POS_BY_LEVEL.get(worldId);
-            if (deque == null || deque.isEmpty()) return;
+            java.util.LinkedHashSet<Long> set = HOPPER_POS_BY_LEVEL.get(worldId);
+            if (set == null || set.isEmpty()) return;
+            // v1.3.6 CC2 (P1-1): round-robin drain via iterator on a
+            // small local snapshot. Sampling under the per-level lock keeps
+            // z3Register / z3Unregister safely serialized; the snapshot is
+            // bounded by HOPPER_SAMPLE_PER_TICK so we do at most 20 hoppers'
+            // work per tick under lock.
             int sampled = 0;
-            while (sampled < HOPPER_SAMPLE_PER_TICK) {
-                Long k = deque.pollFirst();
-                if (k == null) break;
+            Object lock = hopperLockFor(worldId);
+            long[] toSample = new long[HOPPER_SAMPLE_PER_TICK];
+            int drained = 0;
+            synchronized (lock) {
+                java.util.Iterator<Long> it = set.iterator();
+                while (it.hasNext() && drained < HOPPER_SAMPLE_PER_TICK) {
+                    toSample[drained++] = it.next();
+                    it.remove();
+                }
+            }
+            for (int i = 0; i < drained; i++) {
+                long k = toSample[i];
                 sampled++;
                 boolean stillTracked = sampleHopperOne(serverLevel, worldId, k, s);
-                if (stillTracked) deque.addLast(k);
+                if (stillTracked) {
+                    // Re-enqueue at tail so the next tick samples fresh entries.
+                    synchronized (lock) {
+                        set.add(k);
+                    }
+                }
             }
         } catch (Throwable t) {
             rateLimitedZ3Warn("onWorldTickHopperSampler", t);
@@ -2084,6 +2156,13 @@ public final class ForgeEvents {
         try {
             ParseResults<CommandSourceStack> res = ev.getParseResults();
             if (res == null) return;
+            // v1.3.6 CC2 (P1-5): server-side gate. CommandEvent fires on both
+            // logical sides on integrated servers; without this guard we do
+            // the entire /fill snapshot work twice per fill on singleplayer
+            // AND we may see a null level on the client-side dispatch. The
+            // src.getLevel() check below is redundant belt-and-braces.
+            CommandSourceStack srcGate = res.getContext().getSource();
+            if (srcGate == null || srcGate.getLevel() == null) return;
             String raw = res.getReader().getString();
             if (raw == null) return;
             String trimmed = raw.startsWith("/") ? raw.substring(1) : raw;
@@ -2142,10 +2221,16 @@ public final class ForgeEvents {
 
             String[] preState = new String[(int) volume];
             int idx = 0;
+            // v1.3.6 CC2 (P1-3/P1-4): reuse a MutableBlockPos across the
+            // pre-snapshot scan. Pre-1.3.6 allocated one BlockPos per cell —
+            // up to FILL_MAX_REGION_BLOCKS = 32,768 allocations per /fill
+            // that we then throw away after level.getBlockState. Reusing a
+            // MutableBlockPos removes the allocation entirely.
+            BlockPos.MutableBlockPos scratch = new BlockPos.MutableBlockPos();
             for (int y = min.getY(); y <= max.getY(); y++) {
                 for (int z = min.getZ(); z <= max.getZ(); z++) {
                     for (int x = min.getX(); x <= max.getX(); x++) {
-                        BlockState st = level.getBlockState(new BlockPos(x, y, z));
+                        BlockState st = level.getBlockState(scratch.set(x, y, z));
                         preState[idx++] = st != null ? blockId(st) : "minecraft:air";
                     }
                 }
@@ -2163,11 +2248,15 @@ public final class ForgeEvents {
                     EventSubmitter s2 = sub();
                     if (s2 == null) return;
                     int i = 0;
+                    // v1.3.6 CC2 (P1-3/P1-4): same MutableBlockPos reuse for
+                    // the deferred post-state diff pass. Runs on next-tick
+                    // server executor; without this the callback allocated
+                    // another 32K BlockPos per /fill.
+                    BlockPos.MutableBlockPos scratch2 = new BlockPos.MutableBlockPos();
                     for (int y = fmin.getY(); y <= fmax.getY(); y++) {
                         for (int z = fmin.getZ(); z <= fmax.getZ(); z++) {
                             for (int x = fmin.getX(); x <= fmax.getX(); x++) {
-                                BlockPos p = new BlockPos(x, y, z);
-                                BlockState nowSt = level.getBlockState(p);
+                                BlockState nowSt = level.getBlockState(scratch2.set(x, y, z));
                                 String nowId = nowSt != null ? blockId(nowSt) : "minecraft:air";
                                 String prevId = preSnap[i++];
                                 if (prevId == null || prevId.equals(nowId)) continue;
@@ -2194,6 +2283,7 @@ public final class ForgeEvents {
     /** Z3 — clear tracker state on server stop; called via {@link #reset()}. */
     public static void clearHopperTracker() {
         HOPPER_POS_BY_LEVEL.clear();
+        HOPPER_LOCK_BY_LEVEL.clear();
         HOPPER_SNAPSHOT.clear();
         HOPPER_POS_LOOKUP.clear();
         Z3_WARN_LIMIT.clear();

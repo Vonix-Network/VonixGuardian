@@ -93,8 +93,21 @@ public final class TntPrimeMemory {
     /** Current clock supplier — mockable for tests. */
     private final java.util.function.LongSupplier clock;
 
-    /** For amortised eviction: rolling cursor into the entrySet. */
-    private volatile java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> sweepCursor;
+    /**
+     * For amortised eviction: cursor is guarded by {@link #sweepLock} to
+     * avoid the pre-1.3.6 CME race where two concurrent {@link #record}
+     * callers could share a single iterator and blow up on
+     * {@code it.next()}. The lock is small-scope (SWEEP_STRIDE entries) and
+     * held only during eviction, not during record/consume/peek.
+     *
+     * <p>v1.3.6 CC2 (P2-9): dropped the {@code volatile} qualifier — a
+     * volatile-published iterator is unsafe to share across threads even
+     * with a happens-before edge because {@link java.util.Iterator} itself
+     * is not thread-safe and its internal expectedModCount state can go
+     * stale mid-sweep.
+     */
+    private java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> sweepCursor;
+    private final Object sweepLock = new Object();
 
     /**
      * v1.3.2 Y5 (P1-3): counter of insertions observed while {@code size > maxEntries}.
@@ -209,7 +222,9 @@ public final class TntPrimeMemory {
     /** Fully clear the cache. Used on shutdown/reload. */
     public void clear() {
         entries.clear();
-        sweepCursor = null;
+        synchronized (sweepLock) {
+            sweepCursor = null;
+        }
         hardEvictCounter.set(0L);
     }
 
@@ -220,24 +235,40 @@ public final class TntPrimeMemory {
 
     /** Amortised sweep: walk up to {@code SWEEP_STRIDE} entries and drop expired. */
     private void maybeEvict(long now) {
-        java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> it = sweepCursor;
-        if (it == null || !it.hasNext()) {
-            it = entries.entrySet().iterator();
-            sweepCursor = it;
-        }
-        int n = 0;
-        while (it.hasNext() && n < SWEEP_STRIDE) {
-            java.util.Map.Entry<Key, PrimeRecord> e = it.next();
-            if (now - e.getValue().primedAtMillis > ttlMs) {
+        // v1.3.6 CC2 (P2-9): sweep under sweepLock — the previous volatile
+        // shared iterator was CME-racy when two concurrent callers (server
+        // thread + off-thread mixin injection) landed inside maybeEvict at
+        // once. The lock is only held for at most SWEEP_STRIDE entries so it
+        // never contends with the hot record/consume path.
+        synchronized (sweepLock) {
+            java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> it = sweepCursor;
+            if (it == null || !it.hasNext()) {
+                it = entries.entrySet().iterator();
+                sweepCursor = it;
+            }
+            int n = 0;
+            while (it.hasNext() && n < SWEEP_STRIDE) {
+                java.util.Map.Entry<Key, PrimeRecord> e;
                 try {
-                    it.remove();
-                } catch (Throwable ignored) {
-                    // ConcurrentModification — drop cursor, next call restarts.
+                    e = it.next();
+                } catch (java.util.ConcurrentModificationException cme) {
+                    // Another mutation raced this cursor even under lock (e.g.
+                    // a putIfAbsent on ConcurrentHashMap invalidated our fail-
+                    // safe iterator's expectedModCount view). Drop and retry
+                    // on the next tick — safe under-sweep.
                     sweepCursor = null;
                     return;
                 }
+                if (now - e.getValue().primedAtMillis > ttlMs) {
+                    try {
+                        it.remove();
+                    } catch (Throwable ignored) {
+                        sweepCursor = null;
+                        return;
+                    }
+                }
+                n++;
             }
-            n++;
         }
     }
 
@@ -270,7 +301,9 @@ public final class TntPrimeMemory {
             it.remove();
             dropped++;
         }
-        sweepCursor = null;
+        synchronized (sweepLock) {
+            sweepCursor = null;
+        }
     }
 
     /**

@@ -547,6 +547,14 @@ public final class NeoForgeEvents {
             ParseResults<CommandSourceStack> res = ev.getParseResults();
             if (res == null) return;
             CommandSourceStack src = res.getContext().getSource();
+            // v1.3.6 CC2 (P1-5): server-side gate. CommandEvent fires on both
+            // logical sides on integrated servers; a client-side dispatch has
+            // src.getLevel() == null and we would blow up on the WorldKey.of
+            // call below. Also guard the server-thread invariant so an off-
+            // thread dispatcher (rare, but Sinytra Connector has done this)
+            // does not race the submitter.
+            if (src == null || src.getLevel() == null) return;
+            if (src.getServer() == null || !src.getServer().isSameThread()) return;
             String raw = res.getReader().getString();
             if (src.getEntity() instanceof ServerPlayer p) {
                 s.submitCommand(p.getUUID(), p.getName().getString(),

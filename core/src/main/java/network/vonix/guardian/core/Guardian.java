@@ -183,7 +183,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         Objects.requireNonNull(mainThreadExec, "mainThreadExec");
         Objects.requireNonNull(tf, "tf");
 
-        LOG.info(MARKER, "Booting VonixGuardian (db={}, theme={}, queue.max={})",
+        LOG.info(MARKER, "Booting VonixGuardian v{} (db={}, theme={}, queue.max={})",
+                GuardianAPI.PLUGIN_VERSION,
                 config.database().type(), config.theme(), config.queue().maxSize());
 
         GuardianDao dao = StorageFactory.open(config);
