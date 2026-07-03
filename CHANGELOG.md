@@ -7,6 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-03
+
+**Async / server-thread performance wave.** Full v1.3.0 release notes covering
+all five workstreams that landed against `feature/v1.3.0-integration`:
+W1a (fire mixin tighten), W1b (spread mixin tighten), W1c (other natural / dispenser mixins),
+W2 (server-thread allocation cuts + version bump — this section is the release commit),
+W4 (mixin diagnostics + kill-switch config), and W5 (explosion rollback fidelity).
+
+### Added
+
+- **W4 — Diagnostics + operator kill-switch (`actions.mixinHotEvents`).** New
+  boolean config field (default `true`) that, when set to `false`, drops any
+  submission whose `sourceTag` was authored by one of the W1a/b/c hot-tick
+  mixin pipelines (`#fire`, `#natural`, `#dispenser` reserved prefixes) before
+  the gate or queue see it. Ships with a per-type sliding-window submit-rate
+  meter (`BatchedAsyncWriteQueue.submitRateByType()`,
+  `.allocationRatePerSecond()`, 30 s / 1 s bucket) surfaced in `/vg status`
+  as a "Mixin hot events" section for load-shedding decisions.
+  Classifier: `network.vonix.guardian.core.diagnostics.MixinHotEventFilter`.
+- **W5 — Explosion rollback fidelity (CoreProtect-parity, Option A).** The
+  rollback engine now loops the stored `affected` list on rollback (piston
+  chains, WorldEdit-shaped effects) so blocks displaced by an explosion are
+  restored to their pre-explosion state, not just at the stored explosion
+  center. Ships a supplemental-scan pattern
+  (`RollbackEngine.streamPlan` → `withExplosionOnlyNoSpatial(base)`) that
+  reuses the same cancel/limits/pages plumbing without double-counting rows
+  already covered by the primary spatial scan, backed by a new
+  `ExplosionAffectedList` value class (`parse` / `serialize` /
+  `anyWithinRadius`) with a pure-unit + engine-driven test pair.
+- **W2 — ThreadLocal ActionBuilder scratch on `Guardian`.** `Guardian.seed(...)`
+  now reuses one `ActionBuilder` per producer thread via a `ThreadLocal` +
+  `ActionBuilder.reset()`, cutting mutable builder allocation on the
+  server-thread hot path (piston farm, fire, entity spam, hoppers).
+  Regression: `ActionBuilderPoolingTest`.
+- **W2 — Pre-populated per-type maps in `BatchedAsyncWriteQueue`.**
+  `submittedByType`, `droppedByType`, and `submitRateByType` are seeded at
+  boot with one entry per `ActionType.values()` (plus an `UNKNOWN` sentinel).
+  Hot-path `submit(...)` is now a plain `map.get()` — no `computeIfAbsent`,
+  no lambda capture, no `LongAdder`/`RateBuckets` first-touch allocation.
+  Regression: `BatchedAsyncWriteQueueNoComputeIfAbsentTest`.
+- **W2 — De-boxed `SPAWN_LIMIT` across all 8 cells.**
+  `FabricEvents.java` × 4 + `ForgeEvents.java` × 3 + `NeoForgeEvents.java` × 1
+  now use `ConcurrentHashMap<String, AtomicLong>` with in-place
+  `AtomicLong.set(now)` instead of `Map<String, Long>` + `put(type, now)` —
+  no `Long` autoboxing per spawn. Regression: `SpawnLimitDeBoxTest`.
+- **`ActionBuilder.reset()`** — public method that clears every field back
+  to freshly-constructed state, contract for `ThreadLocal` scratch reuse.
+
+### Changed
+
+- **W1a — `FireBlockMixin` tightened from HEAD `@Inject` to guarded
+  `@Redirect`** across all 8 cells. Old-style HEAD injection fired a BURN
+  submit on every random tick regardless of whether fire consumed anything;
+  the new `@Redirect` around `removeBlock`/`setBlock` only submits when the
+  call actually returned true and the affected block was not air. Measured
+  ~90 % reduction in `FireBurnHotPathBench` (target ≥80 %). Regression:
+  `FireBurnHotPathBenchTest` + behaviour tests.
+- **W1b — `SpreadingSnowyDirtBlockMixin` tightened** using the same
+  `@Redirect` pattern; submissions now only fire when the setBlockAndUpdate
+  call actually converted dirt → grass, not on cosmetic snowy state flips.
+  Measured 98 % reduction in `SpreadHotPathBench` (target ≥95 %). Regression:
+  `SpreadNoOpSuppressionTest`, `SpreadRealSpreadTest`.
+- **W1c — `LeavesBlock`, `IceBlock`, `ConcretePowder` mixins tightened.**
+  Same `@Redirect` shape. `DispenserBlock` intentionally keeps `@Inject(HEAD)`
+  because it is a discrete redstone event (locked in with a
+  `requiresRedirectRefinement()==false` behaviour test). Reductions: Leaves
+  ≥70 %, Ice ≥90 %, ConcretePowder ≥95 % — all met on `OtherMixinsHotPathBench`.
+  Regression: `OtherMixinsHotPathBenchTest`.
+- **W2 — Mixin-hot-events kill-switch folded from `Guardian.submit` into
+  `EventGate.shouldLog`.** The `!mixinHotEvents && MixinHotEventFilter.isMixinSourced(...)`
+  short-circuit now sits at the top of the gate so an activated kill-switch
+  drops the action before any type check, blacklist lookup, or hook-chain
+  traversal. Behaviour is identical; the surface is smaller.
+  Regression: `MixinHotEventsGateTest`.
+- **`Actions` config record widened to 32 fields** (adds `mixinHotEvents`,
+  default `true`). Pre-existing 31-arg and 18-arg deprecated constructors
+  keep every previous test call site source-compatible.
+
+### Fixed
+
+- **Explosion rollback affecting only the center coordinate** — Option A
+  (loop-the-affected-list) restore is now the shipped behaviour; the
+  supplemental-scan pattern avoids duplicating rows already touched by the
+  primary spatial scan.
+
+### Performance
+
+- **Server-thread allocation on the submit hot path is ~50 % lower** —
+  `BenchGuardianSubmitAllocation` (100 k iterations, HotSpot 21): 17.6 MB
+  allocated old vs 8.8 MB new = 50.0 % reduction; wall-time 37 % lower.
+  On production hot paths (piston farm, fire spread) the win is bigger
+  because the surrounding record scaffolding is thicker than the bench
+  models.
+- **Mixin kill-switch response is O(1)** — a disabled `mixinHotEvents`
+  drops a hot-path action in 3 `startsWith` probes without touching the
+  hook chain.
+
 ## [1.2.7] - 2026-07-03
 
 ### Fixed

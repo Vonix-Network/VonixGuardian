@@ -140,3 +140,75 @@ empirical real-spread rate. Old HEAD @Inject: 240,000 submits. New @Redirect:
 (`SpreadNoOpSuppressionTest`, `SpreadRealSpreadTest`) cover no-op suppression,
 one-submit-per-real-spread, cosmetic-refresh suppression, and the
 setBlockAndUpdate-returned-false branch.
+
+
+## W2 — Server-thread allocation cuts (2026-07-03)
+
+**Motivation.** The 2026-07-03 async/perf audit flagged three server-thread
+hot-path allocation sources that produced MB/s of short-lived garbage on
+heavily-loaded modded servers (piston farms, fire spread, entity spam,
+hopper chains):
+
+1. Every `Guardian.submitXxx(...)` call chained through `seed(...)` which
+   allocated a fresh 16-nullable-field `ActionBuilder` per event.
+2. `BatchedAsyncWriteQueue.submit(...)` hit `ConcurrentHashMap.computeIfAbsent`
+   twice per submit (`submittedByType`, `submitRateByType`) and once again
+   on drop (`droppedByType`), capturing a fresh lambda + `LongAdder`/`RateBuckets`
+   on first-touch for each `ActionType` — same shape on the hot path forever
+   after.
+3. All 8 loader cells' `onEntityJoinLevel` handler used
+   `Map<String, Long> SPAWN_LIMIT` — every fresh entity type spawn autoboxed
+   a `Long.valueOf(System.currentTimeMillis())` on `put(...)`.
+
+**Fixes.**
+
+1. **ThreadLocal ActionBuilder scratch.** `Guardian` now keeps one
+   `ActionBuilder` per producer thread in a `ThreadLocal` and calls
+   `ActionBuilder.reset()` at the top of every `seed(...)`. The immutable
+   `Action` produced by `build()` is still fresh per submit (the DAO holds
+   the reference through the batch), but the mutable scratch is pooled.
+   Steady-state cost: ~200 bytes per producer thread, one-time.
+2. **Pre-populated per-type maps.**
+   `BatchedAsyncWriteQueue`'s constructor now seeds `submittedByType`,
+   `droppedByType`, and `submitRateByType` with one entry per
+   `ActionType.values()` + an `UNKNOWN` sentinel. Hot-path `submit(...)`
+   is now a plain `map.get(typeKey)` — no `computeIfAbsent`, no lambda
+   capture, no boxing. `computeIfAbsent` is preserved as a defensive
+   fallback for synthetic action types (test-only).
+3. **De-boxed `SPAWN_LIMIT`.** All 8 loader cells now use
+   `ConcurrentHashMap<String, AtomicLong>` and update via `AtomicLong.set(now)`
+   — no `Long` autoboxing per spawn.
+4. **W4 mixin-hot-events kill-switch folded into `EventGate`.** The
+   `actions.mixinHotEvents=false` check moved from `Guardian.submit` into
+   `EventGate.shouldLog` (checked before type/blacklist/hook-chain
+   evaluation). Kill-switch response is now O(1) — 3 `startsWith` probes
+   on the sourceTag — and doesn't traverse the hook chain at all.
+
+**Measured impact (`BenchGuardianSubmitAllocation`).** 100k `Guardian.submit`-shaped
+cycles (10k warmup), running on OpenJDK 21 on the dev host:
+
+```
+OLD:   100000 submits in 29,513,116 ns (17,602,216 B allocated)
+NEW:   100000 submits in 18,709,651 ns (8,801,152 B allocated)
+Wall-time reduction:  36.6%
+Alloc-bytes reduction: 50.0%
+```
+
+The **50 % allocation-bytes reduction** matches the W2 target. Wall-time
+improvement is ~37 % — bench underestimates production wins because the
+production hot path allocates more surrounding record scaffolding (Sentinel
+strings, per-mixin sourceTag interns) that this bench doesn't recreate.
+
+**Regression tests.**
+- `ActionBuilderPoolingTest` — 3 tests: `reset()` clears every field; pooled
+  builder produces byte-identical `Action` to a fresh builder; 10 k reuse
+  cycles remain stable.
+- `BatchedAsyncWriteQueueNoComputeIfAbsentTest` — 2 tests: all `ActionType`
+  buckets present at boot; hot-path submits never introduce a new key
+  (identity-check on the counter instance).
+- `SpawnLimitDeBoxTest` — 3 tests: `AtomicLong` instance identity across
+  10 k in-place updates; distinct entity types get distinct `AtomicLong`s;
+  1-second throttle window still holds.
+- `MixinHotEventsGateTest` — 5 tests: kill-switch dropped `#fire` / `#natural`
+  / `#dispenser` sourceTag actions; non-mixin tags still log; kill-switch=true
+  passes everything.

@@ -46,6 +46,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Fabric event handlers translating Fabric API callbacks into
@@ -68,7 +69,11 @@ public final class FabricEvents {
     private static final Logger LOG = LoggerFactory.getLogger(FabricEvents.class);
 
     /** Per-entity-type rate limit for spawn logging (last-emit ts in millis). */
-    private static final Map<String, Long> SPAWN_LIMIT = new ConcurrentHashMap<>();
+    // v1.3.0 W2: de-boxed spawn-limit throttle. Previous Map<String,Long> auto-boxed a
+    // fresh Long on every put(...) — several MB/s of short-lived garbage on modded
+    // shards with mob-farm-heavy chunks (piglin bartering, drowned trident farms, etc.).
+    // AtomicLong lets us update in place with a plain volatile store on the hot path.
+    private static final Map<String, AtomicLong> SPAWN_LIMIT = new ConcurrentHashMap<>();
     private static final long SPAWN_LIMIT_MS = 1_000L;
 
     /** Daemon worker for off-tick JDBC (inspector lookups). Mirrors ForgeEvents. */
@@ -380,9 +385,17 @@ public final class FabricEvents {
             if (!(entity instanceof LivingEntity) || entity instanceof Player) return;
             String type = EntitySentinel.of(entity);
             long now = System.currentTimeMillis();
-            Long last = SPAWN_LIMIT.get(type);
-            if (last != null && now - last < SPAWN_LIMIT_MS) return;
-            SPAWN_LIMIT.put(type, now);
+            // v1.3.0 W2: de-boxed spawn-limit throttle — plain AtomicLong.set on the
+            // hot path, no autoboxing per spawn.
+            AtomicLong last = SPAWN_LIMIT.get(type);
+            if (last == null) {
+                AtomicLong fresh = new AtomicLong(now);
+                AtomicLong prev = SPAWN_LIMIT.putIfAbsent(type, fresh);
+                if (prev != null) prev.set(now);
+            } else {
+                if (now - last.get() < SPAWN_LIMIT_MS) return;
+                last.set(now);
+            }
             BlockPos pos = entity.blockPosition();
             s.submitEntitySpawn(null, type,
                     WorldKey.of(level),

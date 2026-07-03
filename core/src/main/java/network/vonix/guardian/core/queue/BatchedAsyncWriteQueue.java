@@ -1,6 +1,7 @@
 package network.vonix.guardian.core.queue;
 
 import network.vonix.guardian.core.action.Action;
+import network.vonix.guardian.core.action.ActionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
@@ -53,8 +54,30 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     // regardless of whether the queue accepted or dropped it, so we can see the
     // true producer-side histogram even when the drainer can't keep up.
     // Type key = action.type().name() (e.g. "BLOCK_PLACE", "ENTITY_SPAWN").
+    //
+    // v1.3.0 W2: pre-populated at construction with one LongAdder per known
+    // ActionType so the hot path is a plain `map.get(key)` — no
+    // computeIfAbsent, no lambda capture, no boxing. An unknown/synthetic key
+    // (only possible for an out-of-band Action.type() we don't ship) falls back
+    // to computeIfAbsent so we still record it.
     private final ConcurrentHashMap<String, LongAdder> submittedByType = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LongAdder> droppedByType = new ConcurrentHashMap<>();
+    /** Sentinel bucket key for a null / unknown {@link ActionType} on submit. */
+    static final String UNKNOWN_TYPE_KEY = "UNKNOWN";
+
+    /**
+     * Package-visible test accessor: internal per-type submit counter map.
+     * Regression tests (v1.3.0 W2 {@code BatchedAsyncWriteQueueNoComputeIfAbsentTest})
+     * assert this is fully pre-populated at boot so hot-path submit is a plain
+     * {@code get()}.
+     */
+    ConcurrentHashMap<String, LongAdder> submittedByTypeInternal() { return submittedByType; }
+
+    /** Package-visible test accessor for {@link #droppedByType}. */
+    ConcurrentHashMap<String, LongAdder> droppedByTypeInternal()   { return droppedByType; }
+
+    /** Package-visible test accessor for {@link #submitRateByType}. */
+    ConcurrentHashMap<String, RateBuckets> submitRateByTypeInternal() { return submitRateByType; }
     private final AtomicLong lastHistogramLogNs = new AtomicLong(Long.MIN_VALUE);
     private static final long HISTOGRAM_LOG_INTERVAL_NS = TimeUnit.SECONDS.toNanos(30);
 
@@ -106,6 +129,20 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         this.batchSize = batchSize;
         this.sink = Objects.requireNonNull(sink, "sink");
         Objects.requireNonNull(tf, "tf");
+        // v1.3.0 W2: pre-populate per-type maps at boot so hot-path submit is
+        // a plain map.get() with no computeIfAbsent, no lambda capture, no
+        // hidden allocation. Every ActionType.values() entry + the UNKNOWN
+        // sentinel gets its own LongAdder + RateBuckets. Steady-state memory
+        // cost: ActionType.values().length * (LongAdder + LongAdder + RateBuckets)
+        // ~= 39 * ~1KB = ~40KB, one-time at boot.
+        for (ActionType t : ActionType.values()) {
+            submittedByType.put(t.name(), new LongAdder());
+            droppedByType.put(t.name(), new LongAdder());
+            submitRateByType.put(t.name(), new RateBuckets());
+        }
+        submittedByType.put(UNKNOWN_TYPE_KEY, new LongAdder());
+        droppedByType.put(UNKNOWN_TYPE_KEY, new LongAdder());
+        submitRateByType.put(UNKNOWN_TYPE_KEY, new RateBuckets());
         this.worker = tf.newThread(this::runWorker);
         if (this.worker == null) {
             throw new IllegalStateException("ThreadFactory returned null");
@@ -123,15 +160,33 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         // v1.1.3-diag: count every submit at the producer moment (before the queue
         // decides to accept or drop). This is the TRUE producer rate.
-        String typeKey = a.type() == null ? "UNKNOWN" : a.type().name();
-        submittedByType.computeIfAbsent(typeKey, k -> new LongAdder()).increment();
+        //
+        // v1.3.0 W2: pre-populated maps mean the hot path is a plain get(). We
+        // still fall back to computeIfAbsent for a truly out-of-band ActionType
+        // (impossible for shipped code — every submit path uses ActionType enum
+        // values) so ad-hoc synthetic actions in tests / future extensions still
+        // land in the histogram.
+        String typeKey = a.type() == null ? UNKNOWN_TYPE_KEY : a.type().name();
+        LongAdder submittedCounter = submittedByType.get(typeKey);
+        if (submittedCounter == null) {
+            submittedCounter = submittedByType.computeIfAbsent(typeKey, k -> new LongAdder());
+        }
+        submittedCounter.increment();
         // v1.3.0 W4: sliding-window rate meter — per-type + aggregate allocation rate.
         long nowNs = System.nanoTime();
-        submitRateByType.computeIfAbsent(typeKey, k -> new RateBuckets()).tick(nowNs);
+        RateBuckets rateBuckets = submitRateByType.get(typeKey);
+        if (rateBuckets == null) {
+            rateBuckets = submitRateByType.computeIfAbsent(typeKey, k -> new RateBuckets());
+        }
+        rateBuckets.tick(nowNs);
         aggregateRate.tick(nowNs);
         if (!queue.offer(a)) {
             long total = dropped.incrementAndGet();
-            droppedByType.computeIfAbsent(typeKey, k -> new LongAdder()).increment();
+            LongAdder droppedCounter = droppedByType.get(typeKey);
+            if (droppedCounter == null) {
+                droppedCounter = droppedByType.computeIfAbsent(typeKey, k -> new LongAdder());
+            }
+            droppedCounter.increment();
             maybeLogDrop(total);
         }
         maybeLogHistogram();
@@ -196,7 +251,10 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     public java.util.Map<String, Long> submittedByTypeSnapshot() {
         java.util.LinkedHashMap<String, Long> snap = new java.util.LinkedHashMap<>();
         for (java.util.Map.Entry<String, java.util.concurrent.atomic.LongAdder> e : submittedByType.entrySet()) {
-            snap.put(e.getKey(), e.getValue().sum());
+            // v1.3.0 W2: filter zeros so pre-populated but-never-touched buckets
+            // don't leak into /vg status (preserves pre-1.3 snapshot semantics).
+            long v = e.getValue().sum();
+            if (v > 0L) snap.put(e.getKey(), v);
         }
         return java.util.Collections.unmodifiableMap(snap);
     }
@@ -211,7 +269,9 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     public java.util.Map<String, Long> droppedByTypeSnapshot() {
         java.util.LinkedHashMap<String, Long> snap = new java.util.LinkedHashMap<>();
         for (java.util.Map.Entry<String, java.util.concurrent.atomic.LongAdder> e : droppedByType.entrySet()) {
-            snap.put(e.getKey(), e.getValue().sum());
+            // v1.3.0 W2: filter zeros (see submittedByTypeSnapshot).
+            long v = e.getValue().sum();
+            if (v > 0L) snap.put(e.getKey(), v);
         }
         return java.util.Collections.unmodifiableMap(snap);
     }

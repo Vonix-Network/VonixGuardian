@@ -3,6 +3,7 @@ package network.vonix.guardian.core.event;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -41,6 +42,15 @@ public final class EventGate {
     private final Set<String> worldBlacklist;
     private final Set<String> blockBlacklist;
     private final Set<String> sourceBlacklist;
+    /**
+     * v1.3.0 W2: cached copy of {@code actions.mixinHotEvents} for the built-in
+     * kill-switch short-circuit in {@link #shouldLog(Action)}. Set once at
+     * construction so hot-path evaluation is a single volatile-free field read
+     * instead of a config-record property chase. A config reload rebuilds the
+     * {@code EventGate} (see {@code Guardian#reloadConfig}), so this stays
+     * consistent with the live config.
+     */
+    private final boolean mixinHotEventsEnabled;
     private final List<EventHook> hooks = new CopyOnWriteArrayList<>();
 
     /**
@@ -55,6 +65,7 @@ public final class EventGate {
         this.worldBlacklist = freeze(cfg.worldBlacklist());
         this.blockBlacklist = freeze(cfg.blockBlacklist());
         this.sourceBlacklist = freeze(cfg.sourceBlacklist());
+        this.mixinHotEventsEnabled = cfg.mixinHotEvents();
     }
 
     private static Set<String> freeze(List<String> src) {
@@ -94,6 +105,15 @@ public final class EventGate {
      */
     public boolean shouldLog(Action a) {
         if (a == null) {
+            return false;
+        }
+        // v1.3.0 W2: mixin hot-event kill-switch (folded from Guardian.submit).
+        // When actions.mixinHotEvents=false, drop any action whose sourceTag was
+        // authored by one of the W1a/b/c mixin pipelines ("#fire", "#natural",
+        // "#dispenser"). Checked FIRST so operators using the kill-switch don't
+        // pay type-check + blacklist-lookup + hook-chain traversal per mixin
+        // event during a load-shedding event.
+        if (!mixinHotEventsEnabled && MixinHotEventFilter.isMixinSourced(a.sourceTag())) {
             return false;
         }
         if (!typeEnabled(a.type())) {
