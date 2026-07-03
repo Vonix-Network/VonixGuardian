@@ -47,6 +47,14 @@ public final class FabricMixinBridge {
 
     private FabricMixinBridge() {}
 
+    /** v1.3.2 Y1 config-gated NBT persist flag. */
+    private static boolean persistNbt() {
+        Guardian g = VonixGuardianFabric.guardian();
+        if (g == null) return false;
+        var c = g.config();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     private static EventSubmitter sub() {
         Guardian g = VonixGuardianFabric.guardian();
         return g == null ? null : g.submitter();
@@ -295,6 +303,7 @@ public final class FabricMixinBridge {
             EventSubmitter s = sub();
             if (s == null) return;
             int size = Math.min(container.getContainerSize(), MAX_CONTAINER_SLOTS);
+            boolean nbtOn = persistNbt();
             for (int slot = 0; slot < size; slot++) {
                 ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
                 ItemStack after = container.getItem(slot);
@@ -304,8 +313,19 @@ public final class FabricMixinBridge {
                 if (itemId == null) continue;
                 int delta = afterCount - beforeCount;
                 if (delta == 0) continue;
-                s.submitContainerChange(player.getUUID(), player.getName().getString(), worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                byte[] itemNbt = null;
+                if (nbtOn) {
+                    // delta > 0 = deposit (after carries NBT); delta < 0 = withdraw (before carries NBT).
+                    ItemStack src = delta > 0 ? after : before;
+                    itemNbt = NbtCapture.itemStack(src);
+                }
+                if (itemNbt != null) {
+                    s.submitContainerChange(player.getUUID(), player.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
+                } else {
+                    s.submitContainerChange(player.getUUID(), player.getName().getString(), worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
+                }
             }
         } catch (Throwable t) {
             warn("containerClose", t);
@@ -392,10 +412,19 @@ public final class FabricMixinBridge {
             EventSubmitter s = sub();
             if (s == null || player == null || stack == null || stack.isEmpty()) return;
             BlockPos pos = player.blockPosition();
-            s.submitItemDrop(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(player.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    itemId(stack), stack.getCount(), null);
+            // v1.3.2 Y1: item toss NBT.
+            byte[] itemNbt = persistNbt() ? NbtCapture.itemStack(stack) : null;
+            if (itemNbt != null) {
+                s.submitItemDrop(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(player.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null, itemNbt);
+            } else {
+                s.submitItemDrop(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(player.level()),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        itemId(stack), stack.getCount(), null);
+            }
         } catch (Throwable t) {
             warn("itemDrop", t);
         }

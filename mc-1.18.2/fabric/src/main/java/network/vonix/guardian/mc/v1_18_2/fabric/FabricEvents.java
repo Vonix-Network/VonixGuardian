@@ -196,6 +196,12 @@ public final class FabricEvents {
         return g == null ? null : g.config();
     }
 
+    /** v1.3.2 Y1 config-gated NBT persist flag. */
+    private static boolean persistNbt() {
+        GuardianConfig c = cfg();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     // ====================================================================== blocks
 
     private static void onBlockBreakAfter(Level world, Player player, BlockPos pos,
@@ -203,10 +209,20 @@ public final class FabricEvents {
         try {
             EventSubmitter s = sub();
             if (s == null || player == null) return;
-            s.submitBlockBreak(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(world),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    blockId(state), null);
+            // v1.3.2 Y1: NBT capture on server thread BEFORE the break resolves.
+            if (persistNbt()) {
+                String stateProps = NbtCapture.blockStateProps(state);
+                byte[] beNbt = be == null ? null : NbtCapture.blockEntity(be);
+                s.submitBlockBreak(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(world),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(state), null, stateProps, beNbt);
+            } else {
+                s.submitBlockBreak(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(world),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(state), null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockBreakAfter failed", t);
         }

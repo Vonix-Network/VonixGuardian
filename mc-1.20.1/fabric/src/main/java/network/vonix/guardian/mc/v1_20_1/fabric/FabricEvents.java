@@ -207,6 +207,12 @@ public final class FabricEvents {
         return g == null ? null : g.config();
     }
 
+    /** v1.3.2 Y1 config-gated NBT persist flag. */
+    private static boolean persistNbt() {
+        GuardianConfig c = cfg();
+        return c != null && c.storage() != null && c.storage().persistNbt();
+    }
+
     // ====================================================================== blocks
 
     /**
@@ -219,10 +225,20 @@ public final class FabricEvents {
         try {
             EventSubmitter s = sub();
             if (s == null || player == null) return;
-            s.submitBlockBreak(player.getUUID(), player.getName().getString(),
-                    WorldKey.of(world),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    blockId(state), null);
+            // v1.3.2 Y1: NBT capture on server thread BEFORE the break resolves.
+            if (persistNbt()) {
+                String stateProps = NbtCapture.blockStateProps(state);
+                byte[] beNbt = be == null ? null : NbtCapture.blockEntity(be);
+                s.submitBlockBreak(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(world),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(state), null, stateProps, beNbt);
+            } else {
+                s.submitBlockBreak(player.getUUID(), player.getName().getString(),
+                        WorldKey.of(world),
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        blockId(state), null);
+            }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockBreakAfter failed", t);
         }
@@ -340,11 +356,34 @@ public final class FabricEvents {
                 attr = Attribution.unknown(EntitySentinel.UNKNOWN);
             }
             BlockPos pos = victim.blockPosition();
+
             String entityType = EntitySentinel.of(victim);
-            s.submitEntityKill(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(victim.level()),
-                    pos.getX(), pos.getY(), pos.getZ(),
-                    entityType, source == null ? null : SourceTagger.tag(source));
+
+            // v1.3.2 Y1: capture the victim's persistent NBT BEFORE death resolves.
+
+            byte[] entNbt = persistNbt() ? NbtCapture.entity(victim) : null;
+
+            if (entNbt != null) {
+
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+
+                        WorldKey.of(victim.level()),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        entityType, source == null ? null : SourceTagger.tag(source), entNbt);
+
+            } else {
+
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+
+                        WorldKey.of(victim.level()),
+
+                        pos.getX(), pos.getY(), pos.getZ(),
+
+                        entityType, source == null ? null : SourceTagger.tag(source));
+
+            }
             if (FabricBootstrap.damageHistory != null) {
                 FabricBootstrap.damageHistory.forget(victim.getUUID());
             }
