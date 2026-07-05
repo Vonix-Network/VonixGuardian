@@ -6,6 +6,7 @@ package network.vonix.guardian.core.api;
 
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.action.Action;
+import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
@@ -46,7 +47,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
     public static final int API_VERSION = 1;
 
     /** Plugin display version — mirrors {@code gradle.properties#mod_version}. */
-    public static final String PLUGIN_VERSION = "1.3.7";
+    public static final String PLUGIN_VERSION = "1.3.8";
 
     private final Guardian guardian;
 
@@ -109,7 +110,8 @@ public final class GuardianAPI implements VonixGuardianAPI {
                     a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
                     a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                     stripSign(a.type().token()),
-                    a.rolledBack(), a.sourceTag()));
+                    a.rolledBack(), a.sourceTag(),
+                    a.oldBlockState(), a.newBlockState(), a.blockEntityNbt()));
         }
         return out;
     }
@@ -130,7 +132,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
             out.add(new ContainerLookupResult(
                     a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
                     a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
-                    delta, a.rolledBack(), a.sourceTag()));
+                    delta, a.rolledBack(), a.sourceTag(), a.itemNbt()));
         }
         return out;
     }
@@ -184,7 +186,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
             out.add(new ItemLookupResult(
                     a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
                     a.targetId(), a.targetMeta(), a.amount(),
-                    stripSign(a.type().token()), a.rolledBack(), a.sourceTag()));
+                    stripSign(a.type().token()), a.rolledBack(), a.sourceTag(), a.itemNbt()));
         }
         return out;
     }
@@ -247,7 +249,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
                     a.timestamp(), a.actorUuid(), a.actorName(), a.worldId(),
                     a.x(), a.y(), a.z(),
                     a.targetId() != null ? a.targetId() : "",
-                    a.sourceTag()));
+                    a.sourceTag(), a.signSide(), a.signDyeColor(), a.signWaxed()));
         }
         return out;
     }
@@ -296,22 +298,19 @@ public final class GuardianAPI implements VonixGuardianAPI {
     @Override
     public boolean logChat(UUID user, String actorName, String worldId, String message) {
         Objects.requireNonNull(worldId, "worldId");
-        guardian.submitChat(user, actorName, worldId, message);
-        return true;
+        return submitDirect(ActionType.CHAT, user, actorName, worldId, 0, 0, 0, message, null, 1, null);
     }
 
     @Override
     public boolean logCommand(UUID user, String actorName, String worldId, String command) {
         Objects.requireNonNull(worldId, "worldId");
-        guardian.submitCommand(user, actorName, worldId, command);
-        return true;
+        return submitDirect(ActionType.COMMAND, user, actorName, worldId, 0, 0, 0, command, null, 1, null);
     }
 
     @Override
     public boolean logInteraction(UUID user, String actorName, String worldId, int x, int y, int z) {
         Objects.requireNonNull(worldId, "worldId");
-        guardian.submitClick(user, actorName, worldId, x, y, z, "", null);
-        return true;
+        return submitDirect(ActionType.CLICK, user, actorName, worldId, x, y, z, "", null, 1, null);
     }
 
     @Override
@@ -319,8 +318,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
                                 int x, int y, int z, String blockId) {
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(blockId, "blockId");
-        guardian.submitBlockPlace(user, actorName, worldId, x, y, z, blockId, null);
-        return true;
+        return submitDirect(ActionType.BLOCK_PLACE, user, actorName, worldId, x, y, z, blockId, null, 1, null);
     }
 
     @Override
@@ -328,8 +326,24 @@ public final class GuardianAPI implements VonixGuardianAPI {
                               int x, int y, int z, String blockId) {
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(blockId, "blockId");
-        guardian.submitBlockBreak(user, actorName, worldId, x, y, z, blockId, null);
-        return true;
+        return submitDirect(ActionType.BLOCK_BREAK, user, actorName, worldId, x, y, z, blockId, null, 1, null);
+    }
+
+    private boolean submitDirect(ActionType type, UUID user, String actorName, String worldId,
+                                 int x, int y, int z, String targetId, String targetMeta,
+                                 int amount, String sourceTag) {
+        Action a = new ActionBuilder()
+                .type(type)
+                .actorUuid(user)
+                .actorName(actorName)
+                .worldId(worldId)
+                .position(x, y, z)
+                .targetId(targetId)
+                .targetMeta(targetMeta)
+                .amount(Math.max(1, amount))
+                .sourceTag(sourceTag)
+                .build();
+        return guardian.submitAccepted(a);
     }
 
     // -------------------------------------------------------------- shared helpers

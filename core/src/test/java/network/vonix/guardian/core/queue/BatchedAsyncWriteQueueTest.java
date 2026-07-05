@@ -55,6 +55,49 @@ class BatchedAsyncWriteQueueTest {
         }
     }
 
+    private static final class RejectingPoisonSink implements BatchSink {
+        final List<Action> seen = new CopyOnWriteArrayList<>();
+        private final java.util.Set<Integer> poisonXs;
+
+        RejectingPoisonSink(int... poisonXs) {
+            this.poisonXs = java.util.Arrays.stream(poisonXs)
+                    .boxed()
+                    .collect(java.util.stream.Collectors.toSet());
+        }
+
+        @Override
+        public void flush(List<Action> batch) {
+            if (batch.stream().anyMatch(a -> poisonXs.contains(a.x()))) {
+                throw new IllegalArgumentException("poison action in batch");
+            }
+            seen.addAll(batch);
+        }
+    }
+
+    private static final class AlwaysFailingSink implements BatchSink {
+        final AtomicInteger attempts = new AtomicInteger();
+
+        @Override
+        public void flush(List<Action> batch) {
+            attempts.incrementAndGet();
+            throw new RuntimeException("database down");
+        }
+    }
+
+    private static final class BlockingSink implements BatchSink {
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public void flush(List<Action> batch) throws Exception {
+            entered.countDown();
+            while (!release.await(100, TimeUnit.MILLISECONDS)) {
+                // Deliberately ignore queue-worker interrupts so drainAndFlush timeout
+                // exercises the worker-still-alive path.
+            }
+        }
+    }
+
     @Test
     void submitAndFlush_deliversAllItems() throws Exception {
         CapturingSink sink = new CapturingSink(5);
@@ -139,6 +182,82 @@ class BatchedAsyncWriteQueueTest {
             }
             assertThat(q.permanentlyDropped()).isEqualTo(1L);
             verify(mockSink, atLeast(BatchedAsyncWriteQueue.MAX_SINK_RETRIES)).flush(anyList());
+        }
+    }
+
+    @Test
+    void poisonActionDoesNotDropGoodActionsFromSameBatch() {
+        RejectingPoisonSink sink = new RejectingPoisonSink(99);
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 8, sink, DAEMON)) {
+            q.setPaused(true);
+            q.submit(action(1));
+            q.submit(action(2));
+            q.submit(action(99));
+            q.submit(action(3));
+            q.submit(action(4));
+
+            q.drainAndFlush(10_000L);
+
+            assertThat(sink.seen).extracting(Action::x).containsExactly(1, 2, 3, 4);
+            assertThat(q.permanentlyDropped()).isEqualTo(1L);
+            assertThat(q.dropped()).isZero();
+        }
+    }
+
+    @Test
+    void allPoisonActionsAreCountedAsPermanentDrops() {
+        RejectingPoisonSink sink = new RejectingPoisonSink(10, 11);
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 8, sink, DAEMON)) {
+            q.setPaused(true);
+            q.submit(action(10));
+            q.submit(action(11));
+
+            q.drainAndFlush(10_000L);
+
+            assertThat(sink.seen).isEmpty();
+            assertThat(q.permanentlyDropped()).isEqualTo(2L);
+            assertThat(q.dropped()).isZero();
+        }
+    }
+
+    @Test
+    void globalSinkFailureDoesNotBisectWholeBatch() {
+        AlwaysFailingSink sink = new AlwaysFailingSink();
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 8, sink, DAEMON)) {
+            q.setPaused(true);
+            for (int i = 0; i < 8; i++) {
+                q.submit(action(i));
+            }
+
+            long start = System.nanoTime();
+            q.drainAndFlush(5_000L);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            assertThat(sink.attempts.get()).isEqualTo(BatchedAsyncWriteQueue.MAX_SINK_RETRIES);
+            assertThat(q.permanentlyDropped()).isEqualTo(8L);
+            assertThat(q.dropped()).isZero();
+            assertThat(elapsedMs).isLessThan(2_000L);
+        }
+    }
+
+    @Test
+    void drainAndFlushTimeoutDoesNotStartConcurrentCallerSideFlush() throws Exception {
+        BlockingSink sink = new BlockingSink();
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 1, sink, DAEMON);
+        try {
+            q.submit(action(1));
+            assertThat(sink.entered.await(2, TimeUnit.SECONDS)).isTrue();
+            q.submit(action(2));
+            q.submit(action(3));
+
+            long start = System.nanoTime();
+            q.drainAndFlush(25L);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            assertThat(elapsedMs).isLessThan(1_000L);
+            assertThat(q.permanentlyDropped()).isEqualTo(2L);
+        } finally {
+            sink.release.countDown();
         }
     }
 

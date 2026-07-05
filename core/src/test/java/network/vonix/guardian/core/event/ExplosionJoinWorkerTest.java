@@ -2,6 +2,7 @@ package network.vonix.guardian.core.event;
 
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.rollback.ExplosionAffectedList;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -32,12 +33,20 @@ class ExplosionJoinWorkerTest {
     /** Records only EXPLOSION submits; everything else no-op. */
     private static final class RecordingExplosionSubmitter extends NoopEventSubmitter {
         record Row(UUID actor, String actorName, String worldId,
-                   int x, int y, int z, String affected, String sourceTag) {}
+                   int x, int y, int z, String affected, String sourceTag,
+                   byte[] sidecar) {}
         final List<Row> rows = new ArrayList<>();
         @Override
         public synchronized void submitExplosion(UUID actor, String actorName, String worldId,
                                                  int x, int y, int z, String affected, String sourceTag) {
-            rows.add(new Row(actor, actorName, worldId, x, y, z, affected, sourceTag));
+            rows.add(new Row(actor, actorName, worldId, x, y, z, affected, sourceTag, null));
+        }
+
+        @Override
+        public synchronized void submitExplosion(UUID actor, String actorName, String worldId,
+                                                 int x, int y, int z, String affected, String sourceTag,
+                                                 byte[] sidecar) {
+            rows.add(new Row(actor, actorName, worldId, x, y, z, affected, sourceTag, sidecar));
         }
     }
 
@@ -52,6 +61,29 @@ class ExplosionJoinWorkerTest {
         @Override public boolean isTerminated() { return false; }
         @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return true; }
         @Override public void execute(Runnable r) { r.run(); }
+    }
+
+    private static final class ManualExecutor extends java.util.concurrent.AbstractExecutorService {
+        private final List<Runnable> tasks = new ArrayList<>();
+        private boolean shutdown;
+
+        @Override public void shutdown() { shutdown = true; }
+        @Override public List<Runnable> shutdownNow() {
+            shutdown = true;
+            List<Runnable> queued = new ArrayList<>(tasks);
+            tasks.clear();
+            return queued;
+        }
+        @Override public boolean isShutdown() { return shutdown; }
+        @Override public boolean isTerminated() { return shutdown && tasks.isEmpty(); }
+        @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return isTerminated(); }
+        @Override public void execute(Runnable r) {
+            if (shutdown) throw new java.util.concurrent.RejectedExecutionException();
+            tasks.add(r);
+        }
+
+        int queuedCount() { return tasks.size(); }
+        void runNext() { tasks.remove(0).run(); }
     }
 
     @Test
@@ -141,6 +173,104 @@ class ExplosionJoinWorkerTest {
                  new int[10], new int[10], new int[10], new String[10], 0);
         assertThat(s.rows).isEmpty();
         assertThat(w.joinedCount()).isEqualTo(0);
+    }
+
+    @Test
+    void submitCopiesValidScratchRangeBeforeAsyncJoin() {
+        ManualExecutor executor = new ManualExecutor();
+        try (ExplosionJoinWorker w = new ExplosionJoinWorker(executor)) {
+            RecordingExplosionSubmitter s = new RecordingExplosionSubmitter();
+            int[] xs = {10, 11, 12};
+            int[] ys = {64, 65, 66};
+            int[] zs = {-1, -2, -3};
+            String[] ids = {"minecraft:stone", "minecraft:dirt", "minecraft:sand"};
+
+            w.submit(s, UUID.randomUUID(), "creeper", "minecraft:overworld",
+                     5, 64, 5, "#tnt", xs, ys, zs, ids, 2);
+            assertThat(executor.queuedCount()).isEqualTo(1);
+            assertThat(s.rows).isEmpty();
+
+            xs[0] = 999; xs[1] = 998; xs[2] = 997;
+            ys[0] = -999; ys[1] = -998; ys[2] = -997;
+            zs[0] = 888; zs[1] = 887; zs[2] = 886;
+            ids[0] = "minecraft:diamond_block";
+            ids[1] = "";
+            ids[2] = "minecraft:air";
+
+            executor.runNext();
+
+            assertThat(s.rows).hasSize(1);
+            assertThat(s.rows.get(0).affected())
+                    .isEqualTo("10:64:-1=minecraft:stone,11:65:-2=minecraft:dirt")
+                    .doesNotContain("999", "diamond_block", "air");
+        }
+    }
+
+    @Test
+    void nbtSidecarIsCopiedBeforeAsyncJoinAndSubmittedOutsideTargetColumn() {
+        ManualExecutor executor = new ManualExecutor();
+        try (ExplosionJoinWorker w = new ExplosionJoinWorker(executor)) {
+            RecordingExplosionSubmitter s = new RecordingExplosionSubmitter();
+            int[] xs = {10};
+            int[] ys = {64};
+            int[] zs = {-1};
+            String[] ids = {"minecraft:chest"};
+            String[] metas = {"facing=north"};
+            byte[] nbt = new byte[]{7, 8, 9};
+            byte[][] nbts = {nbt};
+
+            w.submit(s, UUID.randomUUID(), "creeper", "minecraft:overworld",
+                     5, 64, 5, "#tnt", xs, ys, zs, ids, metas, nbts, 1);
+            assertThat(executor.queuedCount()).isEqualTo(1);
+
+            metas[0] = "facing=south";
+            nbt[0] = 99;
+            nbts[0] = new byte[]{1};
+
+            executor.runNext();
+
+            assertThat(s.rows).hasSize(1);
+            RecordingExplosionSubmitter.Row row = s.rows.get(0);
+            assertThat(row.affected()).isEqualTo("10:64:-1=minecraft:chest");
+            ExplosionAffectedList parsed = ExplosionAffectedList.parse(row.affected(), row.sidecar());
+            assertThat(parsed.entries()).hasSize(1);
+            assertThat(parsed.entries().get(0).meta()).isEqualTo("facing=north");
+            assertThat(parsed.entries().get(0).blockEntityNbt()).containsExactly(7, 8, 9);
+        }
+    }
+
+    @Test
+    void countBeyondProvidedArrays_dropsWholeExplosion() {
+        ExplosionJoinWorker w = syncWorker();
+        RecordingExplosionSubmitter s = new RecordingExplosionSubmitter();
+
+        w.submit(s, UUID.randomUUID(), "creeper", "minecraft:overworld",
+                 0, 0, 0, "#tnt",
+                 new int[]{0, 1, 2},
+                 new int[]{64, 65},
+                 new int[]{0, 0, 0},
+                 new String[]{"minecraft:stone", "minecraft:dirt", "minecraft:sand"},
+                 10);
+
+        assertThat(s.rows).isEmpty();
+        assertThat(w.joinedCount()).isZero();
+    }
+
+    @Test
+    void rejectedWorkerHandoff_doesNotThrowToCaller() {
+        ManualExecutor executor = new ManualExecutor();
+        executor.shutdown();
+        try (ExplosionJoinWorker w = new ExplosionJoinWorker(executor)) {
+            RecordingExplosionSubmitter s = new RecordingExplosionSubmitter();
+
+            w.submit(s, UUID.randomUUID(), "creeper", "minecraft:overworld",
+                     0, 0, 0, "#tnt",
+                     new int[]{0}, new int[]{64}, new int[]{0}, new String[]{"minecraft:stone"},
+                     1);
+
+            assertThat(s.rows).isEmpty();
+            assertThat(executor.queuedCount()).isZero();
+        }
     }
 
     @Test

@@ -33,7 +33,7 @@ public final class CommandSpec {
     public static final String ROLLBACK = "rollback";
     /** {@code /vg restore <filter…>} — re-apply previously rolled-back actions. */
     public static final String RESTORE  = "restore";
-    /** {@code /vg purge <time>} — permanently delete old log rows. */
+    /** {@code /vg purge <filter>} — permanently delete old log rows matching an age-bounded filter. */
     public static final String PURGE    = "purge";
     /** {@code /vg near} — quick look at recent activity around the caller. */
     public static final String NEAR     = "near";
@@ -58,8 +58,8 @@ public final class CommandSpec {
             List.of(ArgumentSpec.FILTER_TOKENS)),
         sub(RESTORE,  "rs", true,  "Re-apply actions previously undone by /vg rollback.",
             List.of(ArgumentSpec.FILTER_TOKENS)),
-        sub(PURGE,    null, true,  "Permanently delete audit rows older than the given duration.",
-            List.of(ArgumentSpec.TIME_SHORT)),
+        sub(PURGE,    null, true,  "Permanently delete audit rows older than the given filter window.",
+            List.of(ArgumentSpec.FILTER_TOKENS)),
         sub(NEAR,     "n",  false, "Show recent activity in a small radius around you.",
             List.of()),
         sub(UNDO,     null, false, "Undo the last rollback or restore you performed.",

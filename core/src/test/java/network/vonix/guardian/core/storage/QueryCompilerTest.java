@@ -73,17 +73,43 @@ class QueryCompilerTest {
     }
 
     @Test
-    void include_and_exclude_lists_use_in_and_not_in() {
+    void include_matches_target_entity_change_new_state_and_explosion_affected_entries() {
         QueryFilter f = QueryFilter.builder()
             .addInclude("minecraft:stone")
-            .addInclude("minecraft:oak_log")
+            .build();
+
+        QueryCompiler.Compiled c = QueryCompiler.compileCount(f);
+
+        assertThat(c.sql())
+            .contains("a.target IN (?)")
+            .contains("a.type = ? AND a.meta IN (?)")
+            .contains("a.type = ? AND (a.target LIKE ? OR a.target LIKE ? OR a.target LIKE ?)");
+        assertThat(c.binds()).containsExactly(
+            "minecraft:stone",
+            ActionType.ENTITY_CHANGE_BLOCK.id(), "minecraft:stone",
+            ActionType.EXPLOSION.id(),
+            "%=minecraft:stone,%", "%=minecraft:stone|%", "%=minecraft:stone"
+        );
+    }
+
+    @Test
+    void exclude_rejects_target_entity_change_new_state_and_explosion_affected_entries() {
+        QueryFilter f = QueryFilter.builder()
             .addExclude("minecraft:dirt")
             .build();
+
         QueryCompiler.Compiled c = QueryCompiler.compileCount(f);
+
         assertThat(c.sql())
-            .contains("a.target IN (?,?)")
-            .contains("a.target NOT IN (?)");
-        assertThat(c.binds()).containsExactly("minecraft:stone", "minecraft:oak_log", "minecraft:dirt");
+            .contains("a.target NOT IN (?)")
+            .contains("NOT (a.type = ? AND a.meta IN (?))")
+            .contains("NOT (a.type = ? AND (a.target LIKE ? OR a.target LIKE ? OR a.target LIKE ?))");
+        assertThat(c.binds()).containsExactly(
+            "minecraft:dirt",
+            ActionType.ENTITY_CHANGE_BLOCK.id(), "minecraft:dirt",
+            ActionType.EXPLOSION.id(),
+            "%=minecraft:dirt,%", "%=minecraft:dirt|%", "%=minecraft:dirt"
+        );
     }
 
     @Test

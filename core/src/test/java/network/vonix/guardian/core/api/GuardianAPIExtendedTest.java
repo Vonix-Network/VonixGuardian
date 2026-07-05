@@ -205,6 +205,49 @@ class GuardianAPIExtendedTest {
     }
 
     @Test
+    void lookupDtosExposePersistedNbtAndSignMetadata() throws Exception {
+        UUID u = UUID.randomUUID();
+        byte[] be = "CHEST_NBT".getBytes();
+        byte[] item = "ITEM_NBT".getBytes();
+
+        Action block = new Action(-1L, 100L, ActionType.BLOCK_BREAK, u, "Alice",
+                "minecraft:overworld", 10, 64, 20, "minecraft:chest", null, 1, false, "src",
+                null, null, null,
+                "facing=north", "minecraft:air", be, null, null);
+        when(mockDao.query(any(), anyInt(), anyInt())).thenReturn(List.of(block));
+
+        BlockLookupResult br = guardian.api().blockLookup("minecraft:overworld", 10, 64, 20, 60).get(0);
+        assertThat(br.oldBlockState()).isEqualTo("facing=north");
+        assertThat(br.newBlockState()).isEqualTo("minecraft:air");
+        assertThat(br.blockEntityNbt()).isSameAs(be);
+
+        Action container = new Action(-1L, 101L, ActionType.CONTAINER_DEPOSIT, u, "Alice",
+                "minecraft:overworld", 10, 64, 20, "minecraft:diamond_sword", null, 1, false, "src",
+                null, null, null,
+                null, null, null, item, null);
+        when(mockDao.query(any(), anyInt(), anyInt())).thenReturn(List.of(container));
+        ContainerLookupResult cr = guardian.api().containerLookup("minecraft:overworld", 10, 64, 20, 60).get(0);
+        assertThat(cr.itemNbt()).isSameAs(item);
+
+        Action itemRow = new Action(-1L, 102L, ActionType.ITEM_DROP, u, "Alice",
+                "minecraft:overworld", 0, 64, 0, "minecraft:diamond_sword", null, 1, false, "src",
+                null, null, null,
+                null, null, null, item, null);
+        when(mockDao.query(any(), anyInt(), anyInt())).thenReturn(List.of(itemRow));
+        ItemLookupResult ir = guardian.api().itemLookup(u, 60, 10).get(0);
+        assertThat(ir.itemNbt()).isSameAs(item);
+
+        Action sign = new Action(-1L, 103L, ActionType.SIGN, u, "Alice",
+                "minecraft:overworld", 10, 64, 20, "hello", null, 0, false, "src",
+                "back", "blue", true);
+        when(mockDao.query(any(), anyInt(), anyInt())).thenReturn(List.of(sign));
+        SignLookupResult sr = guardian.api().signLookup("minecraft:overworld", 10, 64, 20, 60).get(0);
+        assertThat(sr.signSide()).isEqualTo("back");
+        assertThat(sr.signDyeColor()).isEqualTo("blue");
+        assertThat(sr.signWaxed()).isTrue();
+    }
+
+    @Test
     void queueLookup_filters_pending_queue_snapshot() {
         Action queued = new Action(-1L, 100L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "Alice",
                 "minecraft:overworld", 10, 65, 20, "minecraft:stone", null, 1, false, null);
@@ -216,6 +259,32 @@ class GuardianAPIExtendedTest {
 
         assertThat(guardian.api().queueLookup("minecraft:overworld", 10, 65, 20))
             .containsExactly(queued);
+    }
+
+    @Test
+    void logChat_and_logCommand_return_false_when_gate_rejects() {
+        UUID u = UUID.randomUUID();
+        guardian.gate().addHook(action -> network.vonix.guardian.core.event.EventHook.Decision.DENY);
+
+        assertThat(guardian.api().logChat(u, "Alice", "minecraft:overworld", "hi")).isFalse();
+        assertThat(guardian.api().logCommand(u, "Alice", "minecraft:overworld", "/tp home")).isFalse();
+    }
+
+    @Test
+    void logPlacement_returns_false_when_queue_is_full() {
+        UUID u = UUID.randomUUID();
+        guardian.queue().setPaused(true);
+
+        boolean sawRejected = false;
+        for (int i = 0; i < 1_500; i++) {
+            boolean accepted = guardian.api().logPlacement(u, "Alice", "minecraft:overworld", i, 64, 0, "minecraft:stone");
+            if (!accepted) {
+                sawRejected = true;
+                break;
+            }
+        }
+
+        assertThat(sawRejected).isTrue();
     }
 
     @Test

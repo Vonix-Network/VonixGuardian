@@ -40,5 +40,8 @@ public record BlockLookupResult(
         String targetMeta,
         String action,
         boolean rolledBack,
-        String sourceTag
+        String sourceTag,
+        String oldBlockState,
+        String newBlockState,
+        byte[] blockEntityNbt
 ) {}

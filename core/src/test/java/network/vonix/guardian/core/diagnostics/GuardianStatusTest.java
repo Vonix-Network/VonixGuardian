@@ -79,6 +79,7 @@ class GuardianStatusTest {
             String report = String.join("\n", GuardianStatus.render(g));
 
             assertThat(report).contains("§ Coalescer");
+            assertThat(report).contains("sinkDrops");
             assertThat(report).contains("active");
             assertThat(report).contains("suppressed");
             assertThat(report).contains("capDrops");

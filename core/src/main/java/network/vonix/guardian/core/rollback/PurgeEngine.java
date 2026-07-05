@@ -122,7 +122,7 @@ public final class PurgeEngine {
             base.centerX(), base.centerY(), base.centerZ(),
             base.actions(), base.include(), base.exclude(),
             base.rolledBack(), base.countOnly(), base.preview(), base.verbose(),
-            base.silent(), base.optimize(), base.worldEditPlayer()
+            base.silent(), base.optimize(), base.worldEditPlayer(), base.actionIds()
         );
     }
 

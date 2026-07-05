@@ -6,13 +6,18 @@ package network.vonix.guardian.core.event;
 
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.Sentinel;
+import network.vonix.guardian.core.rollback.ExplosionAffectedList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Off-thread join + submit for {@code onExplosionDetonate} / {@code Explosion#finalizeExplosion}
@@ -120,7 +125,7 @@ public final class ExplosionJoinWorker implements AutoCloseable {
      * @param cy         explosion center Y
      * @param cz         explosion center Z
      * @param sourceTag  loader-computed source sentinel (e.g. {@code #tnt})
-     * @param xs         per-affected-block X coords (defensively copied by caller)
+     * @param xs         per-affected-block X coords (copied before async handoff)
      * @param ys         per-affected-block Y coords
      * @param zs         per-affected-block Z coords
      * @param blockIds   per-affected-block resolved id strings
@@ -130,25 +135,87 @@ public final class ExplosionJoinWorker implements AutoCloseable {
                        UUID actorUuid, String actorName, String worldId,
                        int cx, int cy, int cz, String sourceTag,
                        int[] xs, int[] ys, int[] zs, String[] blockIds, int count) {
+        submit(submitter, actorUuid, actorName, worldId, cx, cy, cz, sourceTag,
+            xs, ys, zs, blockIds, null, null, count);
+    }
+
+    public void submit(EventSubmitter submitter,
+                       UUID actorUuid, String actorName, String worldId,
+                       int cx, int cy, int cz, String sourceTag,
+                       int[] xs, int[] ys, int[] zs, String[] blockIds,
+                       String[] blockMetas, byte[][] blockEntityNbts, int count) {
         if (submitter == null || count <= 0) return;
-        // Snapshot to locals — caller may reuse the arrays after this returns
-        // if it's using a pooled scratch buffer.
+        int validCount = validCount(count, xs, ys, zs, blockIds);
+        if (validCount != count) {
+            LOG.warn("Guardian ExplosionJoinWorker: dropping explosion with invalid scratch lengths "
+                    + "(requested={}, valid={}, xs={}, ys={}, zs={}, ids={})",
+                    count, validCount, safeLength(xs), safeLength(ys), safeLength(zs), safeLength(blockIds));
+            return;
+        }
+
+        // Snapshot to locals and copy the valid scratch-buffer range before
+        // the async boundary. Loader cells reuse ThreadLocal arrays as soon as
+        // submit() returns, so the worker must not capture the caller's array
+        // references.
         final UUID au = actorUuid;
         final String an = actorName != null ? actorName : Sentinel.EXPLOSION;
         final String wid = worldId;
         final int fcx = cx, fcy = cy, fcz = cz;
         final String st = sourceTag != null ? sourceTag : Sentinel.EXPLOSION;
-        final int[] fxs = xs, fys = ys, fzs = zs;
-        final String[] fids = blockIds;
-        final int fn = count;
-        worker.execute(() -> joinAndSubmit(submitter, au, an, wid, fcx, fcy, fcz, st,
-                fxs, fys, fzs, fids, fn));
+        final int[] fxs = Arrays.copyOf(xs, validCount);
+        final int[] fys = Arrays.copyOf(ys, validCount);
+        final int[] fzs = Arrays.copyOf(zs, validCount);
+        final String[] fids = Arrays.copyOf(blockIds, validCount);
+        final String[] fmetas = copyStrings(blockMetas, validCount);
+        final byte[][] fnbts = copyBytes(blockEntityNbts, validCount);
+        final int fn = validCount;
+        try {
+            worker.execute(() -> joinAndSubmit(submitter, au, an, wid, fcx, fcy, fcz, st,
+                    fxs, fys, fzs, fids, fmetas, fnbts, fn));
+        } catch (RejectedExecutionException rex) {
+            LOG.warn("Guardian ExplosionJoinWorker: worker rejected explosion handoff for {} entries", fn, rex);
+        }
+    }
+
+    private static int validCount(int requested, int[] xs, int[] ys, int[] zs, String[] ids) {
+        int n = Math.min(requested, safeLength(xs));
+        n = Math.min(n, safeLength(ys));
+        n = Math.min(n, safeLength(zs));
+        n = Math.min(n, safeLength(ids));
+        return n;
+    }
+
+    private static int safeLength(int[] array) {
+        return array != null ? array.length : 0;
+    }
+
+    private static int safeLength(String[] array) {
+        return array != null ? array.length : 0;
+    }
+
+    private static String[] copyStrings(String[] source, int count) {
+        if (source == null) return null;
+        String[] out = new String[count];
+        int n = Math.min(count, source.length);
+        System.arraycopy(source, 0, out, 0, n);
+        return out;
+    }
+
+    private static byte[][] copyBytes(byte[][] source, int count) {
+        if (source == null) return null;
+        byte[][] out = new byte[count][];
+        int n = Math.min(count, source.length);
+        for (int i = 0; i < n; i++) {
+            out[i] = source[i] == null ? null : Arrays.copyOf(source[i], source[i].length);
+        }
+        return out;
     }
 
     private void joinAndSubmit(EventSubmitter s,
                                UUID au, String an, String wid,
                                int cx, int cy, int cz, String st,
-                               int[] xs, int[] ys, int[] zs, String[] ids, int n) {
+                               int[] xs, int[] ys, int[] zs, String[] ids,
+                               String[] metas, byte[][] nbts, int n) {
         try {
             long t0 = System.nanoTime();
             int chunkStart = 0;
@@ -157,6 +224,7 @@ public final class ExplosionJoinWorker implements AutoCloseable {
                 int chunkEnd = Math.min(chunkStart + MAX_ENTRIES_PER_CHUNK, n);
                 StringBuilder sb = new StringBuilder(Math.min(MAX_JOIN_CHARS,
                         (chunkEnd - chunkStart) * 40));
+                List<ExplosionAffectedList.Entry> sidecar = null;
                 boolean first = true;
                 int emitted = 0;
                 for (int i = chunkStart; i < chunkEnd; i++) {
@@ -167,10 +235,17 @@ public final class ExplosionJoinWorker implements AutoCloseable {
                     first = false;
                     sb.append(xs[i]).append(':').append(ys[i]).append(':').append(zs[i])
                       .append('=').append(id);
+                    String meta = metas != null ? metas[i] : null;
+                    byte[] nbt = nbts != null ? nbts[i] : null;
+                    if ((meta != null && !meta.isEmpty()) || (nbt != null && nbt.length > 0)) {
+                        if (sidecar == null) sidecar = new ArrayList<>();
+                        sidecar.add(new ExplosionAffectedList.Entry(xs[i], ys[i], zs[i], id, meta, nbt));
+                    }
                     emitted++;
                 }
                 if (emitted > 0) {
-                    s.submitExplosion(au, an, wid, cx, cy, cz, sb.toString(), st);
+                    byte[] sidecarBytes = ExplosionAffectedList.serializeSidecar(sidecar);
+                    s.submitExplosion(au, an, wid, cx, cy, cz, sb.toString(), st, sidecarBytes);
                     chunkChunks++;
                 }
                 chunkStart = chunkEnd;

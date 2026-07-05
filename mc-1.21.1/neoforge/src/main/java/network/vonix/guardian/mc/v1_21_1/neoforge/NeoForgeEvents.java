@@ -138,11 +138,14 @@ public final class NeoForgeEvents {
         int[] ys = new int[512];
         int[] zs = new int[512];
         String[] ids = new String[512];
+        String[] metas = new String[512];
+        byte[][] nbts = new byte[512][];
         void grow(int need) {
             if (xs.length >= need) return;
             int n = xs.length;
             while (n < need) n <<= 1;
-            xs = new int[n]; ys = new int[n]; zs = new int[n]; ids = new String[n];
+            xs = new int[n]; ys = new int[n]; zs = new int[n];
+            ids = new String[n]; metas = new String[n]; nbts = new byte[n][];
         }
     }
 
@@ -306,12 +309,22 @@ public final class NeoForgeEvents {
             // Server-thread capture: getBlockState + registry-key lookup are
             // NOT documented as thread-safe on ServerLevel. We match Prism /
             // Ledger / CoreProtect: capture ids synchronously, defer the join.
+            boolean captureNbt = persistNbt();
             int idx = 0;
             for (BlockPos p : affected) {
+                BlockState state = ev.getLevel().getBlockState(p);
                 scratch.xs[idx] = p.getX();
                 scratch.ys[idx] = p.getY();
                 scratch.zs[idx] = p.getZ();
-                scratch.ids[idx] = blockId(ev.getLevel().getBlockState(p));
+                scratch.ids[idx] = blockId(state);
+                if (captureNbt) {
+                    scratch.metas[idx] = NbtCapture.blockStateProps(state);
+                    BlockEntity be = ev.getLevel().getBlockEntity(p);
+                    scratch.nbts[idx] = be == null ? null : NbtCapture.blockEntity(be, ((Level) ev.getLevel()).registryAccess());
+                } else {
+                    scratch.metas[idx] = null;
+                    scratch.nbts[idx] = null;
+                }
                 idx++;
             }
             Entity source = ev.getExplosion().getDirectSourceEntity();
@@ -348,7 +361,8 @@ public final class NeoForgeEvents {
             if (g == null) return;
             g.explosionJoinWorker().submit(s, attr.actorUuid(), actorName, worldId,
                     center.getX(), center.getY(), center.getZ(), sourceTag,
-                    scratch.xs, scratch.ys, scratch.zs, scratch.ids, idx);
+                    scratch.xs, scratch.ys, scratch.zs, scratch.ids,
+                    scratch.metas, scratch.nbts, idx);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onExplosionDetonate failed", t);
         }

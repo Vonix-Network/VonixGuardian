@@ -144,6 +144,78 @@ class RollbackEngineTest {
     }
 
     @Test
+    void itemDropAndPickupAreAuditOnlyUntilItemEntityIdentityIsTracked() throws Exception {
+        Action drop = action(71L, 100L, ActionType.ITEM_DROP,
+            "w", 9, 64, 9, "minecraft:diamond", null, 3, false);
+        Action pickup = action(72L, 99L, ActionType.ITEM_PICKUP,
+            "w", 9, 64, 9, "minecraft:emerald", null, 2, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(drop, pickup));
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        assertThat(r.affectedIds()).isEmpty();
+        assertThat(r.skippedIds()).containsExactlyInAnyOrder(71L, 72L);
+        assertThat(mutator.calls).isEmpty();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void restoreItemPickupDoesNotRemoveFromUnrelatedContainers() throws Exception {
+        Action pickup = action(73L, 100L, ActionType.ITEM_PICKUP,
+            "w", 9, 64, 9, "minecraft:emerald", null, 2, true);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(pickup));
+
+        RollbackResult r = engine.restore(filter, false);
+
+        assertThat(r.affectedIds()).isEmpty();
+        assertThat(r.skippedIds()).containsExactly(73L);
+        assertThat(mutator.calls).isEmpty();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void rollbackIgniteClearsTheCreatedFireBlock() throws Exception {
+        Action ignite = action(74L, 100L, ActionType.IGNITE,
+            "w", 3, 65, 4, "minecraft:fire", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(ignite));
+
+        engine.rollback(filter, false);
+
+        assertThat(mutator.calls).containsExactly(
+            "setBlock|w|3|65|4|minecraft:air|null"
+        );
+    }
+
+    @Test
+    void restoreIgniteReappliesTheFireBlock() throws Exception {
+        Action ignite = action(75L, 100L, ActionType.IGNITE,
+            "w", 3, 65, 4, "minecraft:fire", null, 1, true);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(ignite));
+
+        engine.restore(filter, false);
+
+        assertThat(mutator.calls).containsExactly(
+            "setBlock|w|3|65|4|minecraft:fire|null"
+        );
+    }
+
+    @Test
+    void formAndSpreadAreSkippedUntilOldStateIsCaptured() throws Exception {
+        Action form = action(76L, 100L, ActionType.FORM,
+            "w", 1, 64, 1, "minecraft:concrete", null, 1, false);
+        Action spread = action(77L, 99L, ActionType.SPREAD,
+            "w", 2, 64, 2, "minecraft:grass_block", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(form, spread));
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        assertThat(r.affectedIds()).isEmpty();
+        assertThat(r.skippedIds()).containsExactlyInAnyOrder(76L, 77L);
+        assertThat(mutator.calls).isEmpty();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
     void rollbackEntityKillRespawns() throws Exception {
         Action k = action(5L, 100L, ActionType.ENTITY_KILL,
             "w", 1, 2, 3, "minecraft:zombie", "{\"hp\":20}", 1, false);
@@ -168,6 +240,29 @@ class RollbackEngineTest {
         assertThat(mutator.calls).containsExactly(
             "setBlock|w|0|64|0|minecraft:stone|null",
             "setBlock|w|1|64|0|minecraft:diamond_ore|{\"x\":1}"
+        );
+    }
+
+    @Test
+    void rollbackExplosionRestoresBlockStateAndBlockEntityNbtFromSidecar() throws Exception {
+        byte[] be = new byte[]{4, 5, 6};
+        byte[] sidecar = ExplosionAffectedList.serializeSidecar(List.of(
+            new ExplosionAffectedList.Entry(1, 64, 0, "minecraft:chest", "facing=north", be)
+        ));
+        Action boom = new Action(
+            60L, 100L, ActionType.EXPLOSION,
+            UUID.randomUUID(), "Player",
+            "w", 0, 64, 0,
+            "1:64:0=minecraft:chest", null, 1, false, null,
+            null, null, null,
+            null, null, sidecar, null, null
+        );
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(boom));
+
+        engine.rollback(filter, false);
+
+        assertThat(mutator.calls).containsExactly(
+            "setBlockNbt|w|1|64|0|minecraft:chest|null|facing=north|3"
         );
     }
 
@@ -437,6 +532,13 @@ class RollbackEngineTest {
         @Override
         public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
             calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);
+        }
+
+        @Override
+        public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
+                             String blockState, byte[] blockEntityNbt) {
+            calls.add("setBlockNbt|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId
+                + "|" + targetMeta + "|" + blockState + "|" + (blockEntityNbt == null ? 0 : blockEntityNbt.length));
         }
 
         @Override

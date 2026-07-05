@@ -838,8 +838,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     @Override
     public void submit(Action a) {
+        submitAccepted(a);
+    }
+
+    /**
+     * Submit an action and report whether it passed the gate and reached the
+     * bounded write queue. EventSubmitter's historical void method delegates
+     * here; public API direct-log calls use the boolean for their contract.
+     */
+    public boolean submitAccepted(Action a) {
         if (a == null) {
-            return;
+            return false;
         }
         // v1.3.0 W2: mixin hot-event kill-switch is now folded into EventGate.shouldLog
         // (see EventGate.mixinHotEventsEnabled + MixinHotEventFilter). Keeps Guardian.submit
@@ -847,10 +856,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // hook chain traversal work.
         if (!gate.shouldLog(a)) {
             gated.incrementAndGet();
-            return;
+            return false;
         }
         submitted.incrementAndGet();
-        queue.submit(a);
+        return queue.submit(a);
     }
 
     @Override
@@ -902,6 +911,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     @Override
     public void submitExplosion(UUID actorUuid, String actorName, String worldId,
                                 int x, int y, int z, String affectedJoined, String sourceTag) {
+        submitExplosion(actorUuid, actorName, worldId, x, y, z, affectedJoined, sourceTag, null);
+    }
+
+    @Override
+    public void submitExplosion(UUID actorUuid, String actorName, String worldId,
+                                int x, int y, int z, String affectedJoined, String sourceTag,
+                                byte[] blockEntityNbtSidecar) {
         // v1.3.1 X6 (P3-2): use the per-thread scratch builder via seed() instead of
         // allocating a fresh ActionBuilder. Consistent with every other submit* path
         // and cuts ~40B/allocation on the explosion-join worker thread on TNT-heavy
@@ -913,7 +929,15 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 .position(x, y, z)
                 .targetId(affectedJoined)
                 .sourceTag(sourceTag)
+                .blockEntityNbt(blockEntityNbtSidecar)
                 .build());
+    }
+
+    @Override
+    public void submitPortalCreate(UUID actorUuid, String actorName, String worldId,
+                                   int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.PORTAL_CREATE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
     }
 
     @Override
@@ -1318,8 +1342,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // coalescer-friendly NBT path.
         submit(seed(ActionType.ENTITY_CHANGE_BLOCK, actorUuid, actorName, worldId)
                 .position(x, y, z)
-                .targetId(newBlockId)
-                .targetMeta(oldBlockId)
+                .targetId(oldBlockId != null ? oldBlockId : "minecraft:air")
+                .targetMeta(newBlockId != null ? newBlockId : "minecraft:air")
                 .sourceTag(sourceTag)
                 .oldBlockState(oldBlockState)
                 .newBlockState(newBlockState)

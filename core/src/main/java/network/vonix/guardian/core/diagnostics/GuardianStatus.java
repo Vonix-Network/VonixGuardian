@@ -73,6 +73,7 @@ public final class GuardianStatus {
         line(out, "  submitted  " + g.submitted());
         line(out, "  gated      " + g.gated());
         line(out, "  dropped    " + safe(() -> Long.toString(g.queue().dropped())));
+        line(out, "  sinkDrops  " + safe(() -> Long.toString(g.queue().permanentlyDropped())));
         Map<String, Long> submittedByType = safeMap(() -> g.queue().submittedByTypeSnapshot());
         if (!submittedByType.isEmpty()) {
             line(out, "  by-type    " + formatHistogram(submittedByType));

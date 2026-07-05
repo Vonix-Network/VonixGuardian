@@ -34,5 +34,6 @@ public record ItemLookupResult(
         int amount,
         String action,
         boolean rolledBack,
-        String sourceTag
+        String sourceTag,
+        byte[] itemNbt
 ) {}

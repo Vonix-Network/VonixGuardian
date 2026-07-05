@@ -17,9 +17,10 @@ public interface AsyncWriteQueue {
      * Non-blocking enqueue of an action. Drops the action and increments the {@link #dropped()}
      * counter (with a rate-limited WARN log) if the queue is at its configured maximum size.
      *
-     * @param a action to enqueue; must not be null
+     * @return {@code true} when the action was enqueued, {@code false} when it
+     *         was dropped because the queue was full
      */
-    void submit(Action a);
+    boolean submit(Action a);
 
     /**
      * Stop accepting new work, signal the worker, and force-flush any pending items within the

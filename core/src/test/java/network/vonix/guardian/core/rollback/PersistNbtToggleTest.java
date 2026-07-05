@@ -112,6 +112,42 @@ class PersistNbtToggleTest {
         }
     }
 
+    @Test
+    void entity_change_nbt_preserves_old_target_and_new_meta_contract(@TempDir Path tmp) throws Exception {
+        GuardianConfig cfg = cfgWith(tmp, /*persistNbt=*/ true);
+        Path cfgPath = tmp.resolve("config.json");
+        ConfigLoader.save(cfgPath, cfg);
+
+        Guardian g = Guardian.boot(ConfigLoader.load(cfgPath), tmp, NOOP, ZERO_OP, SYNC, DAEMONS);
+        try {
+            AtomicReference<Action> captured = new AtomicReference<>();
+            g.gate().addHook(action -> {
+                captured.set(action);
+                return EventHook.Decision.DENY;
+            });
+
+            byte[] beNbt = "POST_CHANGE_BLOCK_ENTITY".getBytes();
+            g.submitEntityChangeBlock(UUID.randomUUID(), "#silverfish", "minecraft:overworld", 4, 65, 6,
+                    "minecraft:stone", "minecraft:infested_stone", "#silverfish",
+                    "variant=stone", "variant=infested_stone", beNbt);
+
+            Action a = captured.get();
+            assertThat(a).isNotNull();
+            assertThat(a.type()).isEqualTo(ActionType.ENTITY_CHANGE_BLOCK);
+            assertThat(a.targetId())
+                .as("targetId is the pre-change block used by rollback")
+                .isEqualTo("minecraft:stone");
+            assertThat(a.targetMeta())
+                .as("targetMeta is the post-change block used by restore")
+                .isEqualTo("minecraft:infested_stone");
+            assertThat(a.oldBlockState()).isEqualTo("variant=stone");
+            assertThat(a.newBlockState()).isEqualTo("variant=infested_stone");
+            assertThat(a.blockEntityNbt()).isSameAs(beNbt);
+        } finally {
+            g.close();
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static GuardianConfig cfgWith(Path dbDir, boolean persistNbt) {

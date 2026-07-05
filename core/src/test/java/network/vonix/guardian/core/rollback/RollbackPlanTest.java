@@ -192,6 +192,23 @@ class RollbackPlanTest {
     }
 
     @Test
+    void planDoesNotCoordDedupeExplosionChunksOrContainerDeltas() {
+        Action explosionChunkA = action(21L, 200L, ActionType.EXPLOSION,
+            "w", 0, 64, 0, "0:64:0=minecraft:stone", null, 1, false);
+        Action explosionChunkB = action(22L, 199L, ActionType.EXPLOSION,
+            "w", 0, 64, 0, "1:64:0=minecraft:dirt", null, 1, false);
+        Action deposit = action(23L, 198L, ActionType.CONTAINER_DEPOSIT,
+            "w", 0, 64, 0, "minecraft:diamond", null, 1, false);
+        Action withdraw = action(24L, 197L, ActionType.CONTAINER_WITHDRAW,
+            "w", 0, 64, 0, "minecraft:emerald", null, 1, false);
+
+        RollbackPlan plan = RollbackPlan.build(List.of(withdraw, deposit, explosionChunkB, explosionChunkA),
+            filter, RollbackResult.Mode.ROLLBACK, null);
+
+        assertThat(plan.actionIds()).containsExactly(21L, 22L, 23L, 24L);
+    }
+
+    @Test
     void executeRejectsPlanBuiltWithoutMode() {
         RollbackPlan legacy = RollbackPlan.build(List.of()); // no mode
         assertThatThrownBy(() -> engine.execute(legacy, false))

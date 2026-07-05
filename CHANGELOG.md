@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.8] - 2026-07-05
+
+**Rollback/query/API release-gate close-out.** Final full-mod/logging audit pass after v1.3.7 focused on CoreProtect-compatible rollback safety, query fidelity, API contracts, async queue observability, and all-loader producer wiring. Latest release-gate review found 0 P0 / 0 P1 / 0 P2 actionable issues; remaining unsafe actions are explicitly documented as audit-only until VG captures enough identity/old-state data to mutate them safely.
+
+### Added
+
+- **Explosion NBT sidecar fidelity.** `EXPLOSION` rows now keep the human-readable affected-list target compact while storing per-affected block-state metadata and block-entity NBT in `Action.blockEntityNbt` when `storage.persistNbt=true`. Rollback now restores explosion-destroyed block-state properties, signs, containers, spawners, and modded block entities through the NBT-aware `WorldMutator` path.
+- **API metadata exposure.** Public lookup DTOs now expose persisted block-state metadata, block-entity NBT, item NBT, and sign side/dye/waxed metadata already carried by the DAO layer.
+- **Queue diagnostics.** Async queue status now reports sink-drop counters and exposes a bounded pending snapshot so `GuardianAPI.queueLookup` can see unflushed rows before writer drain.
+- **Structural command-contract regression coverage.** Added all-cell checks for `/vg undo`, WorldEdit context, preview handling, and rollback action-id preservation across every loader/version cell.
+
+### Fixed
+
+- **Rollback safety semantics.** Fixed inverted NBT entity-change rollback targets, corrected `IGNITE` rollback/restore direction, and stopped unsafe FORM/SPREAD and item drop/pickup mutations from deleting or recreating the wrong world state until the required old-state/entity identity is captured.
+- **Rollback planning dedupe.** Positional dedupe is now limited to rollbackable block-mutation families; same-coordinate container/item/entity rows and chunked explosion rows are no longer dropped from rollback plans.
+- **Explosion producer wiring.** All 8 loader cells now capture explosion sidecar block metadata/NBT when persistent NBT capture is enabled.
+- **Portal action type parity.** Portal producers now emit `PORTAL_CREATE` instead of `BLOCK_PLACE + #portal`, so `a:portal` queries and rollback routing hit the intended action type.
+- **Query include/exclude fidelity.** `i:` / `e:` filters now cover target IDs, `ENTITY_CHANGE_BLOCK` new-state metadata, and explosion affected-list entries with bind-only SQL.
+- **Direct-log API contract.** Direct log API methods now return the real gate/queue acceptance boolean instead of unconditional `true`.
+- **Command surface drift.** `/vg purge` advertises full filter tokens, `/vg undo` uses the undo permission node, previews no longer push undo entries, undo replay targets exact affected IDs, and player-issued `r:#we` / `r:#worldedit` filters receive the actor UUID.
+
+### Changed
+
+- Bare `./gradlew printVersion` is metadata-only (`coreonly`) so CI/release metadata checks do not configure every loader cell and trip Fabric Loom cross-version classloader conflicts.
+- `docs/ARCHITECTURE.md` now documents the Forge event-bus fallback coverage and queue/rollback architecture updates from the v1.3.x audit series.
+
 ## [1.3.7] - 2026-07-03
 
 **Round-7 + Round-8 review close-out (DD1 + EE1 inline sweeps).** Small, focused pass in response to the review agents' converged findings — no subagent waves needed. Closes the reload/config-set race window that CC2's WORKER offload introduced, plus three sister thread-safety gates on `onCommandFillSetblock`, plus the tick-freeze regression DD1 itself introduced by taking `CONFIG_MUTATION_LOCK` on the server thread.

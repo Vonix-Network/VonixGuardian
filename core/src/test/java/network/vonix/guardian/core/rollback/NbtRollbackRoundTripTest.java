@@ -39,7 +39,7 @@ import static org.mockito.Mockito.when;
  * <ol>
  *   <li>waterlogged fence — BLOCK_BREAK with block-state property string;</li>
  *   <li>chest with contents — BLOCK_BREAK with blockEntityNbt;</li>
- *   <li>named+enchanted sword — ITEM_DROP with itemNbt;</li>
+ *   <li>named+enchanted sword — HOPPER_PULL with itemNbt;</li>
  *   <li>tamed dog — ENTITY_KILL with entityNbt.</li>
  * </ol>
  */
@@ -104,12 +104,12 @@ class NbtRollbackRoundTripTest {
     }
 
     @Test
-    void named_enchanted_sword_item_drop_routes_through_nbt_giveOrDrop_overload() throws Exception {
-        // ITEM_DROP rollback is a container remove — the NBT payload is NOT used.
-        // Verify by using ITEM_PICKUP inverse instead: inverse of pickup is giveOrDrop.
+    void named_enchanted_sword_hopper_pull_routes_through_nbt_giveOrDrop_overload() throws Exception {
+        // ITEM_DROP/ITEM_PICKUP rows are audit-only until item-entity identity is tracked.
+        // HOPPER_PULL still exercises the NBT-aware item give/drop rollback path.
         byte[] itemNbt = "NAMED_ENCHANTED_SWORD".getBytes();
         Action a = new ActionBuilder()
-                .type(ActionType.ITEM_PICKUP)
+                .type(ActionType.HOPPER_PULL)
                 .worldId("minecraft:overworld")
                 .actorName("Notch")
                 .position(1, 64, 1)

@@ -11,7 +11,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 
-## Feature surface (v1.2.4)
+## Feature surface (v1.3.8)
 
 - **Logged actions** (39 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -90,10 +90,14 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ## Build
 
 ```bash
-./gradlew build
+./gradlew -PbuildProfile=coreonly :core:test
+./gradlew -PbuildProfile=mc1182 :mc-1.18.2:fabric:build :mc-1.18.2:forge:build
+./gradlew -PbuildProfile=mc1192 :mc-1.19.2:fabric:build :mc-1.19.2:forge:build
+./gradlew -PbuildProfile=mc1201 :mc-1.20.1:fabric:build :mc-1.20.1:forge:build
+./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ```
 
-Produces 8 jars under `<module>/build/libs/`. Each jar bundles `core` via Gradle Shadow.
+Produces 8 jars under `<module>/build/libs/`. Each jar bundles `core` via Gradle Shadow. The root `build` task configures every loader cell and is intentionally avoided in CI/release flows because multiple Fabric Loom versions can conflict when configured in one Gradle invocation.
 
 CI builds the full 8-jar matrix on every push to `main` and uploads them to the GitHub Release on tag push.
 

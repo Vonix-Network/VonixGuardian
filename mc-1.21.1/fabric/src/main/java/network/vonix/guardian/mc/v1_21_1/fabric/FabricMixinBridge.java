@@ -12,6 +12,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.Attribution;
@@ -110,12 +111,22 @@ public final class FabricMixinBridge {
             ExplosionScratch scratch = EXPLOSION_SCRATCH.get();
             int n = affected.size();
             scratch.grow(n);
+            boolean captureNbt = persistNbt();
             int idx = 0;
             for (BlockPos p : affected) {
+                BlockState state = level.getBlockState(p);
                 scratch.xs[idx] = p.getX();
                 scratch.ys[idx] = p.getY();
                 scratch.zs[idx] = p.getZ();
-                scratch.ids[idx] = blockId(level.getBlockState(p));
+                scratch.ids[idx] = blockId(state);
+                if (captureNbt) {
+                    scratch.metas[idx] = NbtCapture.blockStateProps(state);
+                    BlockEntity be = level.getBlockEntity(p);
+                    scratch.nbts[idx] = be == null ? null : NbtCapture.blockEntity(be, level.registryAccess());
+                } else {
+                    scratch.metas[idx] = null;
+                    scratch.nbts[idx] = null;
+                }
                 idx++;
             }
             String worldIdForPrime = WorldKey.of(level);
@@ -148,7 +159,8 @@ public final class FabricMixinBridge {
             if (g == null) return;
             g.explosionJoinWorker().submit(s, attr.actorUuid(), actorName, worldId,
                     center.getX(), center.getY(), center.getZ(), sourceTag,
-                    scratch.xs, scratch.ys, scratch.zs, scratch.ids, idx);
+                    scratch.xs, scratch.ys, scratch.zs, scratch.ids,
+                    scratch.metas, scratch.nbts, idx);
         } catch (Throwable t) {
             warn("explosion", t);
         }
@@ -208,11 +220,14 @@ public final class FabricMixinBridge {
         int[] ys = new int[512];
         int[] zs = new int[512];
         String[] ids = new String[512];
+        String[] metas = new String[512];
+        byte[][] nbts = new byte[512][];
         void grow(int need) {
             if (xs.length >= need) return;
             int n = xs.length;
             while (n < need) n <<= 1;
-            xs = new int[n]; ys = new int[n]; zs = new int[n]; ids = new String[n];
+            xs = new int[n]; ys = new int[n]; zs = new int[n];
+            ids = new String[n]; metas = new String[n]; nbts = new byte[n][];
         }
     }
 
@@ -719,7 +734,7 @@ public final class FabricMixinBridge {
     }
 
     /**
-     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code BLOCK_PLACE}
+     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code PORTAL_CREATE}
      * with {@link Sentinel#PORTAL} attribution and source tag {@code #portal};
      * rollback treats these rows as world-events (see RollbackEngine PORTAL_CREATE handling).
      */
@@ -727,7 +742,7 @@ public final class FabricMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || level == null || pos == null || state == null) return;
-            s.submitBlockPlace(null, Sentinel.PORTAL, WorldKey.of(level),
+            s.submitPortalCreate(null, Sentinel.PORTAL, WorldKey.of(level),
                     pos.getX(), pos.getY(), pos.getZ(),
                     blockId(state), Sentinel.PORTAL);
         } catch (Throwable t) {

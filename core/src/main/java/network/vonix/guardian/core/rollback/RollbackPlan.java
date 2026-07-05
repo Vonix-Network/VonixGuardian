@@ -123,7 +123,7 @@ public final class RollbackPlan {
                 skipped.add(a);
                 continue;
             }
-            if (a.isPositional()) {
+            if (dedupeByPosition(a)) {
                 PosKey k = new PosKey(a.worldId(), a.x(), a.y(), a.z());
                 if (!seen.add(k)) {
                     // a later (newer) event already covers this slot — drop this older one
@@ -171,7 +171,7 @@ public final class RollbackPlan {
                 skipped.add(a);
                 return;
             }
-            if (a.isPositional()) {
+            if (dedupeByPosition(a)) {
                 PosKey k = new PosKey(a.worldId(), a.x(), a.y(), a.z());
                 if (!seen.add(k)) {
                     return;
@@ -231,6 +231,23 @@ public final class RollbackPlan {
 
     static boolean isRollbackable(Action a) {
         return RollbackEngine.isRollbackable(a.type());
+    }
+
+    /**
+     * Coordinate de-dupe is only safe for block-state mutations where one
+     * newer row makes older rows at the same block unreachable. Container,
+     * item/entity, and chunked EXPLOSION rows may legitimately share a
+     * coordinate and must all survive planning.
+     */
+    private static boolean dedupeByPosition(Action a) {
+        if (a == null || !a.isPositional()) return false;
+        return switch (a.type()) {
+            case BLOCK_PLACE, BLOCK_BREAK,
+                 BURN, IGNITE, FADE, LEAVES_DECAY,
+                 BUCKET_EMPTY, BUCKET_FILL, ENTITY_CHANGE_BLOCK,
+                 STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> true;
+            default -> false;
+        };
     }
 
     private record PosKey(String worldId, int x, int y, int z) {}

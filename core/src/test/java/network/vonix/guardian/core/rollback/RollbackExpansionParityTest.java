@@ -33,8 +33,6 @@ class RollbackExpansionParityTest {
             ActionType.BURN,
             ActionType.IGNITE,
             ActionType.FADE,
-            ActionType.FORM,
-            ActionType.SPREAD,
             ActionType.BUCKET_EMPTY,
             ActionType.BUCKET_FILL,
             ActionType.LEAVES_DECAY,
@@ -67,7 +65,11 @@ class RollbackExpansionParityTest {
             ActionType.PISTON_RETRACT,
             ActionType.INVENTORY_DEPOSIT,
             ActionType.INVENTORY_WITHDRAW,
+            ActionType.ITEM_DROP,
+            ActionType.ITEM_PICKUP,
             ActionType.ITEM_CRAFT,
+            ActionType.FORM,
+            ActionType.SPREAD,
             ActionType.ENTITY_SPAWN,
             ActionType.ENTITY_INTERACT,
             ActionType.CHUNK_POPULATE,
@@ -99,7 +101,6 @@ class RollbackExpansionParityTest {
         RollbackEngine engine = new RollbackEngine(dao, mutator, sync);
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(
             action(1, 100, ActionType.BURN, 1),
-            action(2, 99, ActionType.FORM, 2),
             action(3, 98, ActionType.ENTITY_CHANGE_BLOCK, 3),
             action(4, 97, ActionType.HOPPER_PUSH, 4),
             action(5, 96, ActionType.HOPPER_PULL, 5)
@@ -109,15 +110,15 @@ class RollbackExpansionParityTest {
         QueryFilter filter = QueryFilter.builder().sinceMillis(1L).build();
         RollbackResult result = engine.rollback(filter, false);
 
-        assertThat(result.dispatchedSteps()).isEqualTo(5);
+        assertThat(result.dispatchedSteps()).isEqualTo(4);
         assertThat(mutator.calls).containsExactly(
             "setBlock|w|1|64|1|target-BURN|meta-BURN",
-            "setBlock|w|2|64|2|minecraft:air|null",
             "setBlock|w|3|64|3|target-ENTITY_CHANGE_BLOCK|null",
             "removeFromContainer|w|4|64|4|target-HOPPER_PUSH|4",
             "giveOrDrop|w|5|64|5|target-HOPPER_PULL|5|meta-HOPPER_PULL"
         );
-        org.mockito.Mockito.verify(dao).markRolledBack(List.of(1L, 2L, 3L, 4L, 5L), true);
+        assertThat(result.skippedIds()).isEmpty();
+        org.mockito.Mockito.verify(dao).markRolledBack(List.of(1L, 3L, 4L, 5L), true);
         org.mockito.Mockito.verify(dao).closeRollbackBatch(77L);
     }
 

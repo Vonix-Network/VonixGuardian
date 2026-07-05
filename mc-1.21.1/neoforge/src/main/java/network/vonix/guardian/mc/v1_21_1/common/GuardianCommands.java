@@ -26,6 +26,7 @@ import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.command.CommandSpec;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.perms.LookupPermissionFilter;
 import network.vonix.guardian.core.perms.PermissionNode;
@@ -144,7 +145,7 @@ public final class GuardianCommands {
                                 .executes(ctx -> Purge.run(ctx, g))))
                 // undo
                 .then(Commands.literal("undo")
-                        .requires(s -> hasPerm(s, "vonixguardian.command.rollback", g))
+                        .requires(s -> hasPerm(s, CommandSpec.permissionNode(CommandSpec.UNDO), g))
                         .executes(ctx -> Undo.run(ctx, g)))
                 // near (CP parity: radius=5 t:1h, current player only)
                 .then(Commands.literal("near")
@@ -253,7 +254,7 @@ public final class GuardianCommands {
     private static QueryParser.QueryParseContext ctxOf(CommandSourceStack src) {
         Vec3 v = src.getPosition();
         if (v == null) return null;
-        return new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z);
+        return new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z, actorUuid(src));
     }
 
     private static String playerWorldOf(CommandSourceStack src) {
@@ -309,7 +310,7 @@ public final class GuardianCommands {
                 qf.centerZ() != null ? qf.centerZ() : (int) v.z,
                 qf.actions(), qf.include(), qf.exclude(),
                 qf.rolledBack(), qf.countOnly(), qf.preview(), qf.verbose(), qf.silent(), qf.optimize(),
-                qf.worldEditPlayer()
+                qf.worldEditPlayer(), qf.actionIds()
         );
     }
 
@@ -473,8 +474,10 @@ public final class GuardianCommands {
                 try {
                     RollbackOptions options = rollbackOptions(server, src);
                     RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor, options);
-                    g.undoStack().push(actor != null ? actor
-                            : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    if (!result.preview()) {
+                        g.undoStack().push(actor != null ? actor
+                                : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    }
                     server.execute(() -> {
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
                                 "[VonixGuardian] Rollback " + (preview ? "(preview) " : "")
@@ -519,8 +522,10 @@ public final class GuardianCommands {
                 try {
                     RollbackOptions options = rollbackOptions(server, src);
                     RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
-                    g.undoStack().push(actor != null ? actor
-                            : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    if (!result.preview()) {
+                        g.undoStack().push(actor != null ? actor
+                                : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    }
                     server.execute(() -> {
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
                                 "[VonixGuardian] Restore affected=" + result.affectedCount()
@@ -600,28 +605,25 @@ public final class GuardianCommands {
                 return 0;
             }
             RollbackResult prev = popped.get();
-            QueryFilter originalFilter = prev.originalFilter();
-            if (originalFilter == null) {
-                // Legacy pre-v1.1.6 undo entry — no filter captured, cannot revert world state.
+            if (prev.originalFilter() == null || prev.affectedIds().isEmpty()) {
+                // Legacy pre-v1.1.6 undo entry — no filter/id set captured, cannot revert world state.
                 LOG.info(Guardian.MARKER,
-                        "Undo: popped legacy entry (no originalFilter); {} affected id(s) dropped from history",
+                        "Undo: popped legacy/empty entry; {} affected id(s) dropped from history",
                         prev.affectedCount());
                 send(src, ChatRenderer.warning(g.theme(),
                         "[VonixGuardian] Undo: dropped " + prev.affectedCount()
-                                + " entries from history (legacy entry — world state not reverted)."));
+                                + " entries from history (legacy/empty entry — world state not reverted)."));
                 return 1;
             }
             MinecraftServer server = src.getServer();
             final RollbackResult.Mode inverse = prev.inverseMode();
-            // W3-B2: run the inverse of the previous operation on exactly the same
-            // action set (originalFilter is normalized w/r/t rolledBack for the
-            // inverse mode by RollbackEngine.plan). We deliberately do NOT push
-            // the resulting RollbackResult back onto UndoStack — doing so would
-            // let repeated `/vg undo` invocations ping-pong between rollback and
-            // restore forever. Undo is a one-shot revert of the last op.
+            final QueryFilter exactFilter = idFilter(prev.originalFilter(), prev.affectedIds());
+            // Undo replays the inverse against the exact action ids from the popped
+            // operation. Reusing the broad original filter would catch later rows
+            // that match the same criteria but were not part of the operation.
             WORKER.submit(() -> {
                 try {
-                    var plan = g.rollbackEngine().plan(originalFilter, inverse, actor);
+                    var plan = g.rollbackEngine().plan(exactFilter, inverse, actor);
                     RollbackResult result = g.rollbackEngine().execute(plan, false);
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
                             "[VonixGuardian] Undo (" + inverse + ") affected="
@@ -635,6 +637,17 @@ public final class GuardianCommands {
             });
             return 1;
         }
+    }
+
+    private static QueryFilter idFilter(QueryFilter base, List<Long> ids) {
+        return new QueryFilter(
+                base.users(), base.sinceMillis(), base.untilMillis(),
+                base.radius(), base.worldSel(),
+                base.centerX(), base.centerY(), base.centerZ(),
+                base.actions(), base.include(), base.exclude(),
+                base.rolledBack(), base.countOnly(), base.preview(), base.verbose(), base.silent(), base.optimize(),
+                base.worldEditPlayer(), new java.util.LinkedHashSet<>(ids)
+        );
     }
 
     // ====================================================================== Consumer

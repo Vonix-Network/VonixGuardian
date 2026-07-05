@@ -7,6 +7,9 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
 import org.slf4j.MarkerFactory;
 
+import java.sql.DataTruncation;
+import java.sql.SQLDataException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -25,8 +28,11 @@ import java.util.concurrent.atomic.LongAdder;
  * flushes early when the poll interval elapses with anything pending.
  *
  * <p>On sink failure the worker retries the batch up to {@value #MAX_SINK_RETRIES} times with
- * a {@value #RETRY_BACKOFF_MS} ms backoff; if all retries fail the batch is dropped and
- * {@link #permanentlyDropped()} is incremented.
+ * a {@value #RETRY_BACKOFF_MS} ms backoff. If all retries fail with a row-shaped failure, the
+ * worker recursively bisects the batch to isolate poison actions while still flushing
+ * unaffected actions. Global/transient failures are not bisected, avoiding retry storms when
+ * the database is down. {@link #permanentlyDropped()} is incremented by the number of actions
+ * that cannot be flushed.
  *
  * <p>All log statements carry the {@code VONIXGUARDIAN_QUEUE} SLF4J marker so server admins
  * can filter queue-internal noise.
@@ -152,7 +158,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     }
 
     @Override
-    public void submit(Action a) {
+    public boolean submit(Action a) {
         Objects.requireNonNull(a, "action");
         if (shutdown) {
             // After shutdown signal we still try a best-effort offer so a racing producer
@@ -188,8 +194,11 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             }
             droppedCounter.increment();
             maybeLogDrop(total);
+            maybeLogHistogram();
+            return false;
         }
         maybeLogHistogram();
+        return true;
     }
 
     @Override
@@ -210,19 +219,26 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             LOG.warn(MARKER, "Interrupted while waiting for worker to drain", ie);
         }
 
-        // Force-flush whatever the worker didn't get to (either it timed out or it died).
+        if (worker.isAlive()) {
+            LOG.warn(MARKER, "Worker thread still alive after drainAndFlush({} ms); abandoning queued tail without concurrent sink writes",
+                    timeoutMs);
+            List<Action> abandoned = new ArrayList<>(queue.size());
+            queue.drainTo(abandoned);
+            permanentlyDrop(abandoned, "drain timeout while worker still alive");
+            closed = true;
+            return;
+        }
+
+        // Force-flush whatever the worker didn't get to, but keep the caller's
+        // original drain deadline across retries and poison isolation.
         if (!queue.isEmpty()) {
             List<Action> remainder = new ArrayList<>(queue.size());
             queue.drainTo(remainder);
             if (!remainder.isEmpty()) {
-                flushWithRetry(remainder);
+                flushWithRetry(remainder, deadline);
             }
         }
 
-        if (worker.isAlive()) {
-            LOG.warn(MARKER, "Worker thread still alive after drainAndFlush({} ms); abandoning",
-                    timeoutMs);
-        }
         closed = true;
     }
 
@@ -236,7 +252,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         return dropped.get();
     }
 
-    /** @return total batches lost permanently after exhausting sink retries */
+    /** @return total actions lost permanently after exhausting sink retries */
     public long permanentlyDropped() {
         return permanentlyDropped.get();
     }
@@ -436,31 +452,138 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     }
 
     private void flushWithRetry(List<Action> batch) {
+        flushWithRetry(batch, Long.MAX_VALUE);
+    }
+
+    private void flushWithRetry(List<Action> batch, long deadlineNs) {
+        if (batch.isEmpty()) {
+            return;
+        }
+        if (deadlineExpired(deadlineNs)) {
+            permanentlyDrop(batch, "flush deadline expired before retry");
+            return;
+        }
+        Exception failure = tryFlushBatchWithRetry(batch, deadlineNs);
+        if (failure == null) {
+            return;
+        }
+        if (!isLikelyRowSpecificFailure(failure)) {
+            permanentlyDrop(batch, "non-row-specific sink failure after retries: " + failure);
+            return;
+        }
+        isolateAndFlushFailedBatch(batch, deadlineNs);
+    }
+
+    /**
+     * Try the normal whole-batch retry path first. Returns {@code null} when
+     * the batch reached the sink or was counted as permanently dropped because
+     * the caller's deadline/backoff was interrupted. A non-null exception means
+     * all normal retry attempts failed and the caller can decide whether
+     * poison-row isolation is appropriate.
+     */
+    private Exception tryFlushBatchWithRetry(List<Action> batch, long deadlineNs) {
         List<Action> view = Collections.unmodifiableList(batch);
+        Exception last = null;
         for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
+            if (deadlineExpired(deadlineNs)) {
+                permanentlyDrop(batch, "flush deadline expired during retry");
+                return null;
+            }
             try {
                 sink.flush(view);
-                return;
+                return null;
             } catch (Exception ex) {
+                last = ex;
                 LOG.warn(MARKER, "Batch sink failed on attempt {}/{} (batch size={}): {}",
                         attempt, MAX_SINK_RETRIES, batch.size(), ex.toString());
                 if (attempt == MAX_SINK_RETRIES) {
                     break;
                 }
                 try {
-                    Thread.sleep(RETRY_BACKOFF_MS);
+                    Thread.sleep(backoffMillis(deadlineNs));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    LOG.warn(MARKER, "Interrupted during retry backoff; dropping batch of {}",
-                            batch.size());
-                    permanentlyDropped.incrementAndGet();
-                    return;
+                    permanentlyDrop(batch, "interrupted during retry backoff");
+                    return null;
                 }
             }
         }
-        permanentlyDropped.incrementAndGet();
-        LOG.warn(MARKER, "Permanently dropped batch of {} after {} failed attempts",
-                batch.size(), MAX_SINK_RETRIES);
+        return last;
+    }
+
+    private void isolateAndFlushFailedBatch(List<Action> batch, long deadlineNs) {
+        if (deadlineExpired(deadlineNs)) {
+            permanentlyDrop(batch, "flush deadline expired during poison isolation");
+            return;
+        }
+        if (batch.size() == 1) {
+            permanentlyDrop(batch, "isolated poison action after " + MAX_SINK_RETRIES + " failed sink attempts");
+            return;
+        }
+
+        int mid = batch.size() / 2;
+        LOG.warn(MARKER,
+                "Batch of {} action(s) failed after {} attempts with a row-specific error; bisecting into {} and {} action(s)",
+                batch.size(), MAX_SINK_RETRIES, mid, batch.size() - mid);
+        probeOrSplit(new ArrayList<>(batch.subList(0, mid)), deadlineNs);
+        probeOrSplit(new ArrayList<>(batch.subList(mid, batch.size())), deadlineNs);
+    }
+
+    /** Cheap child probe used only after the root batch already exhausted the normal retry path. */
+    private void probeOrSplit(List<Action> batch, long deadlineNs) {
+        if (batch.isEmpty()) {
+            return;
+        }
+        if (deadlineExpired(deadlineNs)) {
+            permanentlyDrop(batch, "flush deadline expired during poison probe");
+            return;
+        }
+        try {
+            sink.flush(Collections.unmodifiableList(batch));
+        } catch (Exception ex) {
+            if (!isLikelyRowSpecificFailure(ex)) {
+                permanentlyDrop(batch, "non-row-specific sink failure during poison probe: " + ex);
+                return;
+            }
+            isolateAndFlushFailedBatch(batch, deadlineNs);
+        }
+    }
+
+    private boolean deadlineExpired(long deadlineNs) {
+        return deadlineNs != Long.MAX_VALUE && System.nanoTime() >= deadlineNs;
+    }
+
+    private long backoffMillis(long deadlineNs) {
+        if (deadlineNs == Long.MAX_VALUE) {
+            return RETRY_BACKOFF_MS;
+        }
+        long remainingNs = deadlineNs - System.nanoTime();
+        if (remainingNs <= 0L) {
+            return 1L;
+        }
+        return Math.max(1L, Math.min(RETRY_BACKOFF_MS, TimeUnit.NANOSECONDS.toMillis(remainingNs)));
+    }
+
+    private void permanentlyDrop(List<Action> batch, String reason) {
+        if (batch.isEmpty()) {
+            return;
+        }
+        long total = permanentlyDropped.addAndGet(batch.size());
+        LOG.warn(MARKER,
+                "Permanently dropped {} action(s): {} (total permanently dropped={})",
+                batch.size(), reason, total);
+    }
+
+    private static boolean isLikelyRowSpecificFailure(Throwable t) {
+        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+            if (cur instanceof IllegalArgumentException
+                    || cur instanceof SQLDataException
+                    || cur instanceof DataTruncation
+                    || cur instanceof SQLIntegrityConstraintViolationException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void maybeLogDrop(long totalDropped) {

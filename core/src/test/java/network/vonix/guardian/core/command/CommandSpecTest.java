@@ -80,9 +80,9 @@ class CommandSpecTest {
     }
 
     @Test
-    void purgeUsesTimeShortArgument() {
+    void purgeUsesFilterTokensArgument() {
         SubcommandSpec purge = findByName(CommandSpec.PURGE);
-        assertThat(purge.arguments()).containsExactly(ArgumentSpec.TIME_SHORT);
+        assertThat(purge.arguments()).containsExactly(ArgumentSpec.FILTER_TOKENS);
     }
 
     @Test

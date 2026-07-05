@@ -5,6 +5,7 @@ import network.vonix.guardian.core.action.ActionType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -67,7 +68,8 @@ public record QueryFilter(
     boolean verbose,
     boolean silent,
     boolean optimize,
-    UUID worldEditPlayer
+    UUID worldEditPlayer,
+    Set<Long> actionIds
 ) {
 
     /** Compact-canonical constructor: defensively copies lists and replaces nulls with empty. */
@@ -76,6 +78,7 @@ public record QueryFilter(
         actions = actions == null ? List.of() : List.copyOf(actions);
         include = include == null ? List.of() : List.copyOf(include);
         exclude = exclude == null ? List.of() : List.copyOf(exclude);
+        actionIds = actionIds == null ? Set.of() : Set.copyOf(actionIds);
     }
 
     /**
@@ -105,7 +108,8 @@ public record QueryFilter(
              centerX, centerY, centerZ,
              actions, include, exclude,
              rolledBack, countOnly, preview, verbose, silent, optimize,
-             null);
+             null,
+             Set.of());
     }
 
     /**
@@ -119,7 +123,8 @@ public record QueryFilter(
             List.of(), List.of(), List.of(),
             null,
             false, false, false, false, false,
-            null
+            null,
+            Set.of()
         );
     }
 
@@ -147,7 +152,8 @@ public record QueryFilter(
             centerX, centerY, centerZ,
             actions, include, exclude,
             rolledBack, countOnly, preview, verbose, silent, optimize,
-            worldEditPlayer
+            worldEditPlayer,
+            actionIds
         );
     }
 
@@ -260,7 +266,8 @@ public record QueryFilter(
                 actions, include, exclude,
                 rolledBack,
                 countOnly, preview, verbose, silent, optimize,
-                worldEditPlayer
+                worldEditPlayer,
+                Set.of()
             );
         }
     }

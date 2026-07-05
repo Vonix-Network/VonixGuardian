@@ -95,6 +95,25 @@ class ExplosionAffectedListTest {
     }
 
     @Test
+    void sidecarRoundTripEnrichesTargetEntriesWithoutInflatingTargetColumn() {
+        byte[] be = new byte[]{1, 2, 3, 4};
+        ExplosionAffectedList.Entry enriched = new ExplosionAffectedList.Entry(
+            100, 64, 0, "minecraft:chest", "facing=north,waterlogged=false", be);
+
+        byte[] sidecar = ExplosionAffectedList.serializeSidecar(List.of(enriched));
+        ExplosionAffectedList parsed = ExplosionAffectedList.parse(
+            "100:64:0=minecraft:chest,101:64:0=minecraft:stone", sidecar);
+
+        assertThat(parsed.entries()).hasSize(2);
+        ExplosionAffectedList.Entry chest = parsed.entries().get(0);
+        assertThat(chest.blockId()).isEqualTo("minecraft:chest");
+        assertThat(chest.meta()).isEqualTo("facing=north,waterlogged=false");
+        assertThat(chest.blockEntityNbt()).containsExactly(be);
+        assertThat(parsed.entries().get(1).meta()).isNull();
+        assertThat(parsed.entries().get(1).blockEntityNbt()).isNull();
+    }
+
+    @Test
     void serializeEmpty() {
         assertThat(ExplosionAffectedList.parse("").serialize()).isEmpty();
         assertThat(ExplosionAffectedList.parse(null).serialize()).isEmpty();

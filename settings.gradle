@@ -16,10 +16,19 @@ rootProject.name = 'VonixGuardian'
 
 // Build profile: 'coreonly' builds only :core (fast iteration on the engine);
 // 'mc1211' adds 1.21.1 NeoForge + Fabric; 'all' adds every MC version + loader
-// (default when unset). 'forgeonly' = every Forge + NeoForge module, skipping
-// Fabric (avoids fabric-loom classloader conflict during cross-version builds).
+// (default when unset, except metadata-only root tasks like printVersion).
+// 'forgeonly' = every Forge + NeoForge module, skipping Fabric (avoids the
+// fabric-loom classloader conflict during cross-version builds).
 // Legacy alias 'core' == 'coreonly'.
-def profile = providers.gradleProperty('buildProfile').getOrElse('all')
+//
+// A bare `./gradlew printVersion` is intentionally metadata-only: keep it in
+// the core-only profile so Gradle does not configure every loader cell just to
+// print the root project version. This avoids Fabric Loom's known cross-version
+// classloader conflict without changing the default for build/test tasks.
+def explicitBuildProfile = providers.gradleProperty('buildProfile')
+def requestedTasks = gradle.startParameter.taskNames
+def printVersionOnly = requestedTasks && requestedTasks.every { it == 'printVersion' || it == ':printVersion' }
+def profile = explicitBuildProfile.getOrElse(printVersionOnly ? 'coreonly' : 'all')
 if (profile == 'core') profile = 'coreonly'
 
 // Pure-Java engine (no MC).

@@ -87,6 +87,12 @@ public final class QueryCompiler {
     private static void appendWhere(StringBuilder sb, QueryFilter f, List<Object> binds) {
         List<String> clauses = new ArrayList<>();
 
+        // Explicit action-id set (used by /vg undo to replay the exact rows from the popped operation).
+        if (f.actionIds() != null && !f.actionIds().isEmpty()) {
+            clauses.add("a.id IN (" + placeholders(f.actionIds().size()) + ")");
+            binds.addAll(f.actionIds());
+        }
+
         // users — match either uuid (when known) or name (when sentinel or name-only).
         if (f.users() != null && !f.users().isEmpty()) {
             List<String> sub = new ArrayList<>();
@@ -177,12 +183,10 @@ public final class QueryCompiler {
 
         // include / exclude
         if (f.include() != null && !f.include().isEmpty()) {
-            clauses.add("a.target IN (" + placeholders(f.include().size()) + ")");
-            binds.addAll(f.include());
+            appendIncludeClause(clauses, binds, f.include());
         }
         if (f.exclude() != null && !f.exclude().isEmpty()) {
-            clauses.add("a.target NOT IN (" + placeholders(f.exclude().size()) + ")");
-            binds.addAll(f.exclude());
+            appendExcludeClauses(clauses, binds, f.exclude());
         }
 
         // rolled_back SQL-side filter
@@ -193,6 +197,55 @@ public final class QueryCompiler {
 
         if (!clauses.isEmpty()) {
             sb.append(" WHERE ").append(String.join(" AND ", clauses));
+        }
+    }
+
+    private static void appendIncludeClause(List<String> clauses, List<Object> binds, List<String> values) {
+        String in = placeholders(values.size());
+        StringBuilder clause = new StringBuilder("(a.target IN (").append(in).append(')');
+        binds.addAll(values);
+
+        clause.append(" OR (a.type = ? AND a.meta IN (").append(in).append("))");
+        binds.add(ActionType.ENTITY_CHANGE_BLOCK.id());
+        binds.addAll(values);
+
+        clause.append(" OR (a.type = ? AND (").append(explosionLikeSql(values.size())).append("))");
+        binds.add(ActionType.EXPLOSION.id());
+        bindExplosionLikePatterns(binds, values);
+
+        clause.append(')');
+        clauses.add(clause.toString());
+    }
+
+    private static void appendExcludeClauses(List<String> clauses, List<Object> binds, List<String> values) {
+        String in = placeholders(values.size());
+        clauses.add("a.target NOT IN (" + in + ")");
+        binds.addAll(values);
+
+        clauses.add("NOT (a.type = ? AND a.meta IN (" + in + "))");
+        binds.add(ActionType.ENTITY_CHANGE_BLOCK.id());
+        binds.addAll(values);
+
+        clauses.add("NOT (a.type = ? AND (" + explosionLikeSql(values.size()) + "))");
+        binds.add(ActionType.EXPLOSION.id());
+        bindExplosionLikePatterns(binds, values);
+    }
+
+    private static String explosionLikeSql(int valueCount) {
+        List<String> parts = new ArrayList<>(valueCount * 3);
+        for (int i = 0; i < valueCount; i++) {
+            parts.add("a.target LIKE ?");
+            parts.add("a.target LIKE ?");
+            parts.add("a.target LIKE ?");
+        }
+        return String.join(" OR ", parts);
+    }
+
+    private static void bindExplosionLikePatterns(List<Object> binds, List<String> values) {
+        for (String v : values) {
+            binds.add("%=" + v + ",%");
+            binds.add("%=" + v + "|%");
+            binds.add("%=" + v);
         }
     }
 

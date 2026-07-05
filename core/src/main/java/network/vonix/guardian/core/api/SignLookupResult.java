@@ -29,5 +29,8 @@ public record SignLookupResult(
         String worldId,
         int x, int y, int z,
         String lines,
-        String sourceTag
+        String sourceTag,
+        String signSide,
+        String signDyeColor,
+        Boolean signWaxed
 ) {}

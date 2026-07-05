@@ -547,7 +547,8 @@ public final class RollbackEngine {
             base.verbose(),
             base.silent(),
             base.optimize(),
-            null                  // worldEditPlayer cleared — WE region already covers primary
+            null,
+            base.actionIds()                  // worldEditPlayer cleared — WE region already covers primary
         );
     }
 
@@ -595,7 +596,8 @@ public final class RollbackEngine {
             base.verbose(),
             base.silent(),
             base.optimize(),
-            base.worldEditPlayer()
+            base.worldEditPlayer(),
+            base.actionIds()
         );
     }
 
@@ -685,18 +687,8 @@ public final class RollbackEngine {
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
-            case ITEM_DROP ->
-                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()));
-            case ITEM_PICKUP -> {
-                if (nbt) {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
-                } else {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
-                }
-            }
+            case ITEM_DROP, ITEM_PICKUP ->
+                LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — item entity identity required", a.type(), a.id());
             case ENTITY_KILL -> {
                 if (nbt) {
                     mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
@@ -718,7 +710,7 @@ public final class RollbackEngine {
                 }
             }
             // Block was destroyed/changed-away — inverse is to restore the original block.
-            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL -> {
+            case BURN, FADE, LEAVES_DECAY, BUCKET_FILL -> {
                 if (nbt) {
                     mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.oldBlockState(), a.blockEntityNbt());
@@ -727,7 +719,7 @@ public final class RollbackEngine {
                 }
             }
             // Block was created — inverse is to clear it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
+            case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH ->
@@ -756,6 +748,8 @@ public final class RollbackEngine {
             // --- per-action explicit refusals (replacing the silent default branch) ---
             case DISPENSE ->
                 LOG.warn("RollbackEngine: refusing to roll back DISPENSE (id={}) — container slot tracking required", a.id());
+            case FORM, SPREAD ->
+                LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — old replacement state not tracked", a.type(), a.id());
             case PISTON_EXTEND, PISTON_RETRACT ->
                 LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — source position not tracked", a.type(), a.id());
             case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW ->
@@ -806,18 +800,8 @@ public final class RollbackEngine {
             case CONTAINER_WITHDRAW ->
                 mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case ITEM_DROP -> {
-                if (nbt) {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
-                } else {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
-                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
-                }
-            }
-            case ITEM_PICKUP ->
-                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
-                    a.targetId(), Math.max(1, a.amount()));
+            case ITEM_DROP, ITEM_PICKUP ->
+                LOG.warn("RollbackEngine: refusing to restore {} (id={}) — item entity identity required", a.type(), a.id());
             case ENTITY_KILL ->
                 LOG.debug("RollbackEngine: restore of ENTITY_KILL id={} is best-effort no-op", a.id());
             case EXPLOSION ->
@@ -834,10 +818,10 @@ public final class RollbackEngine {
                 }
             }
             // Block was originally destroyed/changed-away — restoring means re-destroying.
-            case BURN, IGNITE, FADE, LEAVES_DECAY, BUCKET_FILL ->
+            case BURN, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // Block was originally created — restoring means re-placing it.
-            case FORM, SPREAD, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
+            case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
                 if (nbt) {
                     mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.newBlockState(), a.blockEntityNbt());
@@ -872,6 +856,8 @@ public final class RollbackEngine {
             // --- per-action explicit refusals (replacing the silent default branch) ---
             case DISPENSE ->
                 LOG.warn("RollbackEngine: refusing to restore DISPENSE (id={}) — container slot tracking required", a.id());
+            case FORM, SPREAD ->
+                LOG.warn("RollbackEngine: refusing to restore {} (id={}) — old replacement state not tracked", a.type(), a.id());
             case PISTON_EXTEND, PISTON_RETRACT ->
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — source position not tracked", a.type(), a.id());
             case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW ->
@@ -892,11 +878,20 @@ public final class RollbackEngine {
     }
 
     private void restoreExplosion(Action a) {
-        ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
+        boolean hasSidecar = a.blockEntityNbt() != null && a.blockEntityNbt().length > 0;
+        ExplosionAffectedList list = hasSidecar
+            ? ExplosionAffectedList.parse(a.targetId(), a.blockEntityNbt())
+            : ExplosionAffectedList.parse(a.targetId());
         if (list.isEmpty()) return;
         for (ExplosionAffectedList.Entry e : list.entries()) {
-            // Restore the pre-blast block state at each affected coord.
-            mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
+            // Restore the pre-blast block state at each affected coord. Legacy
+            // inline meta remains targetMeta; sidecar meta is v5 block-state props.
+            if (hasSidecar && (e.meta() != null || e.blockEntityNbt() != null)) {
+                mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), null,
+                    e.meta(), e.blockEntityNbt());
+            } else {
+                mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
+            }
         }
     }
 
@@ -914,9 +909,8 @@ public final class RollbackEngine {
         return switch (t) {
             case BLOCK_PLACE, BLOCK_BREAK,
                  CONTAINER_DEPOSIT, CONTAINER_WITHDRAW,
-                 ITEM_DROP, ITEM_PICKUP,
                  ENTITY_KILL, EXPLOSION,
-                 BURN, IGNITE, FADE, FORM, SPREAD, LEAVES_DECAY,
+                 BURN, IGNITE, FADE, LEAVES_DECAY,
                  BUCKET_EMPTY, BUCKET_FILL, ENTITY_CHANGE_BLOCK,
                  HOPPER_PUSH, HOPPER_PULL,
                  HANGING_PLACE, HANGING_BREAK,
@@ -925,6 +919,8 @@ public final class RollbackEngine {
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE,
                  DISPENSE, PISTON_EXTEND, PISTON_RETRACT,
+                 ITEM_DROP, ITEM_PICKUP,
+                 FORM, SPREAD,
                  INVENTORY_DEPOSIT, INVENTORY_WITHDRAW, ITEM_CRAFT,
                  ENTITY_SPAWN, ENTITY_INTERACT,
                  CHUNK_POPULATE, CLICK -> false;

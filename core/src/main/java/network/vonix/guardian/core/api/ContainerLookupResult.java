@@ -37,5 +37,6 @@ public record ContainerLookupResult(
         String targetMeta,
         int amountDelta,
         boolean rolledBack,
-        String sourceTag
+        String sourceTag,
+        byte[] itemNbt
 ) {}

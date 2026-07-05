@@ -296,13 +296,33 @@ Loader modules are intentionally tiny. The full contract is enumerated in
 | Command registration                 |   ✓    |   ✓   |    ✓     | Walk `CommandSpec` → build Brigadier tree.                    |
 | JarInJar / shade `core.jar` + deps   |   ✓    |   ✓   |    ✓     | Strategy per `LIBRARY-PACKAGING.md`.                          |
 
-### 4.1 Size budget
+### 4.1 Forge event-bus fallback architecture
+
+The Forge 1.18.2, 1.19.2, and 1.20.1 cells intentionally use Forge event-bus
+fallbacks for the surfaces where Fabric/NeoForge rely on mixins:
+
+- natural block transitions (fire ignite/burn-out, ice/snow fade, block
+  form/spread, leaves decay) are captured through
+  `BlockEvent.NeighborNotifyEvent` plus a bounded last-state diff cache;
+- hopper transfers are captured through the Forge-side sampled hopper
+  content-diff tracker; and
+- `/fill` and `/setblock` are captured through `CommandEvent` pre/post
+  snapshots rather than redirects into command internals.
+
+There are **no Forge mixin config files** for 1.18.2/1.19.2/1.20.1. Dormant
+Forge mixin source alone is not wired and must not be treated as coverage.
+`DISPENSE` remains Fabric/NeoForge-wired only because Forge exposes no event
+that carries both the dispenser origin and ejected stack; Forge `DISPENSE`
+logging needs a future Forge mixin wave with explicit mixin config, manifest,
+build wiring, and per-version verification.
+
+### 4.2 Size budget
 
 Each loader module is targeted at **~30–50 lines of hand-written Java**, split
 across a `Bootstrap` class (lifecycle) and an `Events` class (event handlers).
 Anything bigger is a smell — that logic belongs in `mc-<ver>/common/`.
 
-### 4.2 Command registration timing (Forge / NeoForge)
+### 4.3 Command registration timing (Forge / NeoForge)
 
 Fabric fires `CommandRegistrationCallback` exactly once at server start, after
 `Guardian` is ready, and there is nothing to do. Forge and NeoForge fire
@@ -324,7 +344,7 @@ ServerStartingEvent fires
 
 This guarantees the tree is registered exactly once, regardless of event order.
 
-### 4.3 JarInJar / shade strategy
+### 4.4 JarInJar / shade strategy
 
 See `LIBRARY-PACKAGING.md` for full detail. Summary:
 

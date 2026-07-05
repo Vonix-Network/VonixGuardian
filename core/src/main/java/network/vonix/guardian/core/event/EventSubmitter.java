@@ -156,6 +156,35 @@ public interface EventSubmitter {
                          int x, int y, int z, String affectedJoined, String sourceTag);
 
     /**
+     * EXPLOSION variant with a binary sidecar containing per-affected-block
+     * state properties and block-entity NBT. The legacy {@code affectedJoined}
+     * target stays coord/id-only so it fits the VARCHAR(4096) target column.
+     */
+    default void submitExplosion(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String affectedJoined, String sourceTag,
+                                 byte[] blockEntityNbtSidecar) {
+        submitExplosion(actorUuid, actorName, worldId, x, y, z, affectedJoined, sourceTag);
+    }
+
+    /**
+     * Convenience for Nether portal creation. Distinct from BLOCK_PLACE so the
+     * public a:portal token and world-family lookups actually match portal rows.
+     *
+     * @param actorUuid player UUID; normally {@code null} for world-generated portal frames
+     * @param actorName resolved actor or {@link Sentinel#PORTAL}
+     * @param worldId   dimension key
+     * @param x         portal block x
+     * @param y         portal block y
+     * @param z         portal block z
+     * @param blockId   created portal block id
+     * @param sourceTag optional classifier, normally {@link Sentinel#PORTAL}
+     */
+    default void submitPortalCreate(UUID actorUuid, String actorName, String worldId,
+                                    int x, int y, int z, String blockId, String sourceTag) {
+        submitBlockPlace(actorUuid, actorName, worldId, x, y, z, blockId, sourceTag);
+    }
+
+    /**
      * Convenience for {@code ServerChatEvent}. Coords are ignored; pass {@code 0,0,0}.
      *
      * @param actorUuid speaker player UUID

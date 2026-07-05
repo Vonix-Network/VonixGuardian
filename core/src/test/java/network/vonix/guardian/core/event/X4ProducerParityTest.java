@@ -22,9 +22,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@link Sentinel#PORTAL}, {@link Sentinel#COMMAND}, {@link Sentinel#HOPPER}
  *       are frozen into the sentinel registry and {@link Sentinel#isSentinel(String)}
  *       returns {@code true} for them.</li>
- *   <li>Portal-frame BLOCK_PLACE rows use {@code Sentinel.PORTAL} as both actor
- *       name and source tag — the shape RollbackEngine expects for
- *       {@link ActionType#PORTAL_CREATE}-style world-events.</li>
+ *   <li>Portal-frame PORTAL_CREATE rows use {@code Sentinel.PORTAL} as both actor
+ *       name and source tag so {@code a:portal} and world-family lookups
+ *       match real portal producers.</li>
  *   <li>{@code /fill} and {@code /setblock} bridges emit paired BLOCK_BREAK +
  *       BLOCK_PLACE rows per position with {@code cmd:fill} / {@code cmd:setblock}
  *       source tags — Ledger-parity.</li>
@@ -67,6 +67,9 @@ class X4ProducerParityTest {
         }
         @Override public synchronized void submitBlockPlace(UUID u, String n, String w, int x, int y, int z, String b, String s) {
             rows.add(new Row(ActionType.BLOCK_PLACE, u, n, w, x, y, z, b, null, s));
+        }
+        @Override public synchronized void submitPortalCreate(UUID u, String n, String w, int x, int y, int z, String b, String s) {
+            rows.add(new Row(ActionType.PORTAL_CREATE, u, n, w, x, y, z, b, null, s));
         }
         @Override public synchronized void submitHopperPush(UUID u, String n, String w, int x, int y, int z, String i, int a, String s) {
             rows.add(new Row(ActionType.HOPPER_PUSH, u, n, w, x, y, z, i, a, s));
@@ -114,13 +117,13 @@ class X4ProducerParityTest {
     // ------------------------------------------------------------------------
 
     @Test
-    void portalCreate_usesPortalSentinelAsActorAndTag() {
+    void portalCreate_usesPortalCreateActionTypeWithPortalSentinelAndTag() {
         RecordingSubmitter s = new RecordingSubmitter();
-        s.submitBlockPlace(null, Sentinel.PORTAL, "minecraft:overworld",
+        s.submitPortalCreate(null, Sentinel.PORTAL, "minecraft:overworld",
                 10, 65, 20, "minecraft:nether_portal", Sentinel.PORTAL);
         assertThat(s.rows).hasSize(1);
         RecordingSubmitter.Row r = s.rows.get(0);
-        assertThat(r.type).isEqualTo(ActionType.BLOCK_PLACE);
+        assertThat(r.type).isEqualTo(ActionType.PORTAL_CREATE);
         assertThat(r.actor).isNull();
         assertThat(r.actorName).isEqualTo(Sentinel.PORTAL);
         assertThat(r.sourceTag).isEqualTo(Sentinel.PORTAL);

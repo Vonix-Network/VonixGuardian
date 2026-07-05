@@ -1,8 +1,8 @@
 # VonixGuardian — TODO to reach 100% CoreProtect parity
 
-**Status at v1.2.4 (2026-07-02):** ~93% CoreProtect-parity by feature surface. Command tree is 1:1, permission model is stronger, storage supports SQLite/MySQL/MariaDB/PostgreSQL, i18n has 14 locales, WorldEdit bridge works, `#optimize` executes real `OPTIMIZE TABLE` / `VACUUM`. The remaining ~7% is split between (A) event-coverage families that need mixins to see the events at all, (B) config-shape parity (`blacklist.txt`, per-world overrides), (C) polish (Fabric mixin infrastructure gaps, deferred audit types).
+**Status at v1.3.8 (2026-07-05):** CoreProtect-grade rollback/query/API release gate is clean (latest audit round: 0 P0 / 0 P1 / 0 P2). Command tree is 1:1, permission model is stronger, storage supports SQLite/MySQL/MariaDB/PostgreSQL, i18n has 14 locales, WorldEdit bridge works, `#optimize` executes real `OPTIMIZE TABLE` / `VACUUM`, queue lookup sees pending rows, and explosion rollback preserves sidecar block-state/BE NBT when `storage.persistNbt=true`. Remaining roadmap is now mostly (A) deeper event-coverage families that still require real mixin wiring, (B) config-shape parity (`blacklist.txt`, per-world overrides), and (C) optional API/operator polish.
 
-**Do NOT read this as "VG is broken" — VG at v1.2.4 is production-ready and CoreProtect-comparable for every server it's currently deployed on.** This TODO is the roadmap to being able to say **"exact 1:1 port"** without a single caveat.
+**Do NOT read this as "VG is broken" — VG at v1.3.8 is production-ready and CoreProtect-comparable for every server it's currently deployed on.** This TODO is the roadmap to being able to say **"exact 1:1 port"** without a single caveat.
 
 ## Source of truth
 
@@ -137,13 +137,11 @@ Currently: MySQL runs `OPTIMIZE TABLE`, PostgreSQL runs `VACUUM ANALYZE`, SQLite
 
 ## Priority 3 — API polish (already 90% parity via v1.2.0 W5-03)
 
-### 3.1 Queue introspection
+### 3.1 Queue introspection — done in v1.3.8
 
-`queueLookup(x,y,z)` currently returns an empty list with a TODO. Real implementation needs a `pendingSnapshot()` accessor on `BatchedAsyncWriteQueue`.
-
-- [ ] Add `pendingSnapshot()` returning immutable copy of pending Action list (cap at N to avoid memory blow-up).
-- [ ] Wire into `GuardianAPI.queueLookup`.
-- [ ] Add unit test that `logChat` → `queueLookup` sees the pending row before the writer flushes.
+- [x] Add `pendingSnapshot()` returning a bounded immutable copy of pending Action rows.
+- [x] Wire into `GuardianAPI.queueLookup` so API consumers can see unflushed rows.
+- [x] Add regression coverage that pending queue rows are visible before writer drain.
 
 ### 3.2 `parseResult(String[])` compatibility layer
 

@@ -303,7 +303,7 @@ public final class NeoForgeMixinBridge {
     }
 
     /**
-     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code BLOCK_PLACE}
+     * v1.3.1 X4 — Portal-frame block placement. Emitted as {@code PORTAL_CREATE}
      * with {@link Sentinel#PORTAL} attribution and source tag {@code #portal};
      * rollback treats these rows as world-events.
      */
@@ -311,7 +311,7 @@ public final class NeoForgeMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || level == null || pos == null || state == null) return;
-            s.submitBlockPlace(null, Sentinel.PORTAL, WorldKey.of(level),
+            s.submitPortalCreate(null, Sentinel.PORTAL, WorldKey.of(level),
                     pos.getX(), pos.getY(), pos.getZ(),
                     blockId(state), Sentinel.PORTAL);
         } catch (Throwable t) {
