@@ -101,7 +101,56 @@ public final class VanillaGrieferSet {
         // Even vanilla mob types can fire it at extreme rates on modded packs (Berk/HTTYD
         // proved 5M+ queued ENTITY_CHANGE_BLOCK actions in minutes). Therefore this path
         // must be fail-closed by default: record only explicit operator opt-ins.
-        if (configAllowlist != null && configAllowlist.contains(entityRegistryKey)) return true;
+        //
+        // v1.4.0: allowlist entries support three shapes so an operator can opt in a
+        // whole dragon mod at once without enumerating hundreds of variant ids:
+        //   - exact:      "isleofberk:night_fury"       matches only that key
+        //   - ns wildcard "isleofberk:*"                matches every isleofberk entity
+        //   - bare ns     "isleofberk"                  same as "isleofberk:*"
+        // The prospective-event flood is absorbed downstream by
+        // EntityBlockChangeCoalescer (default 500ms/8192), so whitelisting an entire
+        // namespace stays queue-safe.
+        if (configAllowlist != null) {
+            for (String entry : configAllowlist) {
+                if (matches(entry, entityRegistryKey)) return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Match a single allowlist {@code entry} against a concrete
+     * {@code entityRegistryKey}. Supports exact keys, {@code ns:*} wildcards, and
+     * bare {@code ns} namespaces. Case-sensitive; whitespace is trimmed.
+     *
+     * @param entry             an allowlist entry; {@code null}/blank never matches
+     * @param entityRegistryKey the concrete {@code ns:path} key under test
+     * @return {@code true} if {@code entry} admits {@code entityRegistryKey}
+     */
+    public static boolean matches(String entry, String entityRegistryKey) {
+        if (entry == null || entityRegistryKey == null) return false;
+        String e = entry.trim();
+        if (e.isEmpty()) return false;
+
+        // Exact registry key.
+        if (e.equals(entityRegistryKey)) return true;
+
+        int colon = entityRegistryKey.indexOf(':');
+        String keyNs = colon >= 0 ? entityRegistryKey.substring(0, colon) : entityRegistryKey;
+
+        // Namespace wildcard: "ns:*".
+        if (e.endsWith(":*")) {
+            String ns = e.substring(0, e.length() - 2);
+            return !ns.isEmpty() && ns.equals(keyNs);
+        }
+
+        // Bare namespace: "ns" (no colon) is treated as "ns:*". Guarded so a bare
+        // "minecraft" doesn't silently re-open the flood the default set closes —
+        // it only matches when the operator wrote a colonless namespace intentionally.
+        if (e.indexOf(':') < 0) {
+            return e.equals(keyNs);
+        }
 
         return false;
     }

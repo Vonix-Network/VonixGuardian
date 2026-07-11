@@ -89,4 +89,59 @@ class VanillaGrieferSetTest {
         // Even the dead wind_charge slips through when the admin explicitly opts in.
         assertTrue(VanillaGrieferSet.shouldRecord("minecraft:wind_charge", null, true));
     }
+
+    // ---- v1.4.0: wildcard / namespace allowlist matching ----
+
+    @Test
+    void matches_exact_key() {
+        assertTrue(VanillaGrieferSet.matches("isleofberk:night_fury", "isleofberk:night_fury"));
+        assertFalse(VanillaGrieferSet.matches("isleofberk:night_fury", "isleofberk:light_fury"));
+    }
+
+    @Test
+    void matches_namespace_wildcard() {
+        assertTrue(VanillaGrieferSet.matches("isleofberk:*", "isleofberk:night_fury"));
+        assertTrue(VanillaGrieferSet.matches("isleofberk:*", "isleofberk:deadly_nadder"));
+        assertFalse(VanillaGrieferSet.matches("isleofberk:*", "dragonmounts:nether_dragon"));
+        assertFalse(VanillaGrieferSet.matches("isleofberk:*", "minecraft:zombie"));
+    }
+
+    @Test
+    void matches_bare_namespace_is_treated_as_wildcard() {
+        assertTrue(VanillaGrieferSet.matches("isleofberk", "isleofberk:night_fury"));
+        assertFalse(VanillaGrieferSet.matches("isleofberk", "minecraft:zombie"));
+    }
+
+    @Test
+    void matches_rejects_null_blank_and_partial() {
+        assertFalse(VanillaGrieferSet.matches(null, "isleofberk:night_fury"));
+        assertFalse(VanillaGrieferSet.matches("isleofberk:*", null));
+        assertFalse(VanillaGrieferSet.matches("   ", "isleofberk:night_fury"));
+        assertFalse(VanillaGrieferSet.matches(":*", "isleofberk:night_fury"));
+        // "isle" must NOT prefix-match "isleofberk" namespace.
+        assertFalse(VanillaGrieferSet.matches("isle:*", "isleofberk:night_fury"));
+        assertFalse(VanillaGrieferSet.matches("isle", "isleofberk:night_fury"));
+    }
+
+    @Test
+    void matches_trims_whitespace() {
+        assertTrue(VanillaGrieferSet.matches("  isleofberk:*  ", "isleofberk:night_fury"));
+    }
+
+    @Test
+    void shouldRecord_honours_namespace_wildcard_entry() {
+        assertTrue(VanillaGrieferSet.shouldRecord("isleofberk:night_fury",
+                List.of("isleofberk:*"), false));
+        assertTrue(VanillaGrieferSet.shouldRecord("isleofberk:deadly_nadder",
+                List.of("othermod:x", "isleofberk:*"), false));
+        assertFalse(VanillaGrieferSet.shouldRecord("dragonmounts:fire_dragon",
+                List.of("isleofberk:*"), false));
+    }
+
+    @Test
+    void shouldRecord_wildcard_does_not_reopen_vanilla_flood_unless_configured() {
+        // A modded namespace wildcard must not sweep in minecraft: entities.
+        assertFalse(VanillaGrieferSet.shouldRecord("minecraft:enderman",
+                List.of("isleofberk:*"), false));
+    }
 }

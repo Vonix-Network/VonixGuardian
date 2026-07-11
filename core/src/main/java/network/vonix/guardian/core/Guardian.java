@@ -108,6 +108,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * to close CoreProtect-parity gap G-CP-2.
      */
     private final network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory;
+    /**
+     * v1.3.10 C2: short-lived spatial cache mapping an entity's block change to
+     * who did it and whether it was allowlisted, so fire ignited as a side
+     * effect can be paired/attributed (allowlisted causer) or suppressed as
+     * orphan noise (non-allowlisted causer). Populated by the loader-side
+     * {@code LivingDestroyBlockEvent}/{@code EntityChangeBlock} handler and
+     * consumed by the fire bridge via
+     * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveFireCauser}.
+     */
+    private final network.vonix.guardian.core.attribution.FireCauserMemory fireCauserMemory;
     /** Latched at boot when logFile.enabled; hot-swap of enabled flag flips this AtomicReference. */
     private final AtomicReference<JsonLinesLogFile> logFileRef;
     /** Server data-dir root, kept so reload can rebuild a JsonLinesLogFile at the same relative path. */
@@ -155,6 +165,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.fluidSourceMemory = new network.vonix.guardian.core.attribution.FluidSourceMemory();
         this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker();
         this.tntPrimeMemory = new network.vonix.guardian.core.attribution.TntPrimeMemory();
+        this.fireCauserMemory = new network.vonix.guardian.core.attribution.FireCauserMemory();
         this.logFileRef = logFileRef;
         this.dataDir = dataDir;
         this.autoPurgeScheduler = autoPurgeScheduler;
@@ -334,6 +345,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     public network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory() {
         return tntPrimeMemory;
+    }
+
+    /**
+     * v1.3.10 C2: shared fire-causer memory. The loader entity-block-change
+     * handler records here on every entity break (allowlisted or not); the fire
+     * bridge consults it via
+     * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveFireCauser}
+     * to attribute/pair or suppress fire that the entity ignited.
+     */
+    public network.vonix.guardian.core.attribution.FireCauserMemory fireCauserMemory() {
+        return fireCauserMemory;
     }
     public PermissionResolver perms()      { return perms; }
     public RollbackEngine rollbackEngine() { return rollbackEngine; }

@@ -282,19 +282,38 @@ public final class ForgeEvents {
             // entities (e.g. HTTYD dragons) exit here without touching the queue or
             // attribution resolver — this is the fix for the 200k events/sec flood
             // from prospective LivingDestroyBlockEvent firings.
+            BlockPos pos = ev.getPos();
             String entityKey = stripMobPrefix(EntitySentinel.of(e.getType()));
+            Guardian g = g();
+            String worldId = WorldKey.of(e.level);
+            long now = System.currentTimeMillis();
             if (!VanillaGrieferSet.shouldRecord(entityKey,
                     c.actions().entityChangeAllowlist(),
                     c.actions().entityChangeLogAllEntities())) {
+                // C2: record the non-allowlisted causer so fire it ignites in
+                // the next few ticks is suppressed as orphan noise rather than
+                // logged as an anonymous world fire.
+                if (g != null && entityKey != null) {
+                    g.fireCauserMemory().record(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                            network.vonix.guardian.core.attribution.FireCauserMemory
+                                    .CauserRecord.suppressed(EntitySentinel.of(e.getType()), now));
+                }
                 return;
             }
             Attribution attr = ForgeBootstrap.resolver != null
-                    ? ForgeBootstrap.resolver.resolve(e, System.currentTimeMillis())
+                    ? ForgeBootstrap.resolver.resolve(e, now)
                     : Attribution.unknown(EntitySentinel.of(e));
-            BlockPos pos = ev.getPos();
             String oldId = blockId(ev.getState());
+            // C2: record the allowlisted causer so fire it ignites is attributed
+            // to this entity (shared region+time bucket → coupled rollback).
+            if (g != null) {
+                g.fireCauserMemory().record(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        network.vonix.guardian.core.attribution.FireCauserMemory
+                                .CauserRecord.allowlisted(attr.actorUuid(), attr.actorName(),
+                                        entityKey, attr.entitySentinel(), now, now));
+            }
             s.submitEntityChangeBlock(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(e.level),
+                    worldId,
                     pos.getX(), pos.getY(), pos.getZ(),
                     oldId, "minecraft:air", attr.entitySentinel());
         } catch (Throwable t) {
@@ -307,6 +326,58 @@ public final class ForgeEvents {
     private static String stripMobPrefix(String sentinel) {
         if (sentinel == null || !sentinel.startsWith("#mob:")) return null;
         return sentinel.substring(5);
+    }
+
+    /**
+     * C2: consult the shared {@code FireCauserMemory} for a recent nearby
+     * entity block change that caused this fire. Returns a small resolution
+     * carrying either the pairing attribution (allowlisted causer), a suppress
+     * flag (non-allowlisted causer), or all-null passthrough (genuine world
+     * fire: player F&amp;S, lightning, lava, natural spread).
+     */
+    private static FireCauserResolution resolveFire(Level level, BlockPos pos) {
+        try {
+            Guardian g = g();
+            if (g == null) return FireCauserResolution.PASSTHROUGH;
+            network.vonix.guardian.core.attribution.UniversalAttribution.FireCauser v =
+                    network.vonix.guardian.core.attribution.UniversalAttribution.resolveFireCauser(
+                            g.fireCauserMemory(), WorldKey.of(level),
+                            pos.getX(), pos.getY(), pos.getZ());
+            switch (v.verdict) {
+                case SUPPRESS:
+                    return FireCauserResolution.SUPPRESS;
+                case PAIR:
+                    return new FireCauserResolution(false, v.actorUuid, v.actorName,
+                            v.sourceTag != null ? "entity:" + v.sourceTag : "entity:#entity");
+                case PASSTHROUGH:
+                default:
+                    return FireCauserResolution.PASSTHROUGH;
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "resolveFire failed", t);
+            return FireCauserResolution.PASSTHROUGH;
+        }
+    }
+
+    /** Small value carrier for {@link #resolveFire}. */
+    private static final class FireCauserResolution {
+        final boolean suppress;
+        final java.util.UUID actorUuid;
+        final String actorName;
+        final String sourceTag;
+
+        FireCauserResolution(boolean suppress, java.util.UUID actorUuid,
+                             String actorName, String sourceTag) {
+            this.suppress = suppress;
+            this.actorUuid = actorUuid;
+            this.actorName = actorName;
+            this.sourceTag = sourceTag;
+        }
+
+        static final FireCauserResolution PASSTHROUGH =
+                new FireCauserResolution(false, null, null, null);
+        static final FireCauserResolution SUPPRESS =
+                new FireCauserResolution(true, null, null, null);
     }
 
     /**
@@ -1244,14 +1315,18 @@ public final class ForgeEvents {
 
             if (prevId != null && !prevId.equals(curId)) {
                 // classify a real transition (prev observed, differs from cur)
-                classifyAndSubmit(s, worldId, pos, prevId, curId, prevCat, curCat);
+                classifyAndSubmit(s, level, worldId, pos, prevId, curId, prevCat, curCat);
             } else if (prevId == null && "fire".equals(curCat)) {
                 // Fresh fire appearance with no prior cache entry -> IGNITE.
                 // Matches pre-Z2 FireBlockMixin#onPlace(TAIL) semantics for
                 // flint&steel / /setblock fire / lightning-spawned fire that
                 // arrived without a prior neighbor-notify observation.
-                s.submitIgnite(null, Sentinel.FIRE, worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), curId, "#fire:ignite");
+                FireCauserResolution r = resolveFire(level, pos);
+                if (!r.suppress) {
+                    s.submitIgnite(r.actorUuid, r.actorName != null ? r.actorName : Sentinel.FIRE, worldId,
+                            pos.getX(), pos.getY(), pos.getZ(), curId,
+                            r.sourceTag != null ? r.sourceTag : "#fire:ignite");
+                }
             }
 
             // Cache maintenance — only remember "primary hot" positions (fire,
@@ -1294,18 +1369,24 @@ public final class ForgeEvents {
      * Classify a pre/post-state transition at a bounded set of hot positions
      * and emit the corresponding action-type submit.
      */
-    private static void classifyAndSubmit(EventSubmitter s, String worldId, BlockPos pos,
+    private static void classifyAndSubmit(EventSubmitter s, Level level, String worldId, BlockPos pos,
                                           String prevId, String curId, String prevCat, String curCat) {
         int x = pos.getX(), y = pos.getY(), z = pos.getZ();
         // BURN — fire -> air, or flammable -> air adjacent to fire (only fire->non-fire caught here)
         if ("fire".equals(prevCat) && !"fire".equals(curCat)) {
             // fire was extinguished / consumed -> burn-out row on the fire itself
-            s.submitBurn(null, Sentinel.FIRE, worldId, x, y, z, prevId, "#fire:burnout");
+            FireCauserResolution r = resolveFire(level, pos);
+            if (r.suppress) return; // orphan fire from a non-allowlisted entity
+            s.submitBurn(r.actorUuid, r.actorName != null ? r.actorName : Sentinel.FIRE, worldId,
+                    x, y, z, prevId, r.sourceTag != null ? r.sourceTag : "#fire:burnout");
             return;
         }
         // IGNITE — any -> fire (fresh fire block appeared)
         if (!"fire".equals(prevCat) && "fire".equals(curCat)) {
-            s.submitIgnite(null, Sentinel.FIRE, worldId, x, y, z, curId, "#fire:ignite");
+            FireCauserResolution r = resolveFire(level, pos);
+            if (r.suppress) return; // orphan fire from a non-allowlisted entity
+            s.submitIgnite(r.actorUuid, r.actorName != null ? r.actorName : Sentinel.FIRE, worldId,
+                    x, y, z, curId, r.sourceTag != null ? r.sourceTag : "#fire:ignite");
             return;
         }
         // FADE — ice/snow -> water/air (melt)

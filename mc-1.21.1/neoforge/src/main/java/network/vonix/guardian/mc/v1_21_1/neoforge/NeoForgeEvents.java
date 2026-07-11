@@ -262,19 +262,38 @@ public final class NeoForgeEvents {
             if (s == null || c == null) return;
             LivingEntity e = ev.getEntity();
             if (e == null) return;
+            BlockPos pos = ev.getPos();
             String entityKey = stripMobPrefix(EntitySentinel.of(e.getType()));
+            Guardian g = VonixGuardianNeoForge.guardian();
+            String worldId = WorldKey.of(e.level());
+            long now = System.currentTimeMillis();
             if (!VanillaGrieferSet.shouldRecord(entityKey,
                     c.actions().entityChangeAllowlist(),
                     c.actions().entityChangeLogAllEntities())) {
+                // C2: record the non-allowlisted causer so fire it ignites in
+                // the next few ticks is suppressed as orphan noise rather than
+                // logged as an anonymous world fire.
+                if (g != null && entityKey != null) {
+                    g.fireCauserMemory().record(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                            network.vonix.guardian.core.attribution.FireCauserMemory
+                                    .CauserRecord.suppressed(EntitySentinel.of(e.getType()), now));
+                }
                 return;
             }
             Attribution attr = NeoForgeBootstrap.resolver != null
-                    ? NeoForgeBootstrap.resolver.resolve(e, System.currentTimeMillis())
+                    ? NeoForgeBootstrap.resolver.resolve(e, now)
                     : Attribution.unknown(EntitySentinel.of(e));
-            BlockPos pos = ev.getPos();
             String oldId = blockId(ev.getState());
+            // C2: record the allowlisted causer so fire it ignites is attributed
+            // to this entity (shared region+time bucket → coupled rollback).
+            if (g != null) {
+                g.fireCauserMemory().record(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        network.vonix.guardian.core.attribution.FireCauserMemory
+                                .CauserRecord.allowlisted(attr.actorUuid(), attr.actorName(),
+                                        entityKey, attr.entitySentinel(), now, now));
+            }
             s.submitEntityChangeBlock(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(e.level()),
+                    worldId,
                     pos.getX(), pos.getY(), pos.getZ(),
                     oldId, "minecraft:air", attr.entitySentinel());
         } catch (Throwable t) {

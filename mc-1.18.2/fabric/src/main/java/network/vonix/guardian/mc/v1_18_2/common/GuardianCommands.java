@@ -25,6 +25,7 @@ import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.filter.EntityLogAllowlistEditor;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.perms.LookupPermissionFilter;
 import network.vonix.guardian.core.perms.PermissionNode;
@@ -193,6 +194,17 @@ public final class GuardianCommands {
                                 .then(Commands.argument("key", StringArgumentType.word())
                                         .then(Commands.argument("value", StringArgumentType.greedyString())
                                                 .executes(ctx -> Config.set(ctx, g))))))
+                // entitylog add|remove|list — manage the modded-entity griefing allowlist
+                .then(Commands.literal("entitylog")
+                        .requires(s -> hasPerm(s, PermissionNode.CONFIG, g))
+                        .executes(ctx -> EntityLog.list(ctx, g))
+                        .then(Commands.literal("list").executes(ctx -> EntityLog.list(ctx, g)))
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("entity", StringArgumentType.greedyString())
+                                        .executes(ctx -> EntityLog.add(ctx, g))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("entity", StringArgumentType.greedyString())
+                                        .executes(ctx -> EntityLog.remove(ctx, g)))))
                 // teleport <world> <x> [y] <z>  (CP parity /co teleport)
                 .then(Commands.literal("teleport")
                         .requires(s -> hasPerm(s, PermissionNode.TELEPORT, g))
@@ -989,6 +1001,139 @@ public final class GuardianCommands {
         private static long parseLong(String value, String key) {
             try { return Long.parseLong(value); }
             catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
+        }
+    }
+
+    // ====================================================================== EntityLog
+
+    /**
+     * {@code /vg entitylog add|remove|list} — manage the modded-entity griefing
+     * allowlist ({@code actions.entityChangeAllowlist}).
+     *
+     * <p>On Forge/NeoForge, {@code LivingDestroyBlockEvent} is only a prospective
+     * permission check that fires at extreme rates on modded packs, so
+     * {@link network.vonix.guardian.core.filter.VanillaGrieferSet} fails closed by
+     * default. This command is how an operator opts a modded creature (or a whole
+     * mod namespace via {@code isleofberk:*}) back into audit + rollback without
+     * globally flipping {@code entityChangeLogAllEntities} (which re-opens the
+     * flood). The prospective-event storm is absorbed downstream by the
+     * {@code EntityBlockChangeCoalescer}.</p>
+     *
+     * <p>Mutations reuse the same serialised save+reload path as {@code /vg config
+     * set}: recompute from the live config under {@link Guardian#CONFIG_MUTATION_LOCK}
+     * on the shared bounded WORKER pool, {@link ConfigLoader#save}, then
+     * {@link Guardian#reloadConfigUnlocked}. Result reporting hops back to the
+     * server thread so chat rendering stays single-threaded.</p>
+     */
+    public static final class EntityLog {
+        private EntityLog() {}
+
+        public static int list(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            List<String> allow = EntityLogAllowlistEditor.currentOrEmpty(
+                    g.config().actions().entityChangeAllowlist());
+            boolean all = g.config().actions().entityChangeLogAllEntities();
+            if (all) {
+                send(src, ChatRenderer.primary(g.theme(),
+                        "[VonixGuardian] entityChangeLogAllEntities=true — ALL entities are logged "
+                                + "(allowlist ignored). This can flood on modded packs."));
+            }
+            if (allow.isEmpty()) {
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] Entity allowlist is empty. "
+                                + "Use /vg entitylog add <ns:path|ns:*|ns> to whitelist modded griefers."));
+                return 1;
+            }
+            send(src, ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] Entity allowlist (" + allow.size() + "):"));
+            for (String e : allow) {
+                send(src, ChatRenderer.muted(g.theme(), "  - " + e));
+            }
+            return 1;
+        }
+
+        public static int add(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            return mutate(ctx, g, true);
+        }
+
+        public static int remove(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            return mutate(ctx, g, false);
+        }
+
+        private static int mutate(CommandContext<CommandSourceStack> ctx, Guardian g, boolean adding) {
+            CommandSourceStack src = ctx.getSource();
+            String raw = StringArgumentType.getString(ctx, "entity").trim();
+            java.nio.file.Path path = g.configPath();
+            if (path == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Cannot persist config: no config path is known."));
+                return 0;
+            }
+            // Fail fast on malformed input before touching the WORKER pool / disk.
+            EntityLogAllowlistEditor.Result preview = adding
+                    ? EntityLogAllowlistEditor.add(g.config().actions().entityChangeAllowlist(), raw)
+                    : EntityLogAllowlistEditor.remove(g.config().actions().entityChangeAllowlist(), raw);
+            if (!preview.changed()) {
+                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] " + preview.message()));
+                return 1;
+            }
+            final java.nio.file.Path finalPath = path;
+            final String finalRaw = raw;
+            final boolean finalAdding = adding;
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            submitAsync(src, g, () -> {
+                try {
+                    // Recompute under the lock from the CURRENT live config so two
+                    // concurrent entitylog/config-set edits can't clobber each other.
+                    Guardian.ReloadResult r;
+                    String msg;
+                    synchronized (Guardian.CONFIG_MUTATION_LOCK) {
+                        GuardianConfig live = g.config();
+                        EntityLogAllowlistEditor.Result res = finalAdding
+                                ? EntityLogAllowlistEditor.add(live.actions().entityChangeAllowlist(), finalRaw)
+                                : EntityLogAllowlistEditor.remove(live.actions().entityChangeAllowlist(), finalRaw);
+                        msg = res.message();
+                        if (!res.changed()) {
+                            if (server != null) {
+                                server.execute(() -> send(src, ChatRenderer.muted(g.theme(),
+                                        "[VonixGuardian] " + res.message())));
+                            }
+                            return;
+                        }
+                        GuardianConfig next = withAllowlist(live, res.allowlist());
+                        next.validate();
+                        ConfigLoader.save(finalPath, next);
+                        r = g.reloadConfigUnlocked(finalPath);
+                    }
+                    if (server == null) return;
+                    final String finalMsg = msg;
+                    server.execute(() -> {
+                        if (!r.errors().isEmpty()) {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Allowlist saved but reload failed: "
+                                            + String.join(", ", r.errors())));
+                            return;
+                        }
+                        send(src, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] " + finalMsg + " (hot-swapped: "
+                                        + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
+                    });
+                } catch (Exception e) {
+                    LOG.warn(Guardian.MARKER, "entitylog mutate failed", e);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] entitylog update failed: " + e.getMessage())));
+                    }
+                }
+            });
+            return 1;
+        }
+
+        private static GuardianConfig withAllowlist(GuardianConfig c, List<String> allow) {
+            return new GuardianConfig(c.database(), c.queue(), c.logFile(),
+                    c.actions().withEntityChangeAllowlist(allow),
+                    c.permissions(), c.lookup(), c.privacy(), c.purge(),
+                    c.storage(), c.rollback(), c.theme(), c.language());
         }
     }
 

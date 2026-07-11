@@ -81,11 +81,38 @@ public final class FabricMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || mob == null || level == null || pos == null) return;
+            Guardian g = VonixGuardianFabric.guardian();
+            String worldId = WorldKey.of(level);
+            long now = System.currentTimeMillis();
+            String entityKey = network.vonix.guardian.core.filter.VanillaGrieferSet
+                    .stripMobPrefix(EntitySentinel.of(mob.getType()));
+            if (g != null && g.config() != null
+                    && !network.vonix.guardian.core.filter.VanillaGrieferSet.shouldRecord(entityKey,
+                            g.config().actions().entityChangeAllowlist(),
+                            g.config().actions().entityChangeLogAllEntities())) {
+                // C2: record the non-allowlisted causer so fire it ignites in
+                // the next few ticks is suppressed as orphan noise rather than
+                // logged as an anonymous world fire.
+                if (entityKey != null) {
+                    g.fireCauserMemory().record(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                            network.vonix.guardian.core.attribution.FireCauserMemory
+                                    .CauserRecord.suppressed(EntitySentinel.of(mob.getType()), now));
+                }
+                return;
+            }
             Attribution attr = FabricBootstrap.resolver != null
-                    ? FabricBootstrap.resolver.resolve(mob, System.currentTimeMillis())
+                    ? FabricBootstrap.resolver.resolve(mob, now)
                     : Attribution.unknown(EntitySentinel.of(mob));
+            // C2: record the allowlisted causer so fire it ignites is attributed
+            // to this entity (shared region+time bucket → coupled rollback).
+            if (g != null) {
+                g.fireCauserMemory().record(worldId, pos.getX(), pos.getY(), pos.getZ(),
+                        network.vonix.guardian.core.attribution.FireCauserMemory
+                                .CauserRecord.allowlisted(attr.actorUuid(), attr.actorName(),
+                                        entityKey, attr.entitySentinel(), now, now));
+            }
             s.submitEntityChangeBlock(attr.actorUuid(), attr.actorName(),
-                    WorldKey.of(level),
+                    worldId,
                     pos.getX(), pos.getY(), pos.getZ(),
                     blockId(oldState), "minecraft:air", attr.entitySentinel());
         } catch (Throwable t) {
@@ -480,8 +507,12 @@ public final class FabricMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || level == null || pos == null || state == null) return;
-            s.submitBurn(null, "#fire", WorldKey.of(level),
-                    pos.getX(), pos.getY(), pos.getZ(), blockId(state), "world:burn");
+            String worldId = WorldKey.of(level);
+            FireCauserResolution r = resolveFire(level, pos);
+            if (r.suppress) return; // orphan fire from a non-allowlisted entity
+            s.submitBurn(r.actorUuid, r.actorName != null ? r.actorName : "#fire", worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), blockId(state),
+                    r.sourceTag != null ? r.sourceTag : "world:burn");
         } catch (Throwable t) {
             warn("fireBurn", t);
         }
@@ -492,11 +523,67 @@ public final class FabricMixinBridge {
         try {
             EventSubmitter s = sub();
             if (s == null || level == null || pos == null || state == null) return;
-            s.submitIgnite(null, "#fire", WorldKey.of(level),
-                    pos.getX(), pos.getY(), pos.getZ(), blockId(state), "world:ignite");
+            String worldId = WorldKey.of(level);
+            FireCauserResolution r = resolveFire(level, pos);
+            if (r.suppress) return; // orphan fire from a non-allowlisted entity
+            s.submitIgnite(r.actorUuid, r.actorName != null ? r.actorName : "#fire", worldId,
+                    pos.getX(), pos.getY(), pos.getZ(), blockId(state),
+                    r.sourceTag != null ? r.sourceTag : "world:ignite");
         } catch (Throwable t) {
             warn("fireIgnite", t);
         }
+    }
+
+    /**
+     * C2: consult the shared {@code FireCauserMemory} for a recent nearby
+     * entity block change that caused this fire. Returns a small resolution
+     * carrying either the pairing attribution (allowlisted causer), a suppress
+     * flag (non-allowlisted causer), or all-null passthrough (genuine world
+     * fire: player F&amp;S, lightning, lava, natural spread).
+     */
+    private static FireCauserResolution resolveFire(Level level, BlockPos pos) {
+        try {
+            Guardian g = VonixGuardianFabric.guardian();
+            if (g == null) return FireCauserResolution.PASSTHROUGH;
+            network.vonix.guardian.core.attribution.UniversalAttribution.FireCauser v =
+                    network.vonix.guardian.core.attribution.UniversalAttribution.resolveFireCauser(
+                            g.fireCauserMemory(), WorldKey.of(level),
+                            pos.getX(), pos.getY(), pos.getZ());
+            switch (v.verdict) {
+                case SUPPRESS:
+                    return FireCauserResolution.SUPPRESS;
+                case PAIR:
+                    return new FireCauserResolution(false, v.actorUuid, v.actorName,
+                            v.sourceTag != null ? "entity:" + v.sourceTag : "entity:#entity");
+                case PASSTHROUGH:
+                default:
+                    return FireCauserResolution.PASSTHROUGH;
+            }
+        } catch (Throwable t) {
+            warn("resolveFire", t);
+            return FireCauserResolution.PASSTHROUGH;
+        }
+    }
+
+    /** Small value carrier for {@link #resolveFire}. */
+    private static final class FireCauserResolution {
+        final boolean suppress;
+        final java.util.UUID actorUuid;
+        final String actorName;
+        final String sourceTag;
+
+        FireCauserResolution(boolean suppress, java.util.UUID actorUuid,
+                             String actorName, String sourceTag) {
+            this.suppress = suppress;
+            this.actorUuid = actorUuid;
+            this.actorName = actorName;
+            this.sourceTag = sourceTag;
+        }
+
+        static final FireCauserResolution PASSTHROUGH =
+                new FireCauserResolution(false, null, null, null);
+        static final FireCauserResolution SUPPRESS =
+                new FireCauserResolution(true, null, null, null);
     }
 
     /** IceBlock#melt → FADE. */

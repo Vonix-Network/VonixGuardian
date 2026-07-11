@@ -492,6 +492,36 @@ public record GuardianConfig(
                 true   // v1.3.0 W4: mixinHotEvents default ON
             );
         }
+
+        /**
+         * Return a copy of this {@code Actions} with {@code entityChangeAllowlist}
+         * replaced by {@code newAllowlist}, every other field preserved.
+         *
+         * <p>Added v1.4.0 so the {@code /vg entitylog add|remove} command (wired in
+         * all eight loader cells) can mutate just the allowlist without every cell
+         * re-spelling the canonical 32-arg constructor — a maintenance hazard when
+         * a field is added or reordered. The returned list is copied defensively
+         * into an immutable {@link List#copyOf} so callers cannot mutate config
+         * state through a shared reference; {@code null} is normalised to empty.</p>
+         *
+         * @param newAllowlist the replacement allowlist ({@code null} → empty)
+         * @return a new {@code Actions} differing only in {@code entityChangeAllowlist}
+         */
+        public Actions withEntityChangeAllowlist(List<String> newAllowlist) {
+            return new Actions(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                newAllowlist == null ? List.of() : List.copyOf(newAllowlist),
+                entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                mixinHotEvents
+            );
+        }
     }
 
     /**

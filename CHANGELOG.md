@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.10] - 2026-07-11
+
+### Added
+
+- **Modded-entity griefing allowlist with wildcards (C1).** `VanillaGrieferSet`
+  now matches allowlist entries by exact `namespace:path`, whole-namespace
+  wildcard `namespace:*`, and bare `namespace`, so an entire modded-dragon mod
+  (e.g. `isleofberk:*`) can be audited without enumerating every entity type.
+  The generic wildcard is namespace-agnostic — no per-mod compatibility shims.
+- **`/vg entitylog add|remove|list` command** across all 8 loader cells
+  (Fabric/Forge/NeoForge, MC 1.18.2–1.21.1). Lets admins edit the
+  entity-change allowlist live (with normalization + dedupe via the shared core
+  `EntityLogAllowlistEditor`) and persist it through `/vg reload`, mirroring
+  CoreProtect's UX. Mutations flow through `Actions.withEntityChangeAllowlist`
+  so the 31-field config record stays intact.
+
+### Fixed
+
+- **Orphan fire from modded entity griefing (C2).** Fire ignited as a side
+  effect of an entity block change was previously logged as an anonymous
+  `#fire`/`world:ignite` world event, decoupled from the break that caused it —
+  so a rollback restored the block but left the fire, and non-allowlisted mobs
+  spammed orphan fire rows. A new short-lived, spatially-indexed core
+  `FireCauserMemory` now pairs each fire with its recent nearby entity break:
+  - **allowlisted** causer → the fire is attributed to that entity and lands in
+    the same region+time bucket as the break, so a single `/vg rollback`
+    restores the block **and** clears the fire together;
+  - **non-allowlisted** causer → the orphan fire is suppressed at the bridge
+    (no row written), eliminating the noise/flood from unaudited creatures;
+  - **no** causer → genuine world fire (player flint & steel, lightning, lava,
+    natural spread) is logged unchanged.
+  Decision logic lives in the tested core (`UniversalAttribution.resolveFireCauser`);
+  loader cells only record the causer and consume the verdict.
+
 ## [1.3.9] - 2026-07-11
 
 ### Fixed

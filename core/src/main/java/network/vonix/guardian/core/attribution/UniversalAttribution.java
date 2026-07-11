@@ -98,4 +98,97 @@ public final class UniversalAttribution {
         Objects.requireNonNull(memory, "memory");
         return memory.consume(worldId, x, y, z);
     }
+
+    // ------------------------------------------------------------------ C2 fire
+
+    /**
+     * Verdict for a fire ({@code IGNITE}/{@code BURN}) event that may have been
+     * caused by an entity block change. Produced by {@link #resolveFireCauser}.
+     *
+     * @since 1.3.10
+     */
+    public enum FireVerdict {
+        /**
+         * A nearby allowlisted entity caused this fire — the caller should log
+         * it attributed to that entity (see {@link FireCauser#actorName} /
+         * {@link FireCauser#sourceTag}) so a region+time rollback restores the
+         * broken block <em>and</em> clears the fire together.
+         */
+        PAIR,
+        /**
+         * A nearby <em>non-allowlisted</em> entity caused this fire — it is
+         * orphan side-effect noise from a creature we deliberately don't audit.
+         * The caller should drop the event entirely.
+         */
+        SUPPRESS,
+        /**
+         * No entity caused this fire (player flint&amp;steel, lightning, lava,
+         * natural spread). The caller should keep its existing world-fire
+         * behaviour unchanged.
+         */
+        PASSTHROUGH
+    }
+
+    /**
+     * Immutable result of {@link #resolveFireCauser}: the verdict plus the
+     * attribution to stamp on the fire event when {@link #verdict} is
+     * {@link FireVerdict#PAIR}.
+     *
+     * @since 1.3.10
+     */
+    public static final class FireCauser {
+        public final FireVerdict verdict;
+        public final java.util.UUID actorUuid;
+        public final String actorName;
+        public final String sourceTag;
+
+        private FireCauser(FireVerdict verdict, java.util.UUID actorUuid,
+                           String actorName, String sourceTag) {
+            this.verdict = verdict;
+            this.actorUuid = actorUuid;
+            this.actorName = actorName;
+            this.sourceTag = sourceTag;
+        }
+
+        static final FireCauser PASSTHROUGH =
+                new FireCauser(FireVerdict.PASSTHROUGH, null, null, null);
+        static final FireCauser SUPPRESS =
+                new FireCauser(FireVerdict.SUPPRESS, null, null, null);
+
+        static FireCauser pair(java.util.UUID uuid, String name, String tag) {
+            return new FireCauser(FireVerdict.PAIR, uuid, name, tag);
+        }
+    }
+
+    /**
+     * Resolve whether a fire event at {@code (x,y,z)} was caused by a recent
+     * nearby entity block change, and how the caller should treat it.
+     *
+     * <p>Consumes the freshest {@link FireCauserMemory.CauserRecord} within the
+     * memory's radius so a given break pairs with at most one fire event.</p>
+     *
+     * <ul>
+     *   <li>allowlisted causer → {@link FireVerdict#PAIR} carrying the entity's
+     *       attribution (actor + {@code #entity}-family source tag);</li>
+     *   <li>non-allowlisted causer → {@link FireVerdict#SUPPRESS};</li>
+     *   <li>no causer → {@link FireVerdict#PASSTHROUGH}.</li>
+     * </ul>
+     *
+     * @param memory  the shared fire-causer memory (never {@code null})
+     * @param worldId loader-side world id
+     * @param x       fire BlockPos X
+     * @param y       fire BlockPos Y
+     * @param z       fire BlockPos Z
+     * @return a never-{@code null} {@link FireCauser} verdict
+     * @since 1.3.10
+     */
+    public static FireCauser resolveFireCauser(FireCauserMemory memory,
+                                               String worldId,
+                                               int x, int y, int z) {
+        Objects.requireNonNull(memory, "memory");
+        FireCauserMemory.CauserRecord rec = memory.consume(worldId, x, y, z);
+        if (rec == null) return FireCauser.PASSTHROUGH;
+        if (!rec.allowlisted) return FireCauser.SUPPRESS;
+        return FireCauser.pair(rec.actorUuid, rec.actorName, rec.sourceTagHint);
+    }
 }
