@@ -123,6 +123,33 @@ class AutoPurgeSchedulerTest {
     }
 
     @Test
+    void start_after_shutdown_clears_stop_requested_and_allows_future_runs() throws Exception {
+        long now = 1_800_000_000_000L;
+        Clock fixed = Clock.fixed(Instant.ofEpochMilli(now), ZoneId.of("UTC"));
+
+        UUID actor = UUID.nameUUIDFromBytes("restart-purge".getBytes());
+        dao.insertBatch(List.of(
+                new Action(-1L,
+                        now - 365L * 86_400L * 1000L,
+                        ActionType.BLOCK_BREAK,
+                        actor, "RestartActor", "minecraft:overworld",
+                        0, 64, 0,
+                        "minecraft:stone", null, 1, false, null)));
+
+        GuardianConfig cfg = withPurge(GuardianConfig.defaults(),
+                new GuardianConfig.Purge(86_400L, 2_592_000L, RETENTION_SECONDS, "03:30"));
+
+        AutoPurgeScheduler sched =
+                AutoPurgeScheduler.create(cfg, engine, dao, ZoneId.of("UTC"), fixed);
+
+        sched.start();
+        sched.shutdown(1000L);
+        sched.start();
+
+        assertThat(sched.runNow()).isEqualTo(1L);
+    }
+
+    @Test
     void runNow_skips_when_mutex_is_held() throws Exception {
         GuardianConfig cfg = withPurge(GuardianConfig.defaults(),
                 new GuardianConfig.Purge(86_400L, 2_592_000L, RETENTION_SECONDS, "03:30"));

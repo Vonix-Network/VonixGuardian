@@ -48,6 +48,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -125,6 +126,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong gated = new AtomicLong();
+    private final AtomicBoolean maintenanceWriteBlock = new AtomicBoolean(false);
+    private volatile String maintenanceWriteBlockReason = null;
 
     private Guardian(GuardianConfig config,
                      GuardianDao dao,
@@ -380,8 +383,58 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         return cur;
     }
 
-    public long submitted()                { return submitted.get(); }
-    public long gated()                    { return gated.get(); }
+    public long submitted() { return submitted.get(); }
+    public long gated()     { return gated.get(); }
+
+    /**
+     * Enter an explicit maintenance window that rejects new audit writes before
+     * they reach the async queue. Intended for backend migration: the command
+     * first blocks producers, waits for the bounded queue to drain into the
+     * source DAO, then copies a stable source snapshot. Returns false if another
+     * maintenance writer is already active.
+     */
+    public boolean beginMaintenanceWriteBlock(String reason) {
+        boolean entered = maintenanceWriteBlock.compareAndSet(false, true);
+        if (entered) {
+            maintenanceWriteBlockReason = reason == null || reason.isBlank() ? "maintenance" : reason;
+            LOG.warn(MARKER, "Audit writes blocked for maintenance: {}", maintenanceWriteBlockReason);
+        }
+        return entered;
+    }
+
+    /** Leave a maintenance write-block entered by {@link #beginMaintenanceWriteBlock(String)}. */
+    public void endMaintenanceWriteBlock(String reason) {
+        if (maintenanceWriteBlock.compareAndSet(true, false)) {
+            LOG.warn(MARKER, "Audit writes unblocked after maintenance: {}", reason != null ? reason : maintenanceWriteBlockReason);
+            maintenanceWriteBlockReason = null;
+        }
+    }
+
+    /** @return true when new audit writes are currently rejected for maintenance. */
+    public boolean isMaintenanceWriteBlocked() {
+        return maintenanceWriteBlock.get();
+    }
+
+    /**
+     * Wait for the async queue to become empty without closing it. Must only be
+     * called off the server thread; command cells invoke it from their worker
+     * pool. Returns false on timeout/interruption.
+     */
+    public boolean awaitQueueDrained(long timeoutMs) {
+        long deadline = System.nanoTime() + Math.max(0L, timeoutMs) * 1_000_000L;
+        while (queue.depth() > 0) {
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return true;
+    }
 
     /**
      * Path to the on-disk {@code config.json} the loader booted from.
@@ -848,6 +901,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     public boolean submitAccepted(Action a) {
         if (a == null) {
+            return false;
+        }
+        if (maintenanceWriteBlock.get()) {
+            gated.incrementAndGet();
             return false;
         }
         // v1.3.0 W2: mixin hot-event kill-switch is now folded into EventGate.shouldLog

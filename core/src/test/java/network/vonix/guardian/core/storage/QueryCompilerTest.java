@@ -133,12 +133,14 @@ class QueryCompilerTest {
     }
 
     @Test
-    void compile_delete_wraps_in_subquery() {
+    void compile_delete_wraps_victims_in_derived_table_for_mysql_same_table_safety() {
         QueryFilter f = QueryFilter.builder().sinceMillis(1L).build();
         QueryCompiler.Compiled c = QueryCompiler.compileDelete(f);
         assertThat(c.sql())
-            .startsWith("DELETE FROM vg_actions WHERE id IN (SELECT a.id")
-            .endsWith(")");
+            .startsWith("DELETE FROM vg_actions WHERE id IN (SELECT id FROM (SELECT a.id")
+            .contains(" FROM vg_actions a ")
+            .contains("a.ts >= ?")
+            .endsWith(") AS victims)");
         assertThat(c.binds()).containsExactly(1L);
     }
 

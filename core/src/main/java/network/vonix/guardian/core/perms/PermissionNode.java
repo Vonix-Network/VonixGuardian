@@ -2,6 +2,8 @@ package network.vonix.guardian.core.perms;
 
 import network.vonix.guardian.core.action.ActionType;
 
+import java.util.Map;
+
 /**
  * Canonical permission node registry for VonixGuardian commands.
  *
@@ -69,6 +71,32 @@ public enum PermissionNode {
     private final String node;
     private final int defaultOpLevel;
 
+    /**
+     * Compatibility aliases accepted by older loader command cells. These map
+     * {@code vonixguardian.command.<subcommand>} checks onto the canonical enum
+     * node so the op-level fallback and {@code perNodeOpLevels} override map do
+     * not silently degrade to the coarse default.
+     */
+    private static final Map<String, PermissionNode> COMMAND_ALIASES = Map.ofEntries(
+        Map.entry("vonixguardian.command.use", BASE),
+        Map.entry("vonixguardian.command.inspect", INSPECT),
+        Map.entry("vonixguardian.command.lookup", LOOKUP),
+        Map.entry("vonixguardian.command.rollback", ROLLBACK),
+        Map.entry("vonixguardian.command.restore", RESTORE),
+        Map.entry("vonixguardian.command.purge", PURGE),
+        Map.entry("vonixguardian.command.undo", UNDO),
+        Map.entry("vonixguardian.command.near", NEAR),
+        Map.entry("vonixguardian.command.consumer", CONSUMER),
+        Map.entry("vonixguardian.command.status", STATUS),
+        Map.entry("vonixguardian.command.reload", RELOAD),
+        Map.entry("vonixguardian.command.migrate-db", MIGRATE_DB),
+        Map.entry("vonixguardian.command.migrate_db", MIGRATE_DB),
+        Map.entry("vonixguardian.command.config", CONFIG),
+        Map.entry("vonixguardian.command.teleport", TELEPORT),
+        Map.entry("vonixguardian.command.give", GIVE),
+        Map.entry("vonixguardian.command.help", HELP)
+    );
+
     PermissionNode(String node, int defaultOpLevel) {
         this.node = node;
         this.defaultOpLevel = defaultOpLevel;
@@ -85,6 +113,23 @@ public enum PermissionNode {
      */
     public int defaultOpLevel() {
         return defaultOpLevel;
+    }
+
+    /**
+     * Resolve a canonical node string or legacy command-gate alias to the enum
+     * node that owns its fallback semantics.
+     *
+     * @param nodeString canonical node or {@code vonixguardian.command.*} alias
+     * @return matching node, or {@code null} when the string is not known
+     */
+    public static PermissionNode fromNodeOrCommandAlias(String nodeString) {
+        if (nodeString == null) return null;
+        for (PermissionNode n : values()) {
+            if (n.node.equals(nodeString)) {
+                return n;
+            }
+        }
+        return COMMAND_ALIASES.get(nodeString);
     }
 
     /**

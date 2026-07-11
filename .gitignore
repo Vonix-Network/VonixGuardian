@@ -48,3 +48,6 @@ remappedSrc/
 dist/
 release/
 .workflow/
+
+# Hermes agent workspace state (never commit)
+.hermes/

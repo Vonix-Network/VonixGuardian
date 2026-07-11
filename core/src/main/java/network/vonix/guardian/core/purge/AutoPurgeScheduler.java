@@ -164,10 +164,12 @@ public final class AutoPurgeScheduler {
             LOG.info("AutoPurgeScheduler DISABLED (purge.autoPurgeSeconds = 0)");
             return;
         }
-        if (exec != null) {
+        if (exec != null && !exec.isShutdown()) {
             LOG.warn("AutoPurgeScheduler.start() called twice; ignoring");
             return;
         }
+        stopRequested = false;
+        nextTask = null;
         exec = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "VonixGuardian-AutoPurge");
             t.setDaemon(true);

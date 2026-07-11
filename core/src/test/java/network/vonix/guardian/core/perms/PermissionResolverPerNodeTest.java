@@ -73,6 +73,27 @@ class PermissionResolverPerNodeTest {
     }
 
     @Test
+    void legacyCommandStringUsesMappedPermissionNodeFallback() {
+        // Command cells historically pass vonixguardian.command.rollback. When
+        // LuckPerms is absent, fallback must use PermissionNode.ROLLBACK's op=3
+        // default rather than coarse defaultOpLevel=2.
+        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, Map.of());
+        PermissionResolver r = new PermissionResolver(cfg, uuid -> 2);
+
+        assertThat(r.has(ALICE, "vonixguardian.command.rollback")).isFalse();
+        assertThat(r.has(ALICE, "vonixguardian.command.lookup")).isTrue();
+    }
+
+    @Test
+    void legacyCommandStringHonorsCanonicalPerNodeOverride() {
+        Map<String, Integer> overrides = Map.of(PermissionNode.LOOKUP.node(), 4);
+        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, overrides);
+        PermissionResolver r = new PermissionResolver(cfg, uuid -> 2);
+
+        assertThat(r.has(ALICE, "vonixguardian.command.lookup")).isFalse();
+    }
+
+    @Test
     void perNodeOpLevel_nullMapTreatedAsEmpty() {
         GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 0, null);
         PermissionResolver r = new PermissionResolver(cfg, uuid -> 0);

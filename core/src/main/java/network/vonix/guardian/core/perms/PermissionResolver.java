@@ -75,10 +75,16 @@ public final class PermissionResolver {
 
         maybeWarnLegacyString(node);
 
+        PermissionNode mapped = PermissionNode.fromNodeOrCommandAlias(node);
         TristateResult lp = checkLp(uuid, node);
         if (lp == TristateResult.TRUE) return true;
         if (lp == TristateResult.FALSE) return false;
-        return checkOpLevel(uuid, cfg.defaultOpLevel());
+        if (mapped != null && !mapped.node().equals(node)) {
+            lp = checkLp(uuid, mapped.node());
+            if (lp == TristateResult.TRUE) return true;
+            if (lp == TristateResult.FALSE) return false;
+        }
+        return checkOpLevel(uuid, mapped != null ? perNodeOpLevel(mapped) : cfg.defaultOpLevel());
     }
 
     /**

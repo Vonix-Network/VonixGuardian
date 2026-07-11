@@ -271,6 +271,25 @@ class GuardianAPIExtendedTest {
     }
 
     @Test
+    void directLogsReturnFalseWhileMaintenanceWriteBlockIsActive() {
+        UUID u = UUID.randomUUID();
+        assertThat(guardian.beginMaintenanceWriteBlock("migrate-db-test")).isTrue();
+        try {
+            long submittedBefore = guardian.submitted();
+            long gatedBefore = guardian.gated();
+
+            assertThat(guardian.api().logChat(u, "Alice", "minecraft:overworld", "hi")).isFalse();
+
+            assertThat(guardian.submitted()).isEqualTo(submittedBefore);
+            assertThat(guardian.gated()).isEqualTo(gatedBefore + 1L);
+        } finally {
+            guardian.endMaintenanceWriteBlock("migrate-db-test");
+        }
+
+        assertThat(guardian.api().logChat(u, "Alice", "minecraft:overworld", "after")).isTrue();
+    }
+
+    @Test
     void logPlacement_returns_false_when_queue_is_full() {
         UUID u = UUID.randomUUID();
         guardian.queue().setPaused(true);

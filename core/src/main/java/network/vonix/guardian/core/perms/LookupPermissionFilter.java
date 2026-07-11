@@ -64,7 +64,7 @@ public final class LookupPermissionFilter {
                 out.add(a);
                 continue;
             }
-            if (resolver.has(uuid, child.node())) {
+            if (resolver.has(uuid, child)) {
                 out.add(a);
             }
             // else: silently drop

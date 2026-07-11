@@ -88,4 +88,48 @@ class SchemaTargetWidthTest {
             }
         }
     }
+
+    @Test
+    void existing_unversioned_schema_is_stamped_v2_then_migrates_to_current() throws Exception {
+        try (var c = java.sql.DriverManager.getConnection("jdbc:sqlite::memory:")) {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE TABLE vg_users (id INTEGER PRIMARY KEY, uuid CHAR(36) NULL, name VARCHAR(64) NOT NULL, first_seen BIGINT NOT NULL, last_seen BIGINT NOT NULL)");
+                st.execute("CREATE TABLE vg_worlds (id INTEGER PRIMARY KEY, world_key VARCHAR(96) NOT NULL UNIQUE)");
+                st.execute("CREATE TABLE vg_actions ("
+                        + "id INTEGER PRIMARY KEY, "
+                        + "ts BIGINT NOT NULL, "
+                        + "type SMALLINT NOT NULL, "
+                        + "user_id INTEGER NOT NULL, "
+                        + "world_id INTEGER NOT NULL, "
+                        + "x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL, "
+                        + "target VARCHAR(192) NOT NULL, "
+                        + "meta TEXT NULL, "
+                        + "amount INTEGER NOT NULL DEFAULT 1, "
+                        + "rolled_back TINYINT NOT NULL DEFAULT 0, "
+                        + "source_tag VARCHAR(64) NULL)");
+            }
+
+            Schema.createTables(c, Schema.Dialect.SQLITE);
+
+            try (var st = c.createStatement();
+                 var rs = st.executeQuery("SELECT MAX(version) FROM vg_schema_version")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getInt(1))
+                    .as("existing unversioned schemas must not be over-stamped current before ALTER migrations")
+                    .isEqualTo(2);
+            }
+
+            network.vonix.guardian.core.storage.migration.MigrationRunner.defaults()
+                .migrateToCurrent(c, Schema.Dialect.SQLITE);
+
+            try (var st = c.createStatement();
+                 var rs = st.executeQuery("PRAGMA table_info(vg_actions)")) {
+                java.util.Set<String> cols = new java.util.HashSet<>();
+                while (rs.next()) {
+                    cols.add(rs.getString("name"));
+                }
+                assertThat(cols).contains("sign_side", "old_block_state", "entity_nbt");
+            }
+        }
+    }
 }

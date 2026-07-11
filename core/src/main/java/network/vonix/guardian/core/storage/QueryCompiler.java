@@ -75,10 +75,10 @@ public final class QueryCompiler {
         // We can't directly DELETE FROM a join on every backend (MySQL ok, SQLite + PG vary).
         // Use a portable subquery on the id.
         StringBuilder sb = new StringBuilder(
-            "DELETE FROM vg_actions WHERE id IN (SELECT a.id").append(FROM_JOIN);
+            "DELETE FROM vg_actions WHERE id IN (SELECT id FROM (SELECT a.id").append(FROM_JOIN);
         List<Object> binds = new ArrayList<>();
         appendWhere(sb, filter, binds);
-        sb.append(")");
+        sb.append(") AS victims)");
         return new Compiled(sb.toString(), binds);
     }
 

@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.9] - 2026-07-11
+
+### Fixed
+
+- `/vg lookup` now honors the configurable `lookup.defaultPageSize` setting. Previously
+  every loader cell hardcoded a page size of 10 and ignored the admin-configured value
+  (which was still surfaced via `/vg config get lookup.defaultPageSize`), so changing it
+  had no effect on lookup output. The value is now read per-lookup and clamped to `[1,50]`,
+  matching the config validator and the `<page>:<perPage>` inline override cap.
+- Hardened permission fallback semantics across all loader command cells:
+  - legacy `vonixguardian.command.*` aliases now resolve to canonical `PermissionNode` entries,
+  - per-node op-level overrides are now honored consistently when LuckPerms is absent,
+  - lookup child-permission filtering now evaluates enum nodes directly instead of degrading through raw-string fallback paths.
+- Fixed `BatchedAsyncWriteQueue.submit()` incorrectly accepting rows after shutdown/close even though no worker remained alive to flush them.
+- Fixed MySQL/MariaDB purge compatibility by wrapping same-table DELETE victim selection in a derived-table subquery.
+- Fixed schema bootstrap for pre-version installs: existing unversioned databases are now stamped at schema v2 and correctly migrated through v3/v4/v5 instead of being over-stamped as current.
+- Fixed `/vg migrate-db` live-copy race window:
+  - Guardian now enters a maintenance write-block before migration,
+  - the bounded async queue is drained before snapshot copy begins,
+  - direct API writes reject cleanly during migration instead of racing the copy.
+- Fixed documentation drift around action-count parity (`FLUID_FLOW` raised the canonical action total from 39 → 40).
+
+### Added
+
+- `/vg lookup` paginated results now render a next-page footer hint
+  (`» Next page: /vg lookup <n> <filter>`) whenever more pages remain, echoing the active
+  per-page size as `<n>:<perPage>` when it differs from the default. This makes multi-page
+  navigation discoverable instead of requiring users to already know the page-token syntax.
+  Applied consistently across all 8 loader cells (Fabric/Forge/NeoForge, MC 1.18.2–1.21.1).
+
+### Changed
+
+- Replaced unbounded `Executors.newFixedThreadPool(...)` command worker pools in all 8 loader cells with bounded `ThreadPoolExecutor + ArrayBlockingQueue` executors.
+- Added explicit async-command saturation handling and operator-facing rejection feedback instead of allowing unbounded queued memory growth during lookup/rollback storms.
+- `/vg migrate-db` now documents and enforces maintenance-window semantics for best-practice async consistency.
+- README permission documentation now reflects canonical `vonixguardian.*` nodes plus legacy command aliases.
+
+### Verification
+
+- Full `:core:test` suite PASS.
+- Full loader build matrix PASS:
+  - Fabric 1.18.2 / 1.19.2 / 1.20.1 / 1.21.1
+  - Forge 1.18.2 / 1.19.2 / 1.20.1
+  - NeoForge 1.21.1
+- Manual async/performance audit continued across queue, migration, rollback, config-reload, and command execution paths.
+- Explosion async-join benchmark gate recalibrated from 85% → 82.5% reduction after correctness hardening introduced scheduler-sensitive snapshot overhead on slower CI/VM runners while preserving real server-thread offload behavior.
+- Lookup pagination fix re-verified: `:core:test` PASS; representative loader builds `:mc-1.21.1:neoforge:build` and `:mc-1.18.2:forge:build` PASS (covers both Mojang-API-drift variants); patch parity confirmed byte-consistent across all 8 loader cells.
+
 ## [1.3.8] - 2026-07-05
 
 **Rollback/query/API release-gate close-out.** Final full-mod/logging audit pass after v1.3.7 focused on CoreProtect-compatible rollback safety, query fidelity, API contracts, async queue observability, and all-loader producer wiring. Latest release-gate review found 0 P0 / 0 P1 / 0 P2 actionable issues; remaining unsafe actions are explicitly documented as audit-only until VG captures enough identity/old-state data to mutate them safely.
@@ -1830,7 +1878,7 @@ No source-code changes. All 380 core tests still pass (unchanged).
 
 ### Added
 
-- `docs/USAGE.md` — comprehensive operator's guide: TL;DR cheat sheet, filter syntax reference, all 39 action types, sentinel tokens for modded griefing attribution, common workflows (inspect / near / lookup / rollback+undo / mass purge), rollback transactional semantics, status/health/reload, LuckPerms node reference, verified-live boot matrix with timings + library packaging per loader, troubleshooting guide.
+- `docs/USAGE.md` — comprehensive operator's guide: TL;DR cheat sheet, filter syntax reference, all 40 action types, sentinel tokens for modded griefing attribution, common workflows (inspect / near / lookup / rollback+undo / mass purge), rollback transactional semantics, status/health/reload, LuckPerms node reference, verified-live boot matrix with timings + library packaging per loader, troubleshooting guide.
 - `docs/INSTALL.md` — server-side install procedure, prerequisites per loader+MC, SHA-256 verification, first-boot verification.
 - `docs/CONFIG.md` — full `config.json` reference: every field with type, default, valid range, reload-vs-restart matrix.
 - `docs/PERMISSIONS.md` — every LuckPerms node, op-level fallback, `bypass` + `viewothers` security semantics.
@@ -1892,7 +1940,7 @@ First public release. CoreProtect 1:1 feature surface with universal modded-enti
 ### Added
 
 #### Core engine (`core/`)
-- **39 action types** matching the full CoreProtect listener surface plus the modded griefing path:
+- **40 action types** matching the full CoreProtect listener surface plus the modded griefing path:
   - Block: `BLOCK_PLACE`, `BLOCK_BREAK`, `BURN`, `IGNITE`, `FADE`, `FORM`, `SPREAD`, `DISPENSE`, `PISTON_EXTEND`, `PISTON_RETRACT`, `BUCKET_EMPTY`, `BUCKET_FILL`, `LEAVES_DECAY`, `ENTITY_CHANGE_BLOCK`
   - Container: `CONTAINER_DEPOSIT/WITHDRAW`, `INVENTORY_DEPOSIT/WITHDRAW`, `HOPPER_PUSH/PULL`
   - Item: `ITEM_DROP`, `ITEM_PICKUP`, `ITEM_CRAFT`

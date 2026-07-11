@@ -23,7 +23,7 @@ import network.vonix.guardian.core.action.ActionType;
  *       {@code entity}, {@code world}, {@code message}, {@code session},
  *       {@code interact}) that {@link QueryParser#parseActionTok} matches
  *       in its family-fallback branch;</li>
- *   <li>every {@link ActionType#token()} — all 39 canonical action tokens
+ *   <li>every {@link ActionType#token()} — all 40 canonical action tokens
  *       looked up by {@link ActionType#byToken(String)};</li>
  *   <li>CoreProtect-parity aliases ({@code login}, {@code logout}, and
  *       {@code inventory}) — see {@code QueryParser.CP_TOKEN_ALIASES} and

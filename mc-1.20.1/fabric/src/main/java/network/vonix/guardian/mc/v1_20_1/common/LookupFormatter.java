@@ -77,13 +77,52 @@ public final class LookupFormatter {
      */
     public static List<Component> page(Theme theme, List<Action> rows, long total,
                                        int page, int pageSize, long now) {
+        return page(theme, rows, total, page, pageSize, now, null);
+    }
+
+    /**
+     * Render a full page of {@code rows} with header and, when more pages
+     * remain, a footer hint telling the viewer how to fetch the next page.
+     *
+     * @param filter the raw filter string the viewer supplied (nullable); used
+     *               to build the next-page command hint. Any leading page token
+     *               has already been stripped by the command layer.
+     */
+    public static List<Component> page(Theme theme, List<Action> rows, long total,
+                                       int page, int pageSize, long now, String filter) {
         int pages = (int) Math.max(1L, (total + pageSize - 1) / Math.max(1, pageSize));
-        List<Component> out = new ArrayList<>(rows.size() + 1);
-        out.add(header(theme, total, page, pages));
+        int curr = Math.max(1, page);
+        List<Component> out = new ArrayList<>(rows.size() + 2);
+        out.add(header(theme, total, curr, pages));
         for (Action a : rows) {
             out.add(line(theme, a, now));
         }
+        if (curr < pages) {
+            out.add(footer(theme, curr + 1, pageSize, filter));
+        }
         return out;
+    }
+
+    /**
+     * Render the "next page" footer hint shown when more results remain.
+     *
+     * @param theme    active theme (nullable)
+     * @param nextPage the 1-based page number to fetch next
+     * @param pageSize the per-page size in effect (echoed as {@code :N} when non-default)
+     * @param filter   the raw filter string (nullable) minus any page token
+     * @return footer component
+     */
+    public static Component footer(Theme theme, int nextPage, int pageSize, String filter) {
+        String pageTok = pageSize == 10
+                ? Integer.toString(nextPage)
+                : nextPage + ":" + pageSize;
+        String f = filter == null ? "" : filter.trim();
+        String cmd = f.isEmpty()
+                ? "/vg lookup " + pageTok
+                : "/vg lookup " + pageTok + " " + f;
+        MutableComponent c = ChatRenderer.muted(theme, "  \u00bb Next page: ");
+        c.append(ChatRenderer.secondary(theme, cmd));
+        return c;
     }
 
     // ----------------------------------------------------------------------

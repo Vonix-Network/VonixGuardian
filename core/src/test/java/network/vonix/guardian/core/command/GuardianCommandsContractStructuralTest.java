@@ -41,8 +41,17 @@ class GuardianCommandsContractStructuralTest {
                 .contains("new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z, actorUuid(src))");
 
             assertThat(text)
-                .as("%s should guard /vg undo with command.undo", cell)
-                .contains("CommandSpec.permissionNode(CommandSpec.UNDO)");
+                .as("%s should use enum PermissionNode gates so per-node op fallbacks and aliases stay wired", cell)
+                .doesNotContain("hasPerm(s, \"vonixguardian.command.")
+                .contains("hasPerm(s, PermissionNode.BASE, g)")
+                .contains("hasPerm(s, PermissionNode.UNDO, g)");
+
+            assertThat(text)
+                .as("%s should use a bounded command-worker queue, not Executors.newFixedThreadPool's unbounded LinkedBlockingQueue", cell)
+                .doesNotContain("Executors.newFixedThreadPool")
+                .contains("new ThreadPoolExecutor(")
+                .contains("new ArrayBlockingQueue<>(COMMAND_WORKER_QUEUE_CAPACITY)")
+                .contains("private static boolean submitAsync(CommandSourceStack src, Guardian g, Runnable task)");
 
             assertThat(text)
                 .as("%s should not push rollback/restore previews onto UndoStack", cell)

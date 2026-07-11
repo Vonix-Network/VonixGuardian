@@ -314,6 +314,18 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void submitAfterCloseIsRejectedAndCountedAsDropped() {
+        CapturingSink sink = new CapturingSink(0);
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(8, 25L, 4, sink, DAEMON);
+
+        q.close();
+
+        assertThat(q.submit(action(42))).isFalse();
+        assertThat(q.depth()).isZero();
+        assertThat(q.dropped()).isEqualTo(1L);
+    }
+
+    @Test
     void close_terminatesWorkerThread() throws Exception {
         CapturingSink sink = new CapturingSink(0);
         List<Thread> spawned = new ArrayList<>();

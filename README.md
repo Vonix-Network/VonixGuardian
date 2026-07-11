@@ -11,9 +11,9 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 
-## Feature surface (v1.3.8)
+## Feature surface (v1.3.9)
 
-- **Logged actions** (39 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
+- **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
 - **Commands** (`/vg`, aliases `/co`, `/guardian`) — CoreProtect 1:1 parity:
   - `/vg help` — CoreProtect-style command summary.
@@ -36,15 +36,15 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
   - Users: `u:Notch`, `u:Notch,Intelli`, `u:#fire,#tnt,#creeper,#explosion`, plus `#mob:<ns>:<path>`.
   - Time: `t:2w5d7h`, `t:2.50h`, `t:1h-2h`.
   - Radius: `r:10`, `r:#global`, `r:#world_the_nether`, `r:#worldedit` / `r:#we`, `r:#nether` / `r:#overworld` / `r:#end`.
-  - Actions: `a:block`, `a:+block`, `a:-block`, `a:container`, `a:kill`, `a:chat`, `a:command`, `a:sign`, `a:session`, `a:username`, `a:click`, `a:inventory`, `a:item`, plus 21 VG-only expansion tokens (burn, ignite, fade, form, spread, dispense, piston, bucket, decay, hanging, spawn, einteract, hopper, craft, grow, portal, populate, entityblock).
+  - Actions: `a:block`, `a:+block`, `a:-block`, `a:container`, `a:kill`, `a:chat`, `a:command`, `a:sign`, `a:session`, `a:username`, `a:click`, `a:inventory`, `a:item`, plus 22 VG-only expansion tokens (burn, ignite, fade, form, spread, dispense, piston, bucket, fluid, decay, hanging, spawn, einteract, hopper, craft, grow, portal, populate, entityblock).
   - Includes / excludes: `i:stone,dirt`, `e:minecraft:tnt`.
   - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, `#optimize`.
 
-- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. `/vg migrate-db` copies between backends live.
+- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. `/vg migrate-db` copies between backends under an explicit maintenance write-block so the async queue drains before the source snapshot is copied.
 
 - **Log file**: rolling JSON-Lines at `logs/vonixguardian/audit-YYYY-MM-DD.log` (gzipped after rotation, configurable retention).
 
-- **Permissions**: LuckPerms-aware (`vonixguardian.command.*` + child perms `vonixguardian.lookup.block/container/item/kill/chat/command/sign/session`); permission-level fallback if LP absent (with per-node op-level overrides in config).
+- **Permissions**: LuckPerms-aware (canonical `vonixguardian.*` nodes, legacy `vonixguardian.command.*` aliases, and child perms `vonixguardian.lookup.block/container/item/kill/chat/command/sign/session`); permission-level fallback if LP absent (with per-node op-level overrides in config).
 
 - **Public Java API**: `network.vonix.guardian.core.api.VonixGuardianAPI` — typed result classes (`BlockLookupResult`, `ContainerLookupResult`, `ItemLookupResult`, `InventoryLookupResult`, `SessionLookupResult`, `UsernameLookupResult`, `MessageLookupResult`, `SignLookupResult`) + `hasPlaced`, `hasRemoved`, `queueLookup`, `logChat`, `logCommand`, `logPlacement`, `logRemoval`. See `docs/API.md`.
 

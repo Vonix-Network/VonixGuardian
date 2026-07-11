@@ -140,7 +140,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         // hidden allocation. Every ActionType.values() entry + the UNKNOWN
         // sentinel gets its own LongAdder + RateBuckets. Steady-state memory
         // cost: ActionType.values().length * (LongAdder + LongAdder + RateBuckets)
-        // ~= 39 * ~1KB = ~40KB, one-time at boot.
+        // ~= 40 * ~1KB = ~40KB, one-time at boot.
         for (ActionType t : ActionType.values()) {
             submittedByType.put(t.name(), new LongAdder());
             droppedByType.put(t.name(), new LongAdder());
@@ -186,6 +186,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         rateBuckets.tick(nowNs);
         aggregateRate.tick(nowNs);
+        if (shutdown || closed) {
+            long total = dropped.incrementAndGet();
+            LongAdder droppedCounter = droppedByType.get(typeKey);
+            if (droppedCounter == null) {
+                droppedCounter = droppedByType.computeIfAbsent(typeKey, k -> new LongAdder());
+            }
+            droppedCounter.increment();
+            maybeLogDrop(total);
+            maybeLogHistogram();
+            return false;
+        }
         if (!queue.offer(a)) {
             long total = dropped.incrementAndGet();
             LongAdder droppedCounter = droppedByType.get(typeKey);
@@ -708,7 +719,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         /** Record one event at wall-clock time {@code nowNs} (nanoTime origin). */
         void tick(long nowNs) {
             long sec = TimeUnit.NANOSECONDS.toSeconds(nowNs);
-            int idx = (int) Math.floorMod(sec, RATE_BUCKETS);
+            int idx = Math.floorMod(sec, RATE_BUCKETS);
             long stored = bucketTimestampSec.get(idx);
             if (stored != sec) {
                 // Bucket is either stale (previous window) or freshly initialised.

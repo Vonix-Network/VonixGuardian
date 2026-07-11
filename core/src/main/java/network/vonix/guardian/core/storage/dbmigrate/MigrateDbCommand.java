@@ -86,40 +86,55 @@ public final class MigrateDbCommand {
             return false;
         }
 
-        // Materialise the destination Database record from the MigrationTarget block
-        // and open a fresh DAO for it. This DAO is short-lived: initialised, migrated
-        // to, then closed.
-        GuardianConfig.Database destCfg = new GuardianConfig.Database(
-            mt.type(), mt.file(), mt.jdbcUrl(), mt.user(), mt.password(), null,
-            g.config().database() == null ? GuardianConfig.Hikari.defaults() : g.config().database().hikari());
-        GuardianConfig destWrapper = new GuardianConfig(
-            destCfg,
-            g.config().queue(), g.config().logFile(), g.config().actions(),
-            g.config().permissions(), g.config().lookup(), g.config().privacy(),
-            g.config().purge(),
-            g.config().storage(), g.config().rollback(),
-            g.config().theme(), g.config().language());
-
-        printLine.accept("[VonixGuardian] migrate-db: opening destination backend (" + target + ")...");
-        try (GuardianDao destDao = StorageFactory.open(destWrapper)) {
-            destDao.init();
-
-            BackendMigrationJob.ProgressCallback cb = update ->
-                printLine.accept(String.format(
-                    "[VonixGuardian]   %-28s %8d / %8d rows  (%d ms elapsed)",
-                    update.table(), update.rowsCopied(), update.rowsTotal(), update.elapsedMs()));
-
-            BackendMigrationJob job = new BackendMigrationJob(g.dao(), destDao, CHUNK_SIZE, cb);
-            BackendMigrationJob.Result result = job.run();
-
-            printLine.accept("[VonixGuardian] migrate-db: DONE. Copied "
-                + result.totalRows() + " rows in " + result.elapsedMs() + " ms.");
-            printLine.accept("[VonixGuardian] Update config.database.type to '" + target
-                + "' (and matching connection fields) and restart the server to use the new backend.");
-            return true;
-        } catch (Exception ex) {
-            printLine.accept("[VonixGuardian] migrate-db: FAILED — " + ex.getMessage());
+        if (!g.beginMaintenanceWriteBlock("migrate-db")) {
+            printLine.accept("[VonixGuardian] migrate-db: refusing — another maintenance write-block is already active.");
             return false;
+        }
+        try {
+            printLine.accept("[VonixGuardian] migrate-db: blocking new audit writes and waiting for the async queue to drain...");
+            if (!g.awaitQueueDrained(30_000L)) {
+                printLine.accept("[VonixGuardian] migrate-db: refusing — async queue did not drain within 30s. "
+                    + "Pause event producers / retry during a quieter maintenance window.");
+                return false;
+            }
+
+            // Materialise the destination Database record from the MigrationTarget block
+            // and open a fresh DAO for it. This DAO is short-lived: initialised, migrated
+            // to, then closed.
+            GuardianConfig.Database destCfg = new GuardianConfig.Database(
+                mt.type(), mt.file(), mt.jdbcUrl(), mt.user(), mt.password(), null,
+                g.config().database() == null ? GuardianConfig.Hikari.defaults() : g.config().database().hikari());
+            GuardianConfig destWrapper = new GuardianConfig(
+                destCfg,
+                g.config().queue(), g.config().logFile(), g.config().actions(),
+                g.config().permissions(), g.config().lookup(), g.config().privacy(),
+                g.config().purge(),
+                g.config().storage(), g.config().rollback(),
+                g.config().theme(), g.config().language());
+
+            printLine.accept("[VonixGuardian] migrate-db: opening destination backend (" + target + ")...");
+            try (GuardianDao destDao = StorageFactory.open(destWrapper)) {
+                destDao.init();
+
+                BackendMigrationJob.ProgressCallback cb = update ->
+                    printLine.accept(String.format(
+                        "[VonixGuardian]   %-28s %8d / %8d rows  (%d ms elapsed)",
+                        update.table(), update.rowsCopied(), update.rowsTotal(), update.elapsedMs()));
+
+                BackendMigrationJob job = new BackendMigrationJob(g.dao(), destDao, CHUNK_SIZE, cb);
+                BackendMigrationJob.Result result = job.run();
+
+                printLine.accept("[VonixGuardian] migrate-db: DONE. Copied "
+                    + result.totalRows() + " rows in " + result.elapsedMs() + " ms.");
+                printLine.accept("[VonixGuardian] Update config.database.type to '" + target
+                    + "' (and matching connection fields) and restart the server to use the new backend.");
+                return true;
+            } catch (Exception ex) {
+                printLine.accept("[VonixGuardian] migrate-db: FAILED — " + ex.getMessage());
+                return false;
+            }
+        } finally {
+            g.endMaintenanceWriteBlock("migrate-db");
         }
     }
 }

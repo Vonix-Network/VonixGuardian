@@ -103,6 +103,24 @@ class LookupPermissionFilterTest {
     }
 
     @Test
+    void opLevelTwoLookupKeepsBlockButHidesChatAndCommandChildRows() {
+        // Regression for the legacy string path: LOOKUP itself and LOOKUP_BLOCK
+        // default to op level 2, but LOOKUP_CHAT / LOOKUP_COMMAND default to 3.
+        // The filter must therefore pass the child PermissionNode object through
+        // the resolver, not convert it to a string and fall back to defaultOpLevel=2.
+        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
+        PermissionResolver r = new PermissionResolver(cfg, uuid -> 2);
+
+        List<Action> rows = Arrays.asList(
+                a(1, ActionType.BLOCK_PLACE),
+                a(2, ActionType.CHAT),
+                a(3, ActionType.COMMAND));
+        List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, rows);
+
+        assertThat(out).extracting(Action::id).containsExactly(1L);
+    }
+
+    @Test
     void rollbackFamily_messageRows_fallOpen() {
         // CHAT under ROLLBACK family: childForAction returns ROLLBACK (no rollback-of-chat
         // scoping in CP). Even when resolver denies, message rows survive under ROLLBACK.

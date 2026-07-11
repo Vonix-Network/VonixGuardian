@@ -68,6 +68,7 @@ public final class GuardianStatus {
         // ---- 3. Queue ----
         section(out, "Writer queue");
         line(out, "  consumer   " + safe(() -> g.queue().isPaused() ? "PAUSED" : "running"));
+        line(out, "  maintenance " + (g.isMaintenanceWriteBlocked() ? "WRITE-BLOCKED" : "normal"));
         line(out, "  depth      " + safe(() -> Integer.toString(g.queue().depth()))
                 + " / " + safe(() -> Integer.toString(g.config().queue().maxSize())));
         line(out, "  submitted  " + g.submitted());

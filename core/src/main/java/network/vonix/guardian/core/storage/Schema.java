@@ -80,6 +80,7 @@ public final class Schema {
      * locks on {@code information_schema}.
      */
     public static void createTables(Connection c, Dialect dialect) throws SQLException {
+        boolean existingUnversionedSchema = hasExistingUnversionedSchema(c);
         // 1. Tables — every CREATE TABLE uses IF NOT EXISTS, which all three dialects accept.
         try (Statement st = c.createStatement()) {
             for (String ddl : tableDdlFor(dialect)) {
@@ -94,7 +95,27 @@ public final class Schema {
         //    here would trick the MigrationRunner into thinking no work is needed.
         //    Let the runner insert the correct stamps as it applies each step.
         if (isVersionTableEmpty(c)) {
-            stampVersion(c, CURRENT_VERSION);
+            // Fresh installs just received the full CURRENT_VERSION DDL above.
+            // Existing pre-version installs, however, kept their old vg_actions
+            // table because CREATE TABLE IF NOT EXISTS is additive only. The v2
+            // rollback tables are created by tableDdlFor(), so stamp v2 and let
+            // MigrationRunner apply v3/v4/v5 ALTER migrations on the existing
+            // fact table instead of over-stamping it as current.
+            stampVersion(c, existingUnversionedSchema ? 2 : CURRENT_VERSION);
+        }
+    }
+
+    private static boolean hasExistingUnversionedSchema(Connection c) throws SQLException {
+        return !tableExists(c, "vg_schema_version")
+            && (tableExists(c, "vg_actions") || tableExists(c, "vg_users") || tableExists(c, "vg_worlds"));
+    }
+
+    private static boolean tableExists(Connection c, String table) throws SQLException {
+        try (Statement st = c.createStatement()) {
+            st.executeQuery("SELECT 1 FROM " + table + " WHERE 1=0");
+            return true;
+        } catch (SQLException ex) {
+            return false;
         }
     }
 
