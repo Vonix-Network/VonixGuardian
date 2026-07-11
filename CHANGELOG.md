@@ -40,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     natural spread) is logged unchanged.
   Decision logic lives in the tested core (`UniversalAttribution.resolveFireCauser`);
   loader cells only record the causer and consume the verdict.
+- **Release-gate correctness (v1.3.10 re-cut).** Two issues caught by CI during
+  the release and fixed before the artifacts were finalized:
+  - `GuardianAPI.PLUGIN_VERSION` was left at `1.3.9` when `gradle.properties#mod_version`
+    was bumped to `1.3.10`, tripping the `GuardianAPIVersionSyncTest` release guard;
+    the constant is now `1.3.10`, keeping the public API version in sync with the
+    Gradle metadata.
+  - Eliminated a race in `BatchedAsyncWriteQueue`'s pause path: on the pause
+    interrupt the worker no longer restores the interrupt flag, so it cleanly
+    re-enters the `paused` guard instead of polling one more item out of the ring
+    buffer. Paired with a deterministic quiescence barrier in the API test, this
+    makes `queueLookup`/`pendingSnapshot` behave as a reliable "paused = frozen"
+    snapshot (previously flaky ~1/10 in CI).
 
 ## [1.3.9] - 2026-07-11
 

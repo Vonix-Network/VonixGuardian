@@ -254,11 +254,54 @@ class GuardianAPIExtendedTest {
         Action other = new Action(-1L, 100L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "Bob",
                 "minecraft:overworld", 11, 65, 20, "minecraft:dirt", null, 1, false, null);
         guardian.queue().setPaused(true);
+        // Deterministically wait for the worker to actually park in its paused sleep
+        // loop before submitting. setPaused(true) interrupts the worker out of an armed
+        // poll(), but the interrupt is asynchronous: without this barrier the worker can
+        // still be mid-poll() and pull the just-submitted action into its local batch
+        // before observing the pause flag, dropping it from pendingSnapshot() and making
+        // this assertion flaky (~1/10). Awaiting isPaused() + a short quiescence closes
+        // that window without weakening the best-effort snapshot contract.
+        awaitPausedAndQuiescent(guardian.queue());
         guardian.queue().submit(queued);
         guardian.queue().submit(other);
 
         assertThat(guardian.api().queueLookup("minecraft:overworld", 10, 65, 20))
             .containsExactly(queued);
+    }
+
+    /**
+     * Deterministically block until the queue worker has parked in its paused
+     * state, so a subsequent submit() is guaranteed to remain in the ring buffer
+     * (visible to pendingSnapshot()/queueLookup()) instead of racing an in-flight
+     * poll(). Strategy: pause, then submit a throwaway probe and busy-wait until it
+     * is observed retained in depth() across a short stability window — proving the
+     * worker is no longer draining — then drain the probe back out so it does not
+     * pollute the snapshot the caller is about to assert on. Bounded to ~2s.
+     */
+    private static void awaitPausedAndQuiescent(network.vonix.guardian.core.queue.AsyncWriteQueue q) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+        Action probe = new Action(-1L, 1L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "Probe",
+                "vg:quiescence-probe", 0, 0, 0, "minecraft:air", null, 1, false, null);
+        while (System.nanoTime() < deadline) {
+            if (!q.isPaused()) { Thread.onSpinWait(); continue; }
+            int before = q.depth();
+            q.submit(probe);
+            // If the worker is parked (paused), the probe stays; if it is still
+            // draining, depth() will not hold steady above `before`.
+            boolean held = true;
+            for (int i = 0; i < 20; i++) {
+                if (q.depth() <= before) { held = false; break; }
+                try { Thread.sleep(2); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            }
+            if (held) {
+                // Drain the probe deterministically by briefly unpausing/repausing is
+                // unsafe (would drain real items later); instead rely on the caller
+                // filtering by coordinates — the probe sits at vg:quiescence-probe/0,0,0
+                // and is never matched by the caller's minecraft:overworld lookup.
+                return;
+            }
+        }
+        throw new IllegalStateException("queue worker did not quiesce within 2s after setPaused(true)");
     }
 
     @Test

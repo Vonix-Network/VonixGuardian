@@ -446,7 +446,20 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 if (shutdown) {
                     break;
                 }
-                // Spurious interrupt while still running — restore flag and continue.
+                // If this interrupt is the pause signal (setPaused(true) interrupts the
+                // worker to break it out of an armed poll()), do NOT restore the interrupt
+                // flag: clear it and continue so the loop cleanly re-enters and observes
+                // the `paused` guard below, freezing the pipeline WITHOUT polling another
+                // item out of the ring buffer. Restoring the flag here would make the very
+                // next blocking call throw immediately, reopening the race where an action
+                // submitted right after setPaused(true) gets pulled into the worker's local
+                // batch before the pause takes hold — which drops it from pendingSnapshot()
+                // and breaks the `paused = pipeline frozen` contract queueLookup() relies on.
+                if (paused) {
+                    continue;
+                }
+                // Spurious interrupt while still running (not paused, not shutdown) — restore
+                // flag and continue.
                 Thread.currentThread().interrupt();
             } catch (RuntimeException re) {
                 LOG.error(MARKER, "Unexpected error in queue worker; continuing", re);
