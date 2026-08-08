@@ -12,12 +12,12 @@ How VonixGuardian ships its third-party Java dependencies across 8 loader jars w
 
 | Library | Has native code? | Packaging | Why |
 |---|---|---|---|
-| **Gson** | No | Shade + relocate to `network.vonix.guardian.shadow.gson` | Pure Java; relocation is safe and prevents collision |
-| **HikariCP** | No | Shade + relocate to `network.vonix.guardian.shadow.hikari` | Pure Java; pool config singletons benefit from isolation |
-| **sqlite-jdbc** | **YES — JNI** | NeoForge/Forge: **JarInJar**. Fabric: **shade WITHOUT relocate** | JNI symbols `Java_org_sqlite_core_NativeDB_*` are baked into the `.so`/`.dll`/`.dylib`. Relocating Java classes to `…shadow.sqlite.core.NativeDB` causes `UnsatisfiedLinkError` at first DB op. |
+| **Gson** | No | Fabric: **JarInJar**. Forge/NeoForge: shade + relocate to `network.vonix.guardian.shadow.gson` | Fabric uses Loom's supported nested-jar path; relocation remains safe on the Forge family |
+| **HikariCP** | No | Fabric: **JarInJar**. Forge/NeoForge: shade + relocate to `network.vonix.guardian.shadow.hikari` | Fabric excludes the loader-owned slf4j API from the nested Hikari dependency |
+| **sqlite-jdbc** | **YES — JNI** | **JarInJar on every loader** | JNI symbols `Java_org_sqlite_core_NativeDB_*` are baked into the `.so`/`.dll`/`.dylib`. Relocating Java classes to `…shadow.sqlite.core.NativeDB` causes `UnsatisfiedLinkError` at first DB op. |
 | **SLF4J-API** | No | Don't shade — use loader's slf4j (NeoForge ships it; Forge uses log4j2 directly) | Avoiding "shaded slf4j has no impl binding → silent no-op" trap (`forge-mod-maintenance-fork → shaded-slf4j-silent-logging.md`) |
-| **MySQL connector** | No (Java 8+) | Not bundled; user installs in `mods/` if using MySQL | Driver is 2.4 MB; only ~3% of users want MySQL backend |
-| **Postgres JDBC** | No | Not bundled; user installs in `mods/` if using Postgres | Same reasoning as MySQL |
+| **MySQL connector** | No (Java 8+) | **JarInJar on every loader** | The configured backend is self-contained; the JDBC service name remains canonical |
+| **Postgres JDBC** | No | **JarInJar on every loader** | Same self-contained backend strategy as MySQL |
 
 ## NeoForge/Forge: JarInJar
 
@@ -38,21 +38,27 @@ dependencies {
 
 The loader extracts these at runtime, dedups across all installed mods by Maven coords + version, and presents them as classpath entries. Two mods carrying sqlite-jdbc 3.46.1.0 → one copy loaded, both see it. Two mods carrying incompatible versions → loader picks the highest and warns.
 
-## Fabric: shade without relocate
+## Fabric: Loom JarInJar
 
-Fabric-loom's `include` config wants a "Fabric mod" (with `fabric.mod.json`). sqlite-jdbc is plain Maven. Two options:
+All four Fabric cells use Fabric Loom's supported `include modImplementation(...)`
+configuration. The final remapped artifact contains the unmodified dependencies under
+`META-INF/jars/`; JDBC classes and `META-INF/services/java.sql.Driver` therefore remain in
+their canonical packages inside the nested jars. The Hikari include excludes the loader-owned
+`org.slf4j` API.
 
-**Option A (chosen): shade WITHOUT relocate.**
-- Pros: zero ceremony; the `.so` JNI symbols match the unrelocated `org.sqlite.*` classes; it just works.
-- Cons: if another Fabric mod also shaded unrelocated sqlite-jdbc with a different version, JVM picks whichever loaded first. **Lowest classloader wins** → most common-case win because Fabric loads mods alphabetically and sqlite-jdbc is virtually never bundled by other Fabric mods.
-- Mitigation: log the loaded sqlite version on boot so version mismatches are diagnosable.
+The pinned Fabric dependency declarations are intentionally explicit because Loom 1.4.6's
+Groovy dependency handler does not accept the version-catalog provider form for `include`:
 
-**Option B (not chosen): synthetic Fabric wrapper jar.**
-- Wrap sqlite-jdbc in a minimal `fabric.mod.json`-bearing jar at build time, then `include` it.
-- Pros: proper nested-jar resolution.
-- Cons: significant build complexity, has to be re-done per MC version.
+```groovy
+include modImplementation('org.xerial:sqlite-jdbc:3.46.1.0')
+include modImplementation('com.mysql:mysql-connector-j:8.4.0')
+include modImplementation('org.postgresql:postgresql:42.7.4')
+include(modImplementation('com.zaxxer:HikariCP:5.1.0')) { exclude group: 'org.slf4j' }
+include modImplementation('com.google.code.gson:gson:2.10.1')
+```
 
-We picked A for v1.0.0 because (a) sqlite-jdbc-bundling Fabric mods are essentially nonexistent in real modpacks (LuckPerms-Fabric doesn't, MongoUtils doesn't, basically no one); (b) the diagnostic boot log makes any future collision easy to identify; (c) we can ship Option B in v1.1.0 if the real world shows collisions.
+`core` is nested using the same mechanism. Do not use Shadow output or a `-shadow`, `-all`,
+or `-slim` classifier as a release asset.
 
 ## Verification Checklist (every release)
 
@@ -63,25 +69,27 @@ unzip -j /tmp/sqlite.jar 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so' -d /t
 nm -D /tmp/libsqlitejdbc.so | grep -E 'T Java_org_sqlite_core_NativeDB' | head -3
 # MUST show Java_org_sqlite_core_NativeDB_* (not Java_network_vonix_guardian_shadow_*)
 
-# 2. JNI symbol parity — for Fabric (shaded unrelocated, native lib at org/sqlite/native/):
-unzip -j <fabric-jar> 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so' -d /tmp/
+# 2. JNI symbol parity — for Fabric (extract the nested sqlite jar first):
+unzip -p <fabric-jar> 'META-INF/jars/sqlite-jdbc-*.jar' > /tmp/sqlite.jar
+unzip -j /tmp/sqlite.jar 'org/sqlite/native/Linux/x86_64/libsqlitejdbc.so' -d /tmp/
 nm -D /tmp/libsqlitejdbc.so | grep -E 'T Java_org_sqlite_core_NativeDB' | head -3
 # Same: MUST show org_sqlite_core_NativeDB
 
-# 3. Class location parity:
-unzip -l <jar> | grep -E 'org/sqlite/core/NativeDB\.class|network/vonix/guardian/shadow/sqlite/core/NativeDB\.class'
-# For NeoForge/Forge: NativeDB.class lives in META-INF/jarjar/sqlite-jdbc-*.jar (nested), not the outer jar
-# For Fabric: NativeDB.class at org/sqlite/core/NativeDB.class (unrelocated)
+# 3. Class location parity (JDBC classes must not be outer entries):
+unzip -l <jar> | grep -E 'META-INF/(jars|jarjar)/.*(sqlite|mysql|postgresql).*\.jar'
+if unzip -l <jar> | grep -E '(^| )org/sqlite/|(^| )com/mysql/|(^| )org/postgresql/'; then
+  echo 'JDBC classes leaked into the outer artifact' >&2; exit 1
+fi
+# Extract one nested jar separately when checking NativeDB.class or driver classes.
 
 # 4. JDBC service registration:
-unzip -p <jar> META-INF/services/java.sql.Driver 2>/dev/null
-# For Fabric: should print "org.sqlite.JDBC"
-# For NeoForge/Forge: should print nothing (it's in the nested jar)
-unzip -p <jar> 'META-INF/jarjar/sqlite-jdbc-*.jar' 2>/dev/null | \
-  jar -tf /dev/stdin 2>/dev/null | grep -E 'META-INF/services'
+# The service file is inside the nested driver jar, not the outer mod jar.
+unzip -p <jar> 'META-INF/jars/sqlite-jdbc-*.jar' > /tmp/sqlite.jar
+unzip -l /tmp/sqlite.jar | grep 'META-INF/services/java.sql.Driver'
 
-# 5. Smoke: integration test in test/ loads SQLite from the actual jar and runs a SELECT
-# (vg-smoketest gradle task — see .github/workflows/build.yml)
+# 5. Deterministic outer/nested check for each Fabric cell:
+./gradlew -PbuildProfile=mc1182 :mc-1.18.2:fabric:verifyJarInJarPackaging
+# Repeat with mc1192, mc1201, and mc1211 profiles/cells.
 ```
 
 ## Pitfalls
@@ -90,7 +98,8 @@ unzip -p <jar> 'META-INF/jarjar/sqlite-jdbc-*.jar' 2>/dev/null | \
 - **Don't shade slf4j-api into the mod jar.** Loader provides its own; bundling yours either no-ops (no binding) or fights the loader's logging config. Use `org.apache.logging.log4j.LogManager.getLogger(...)` directly for mod-side logging.
 - **JarInJar version conflicts are silent in dev environments.** ForgeGradle/NeoGradle don't extract nested jars during `runServer` because the classpath is already correct. Real-world conflicts only surface in production. Always do a clean-room verification: drop the released jar into a fresh MC server install, no IDE, and boot.
 - **JarInJar metadata fingerprinting is per-version.** `sqlite-jdbc:3.46.1.0` and `sqlite-jdbc:3.50.0` are different artifacts to the loader. Pinning matters; if we bump the version, every JarInJar mod that pinned the old one loses against ours and *their* version is silently dropped. This is the loader's correct behaviour but it can hide cross-mod issues. Document the version in CHANGELOG every bump.
-- **Don't bundle MySQL or Postgres drivers.** They're heavyweight, used by <5% of installs, and add CVE surface (recent MySQL driver CVEs are not fun to chase). Tell users to drop the driver jar in `mods/` and the JDBC service loader will find it.
+- **Do not relocate JDBC drivers.** Every loader keeps drivers in canonical packages inside
+  its nested dependency jar, and the service registrations remain inside those jars.
 
 ## What other mods do
 

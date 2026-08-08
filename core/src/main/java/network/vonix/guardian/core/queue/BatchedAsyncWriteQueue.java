@@ -15,11 +15,15 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.nio.file.Path;
+import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -31,8 +35,9 @@ import java.util.concurrent.atomic.LongAdder;
  * a {@value #RETRY_BACKOFF_MS} ms backoff. If all retries fail with a row-shaped failure, the
  * worker recursively bisects the batch to isolate poison actions while still flushing
  * unaffected actions. Global/transient failures are not bisected, avoiding retry storms when
- * the database is down. {@link #permanentlyDropped()} is incremented by the number of actions
- * that cannot be flushed.
+ * the database is down. {@link #permanentlyDropped()} retains the historical sink-failure
+ * counter; production queues also retain failed actions in {@link #quarantined()}
+ * until a later recovery attempt succeeds.
  *
  * <p>All log statements carry the {@code VONIXGUARDIAN_QUEUE} SLF4J marker so server admins
  * can filter queue-internal noise.
@@ -50,10 +55,16 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final long flushIntervalMs;
     private final int batchSize;
     private final BatchSink sink;
+    private final QuarantineStore quarantineStore;
+    private final Map<Long, RecoveryItem> recovery = new LinkedHashMap<>();
     private final Thread worker;
 
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong permanentlyDropped = new AtomicLong();
+    private final AtomicLong recoveredFromQuarantine = new AtomicLong();
+    private final AtomicLong quarantineOverflow = new AtomicLong();
+    private final AtomicLong quarantineWriteFailures = new AtomicLong();
+    private final AtomicBoolean quarantineRetentionLimitReached = new AtomicBoolean();
     private final AtomicLong lastDropLogNs = new AtomicLong(Long.MIN_VALUE);
 
     // v1.1.3-diag: per-type producer + drop counters. Records EVERY submit(),
@@ -121,6 +132,22 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      */
     public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                                   BatchSink sink, ThreadFactory tf) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, (QuarantineStore) null);
+    }
+
+    /** Production constructor with a durable local quarantine journal. */
+    public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                                  BatchSink sink, ThreadFactory tf, Path quarantinePath) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, openQuarantine(quarantinePath));
+    }
+
+    /**
+     * Package-visible constructor for tests that need non-default quarantine
+     * retention limits (entry/byte caps). Production always uses
+     * {@link #BatchedAsyncWriteQueue(int, long, int, BatchSink, ThreadFactory, Path)}.
+     */
+    BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                           BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize must be > 0");
         }
@@ -134,6 +161,18 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         this.flushIntervalMs = flushIntervalMs;
         this.batchSize = batchSize;
         this.sink = Objects.requireNonNull(sink, "sink");
+        this.quarantineStore = quarantineStore;
+        if (quarantineStore != null) {
+            long firstRetry = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
+            for (QuarantineStore.Entry entry : quarantineStore.entries()) {
+                // Durable SINK_SUCCEEDED means the sink already accepted this
+                // row; restart must retry only journal ACK, never re-flush.
+                // Loaded marker sets both sinkSucceeded and markerDurable.
+                boolean durable = entry.sinkSucceeded();
+                recovery.put(entry.sequence(), new RecoveryItem(entry.sequence(), entry.action(), 0,
+                        firstRetry, durable, durable));
+            }
+        }
         Objects.requireNonNull(tf, "tf");
         // v1.3.0 W2: pre-populate per-type maps at boot so hot-path submit is
         // a plain map.get() with no computeIfAbsent, no lambda capture, no
@@ -263,9 +302,42 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         return dropped.get();
     }
 
-    /** @return total actions lost permanently after exhausting sink retries */
+    /**
+     * @return total actions whose normal sink retries were exhausted. With a
+     * durable quarantine configured, this is a failed counter, not a loss count.
+     */
     public long permanentlyDropped() {
         return permanentlyDropped.get();
+    }
+
+    /** Number of actions currently retained in durable quarantine. */
+    public long quarantined() {
+        synchronized (recovery) { return recovery.size(); }
+    }
+
+    /** Number of quarantined actions successfully recovered by this queue instance. */
+    public long recoveredFromQuarantine() {
+        return recoveredFromQuarantine.get();
+    }
+
+    /** Number of actions rejected because the bounded quarantine was full. */
+    public long quarantineOverflow() {
+        return quarantineOverflow.get();
+    }
+
+    /** Number of quarantine writes that failed for an I/O or serialization reason. */
+    public long quarantineWriteFailures() {
+        return quarantineWriteFailures.get();
+    }
+
+    /** Whether the configured bounded quarantine has rejected a row at its retention limit. */
+    public boolean quarantineRetentionLimitReached() {
+        return quarantineRetentionLimitReached.get();
+    }
+
+    /** Whether this queue has a durable quarantine configured. */
+    public boolean quarantineEnabled() {
+        return quarantineStore != null;
     }
 
     /**
@@ -391,8 +463,13 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         final List<Action> batch = new ArrayList<>(batchSize);
         final long flushIntervalNs = TimeUnit.MILLISECONDS.toNanos(flushIntervalMs);
         long lastFlushNs = System.nanoTime();
-        while (!shutdown || !queue.isEmpty()) {
-            try {
+        try {
+            while (!shutdown || !queue.isEmpty()) {
+                try {
+                if (!shutdown && processDueRecovery()) {
+                    lastFlushNs = System.nanoTime();
+                    continue;
+                }
                 // Time-budgeted poll: never wait longer than the remaining slice of the
                 // current flush window. Guarantees any submitted action lands in the sink
                 // within flushIntervalMs even under a steady trickle of arrivals that
@@ -407,6 +484,10 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 long pollMs = remainingNs > 0
                         ? Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNs))
                         : 1L;
+                if (!shutdown) {
+                    long recoveryWait = recoveryWaitMillis();
+                    if (recoveryWait >= 0L) pollMs = Math.min(pollMs, Math.max(1L, recoveryWait));
+                }
                 // When paused, don't drain the ring buffer — leaving items in
                 // `queue` preserves the diagnostic contract of pendingSnapshot()
                 // (so operators using `/vg consumer pause` + queueLookup see the
@@ -423,10 +504,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                     batch.add(head);
                     queue.drainTo(batch, batchSize - batch.size());
                 }
+                if (head == null && !shutdown) processDueRecovery();
                 boolean windowExpired = (System.nanoTime() - lastFlushNs) >= flushIntervalNs;
                 // Flush if we hit batchSize, the flush window expired (time-up), or we're
                 // shutting down with leftovers.
                 if (!batch.isEmpty() && (batch.size() >= batchSize || windowExpired || shutdown) && (!paused || shutdown)) {
+                    // drainAndFlush/close interrupt the worker only to wake poll/sleep.
+                    // Consume that wake signal before retry backoff so global sink
+                    // failures still receive the full MAX_SINK_RETRIES budget.
+                    if (shutdown) {
+                        Thread.interrupted();
+                    }
                     flushWithRetry(new ArrayList<>(batch));
                     batch.clear();
                     lastFlushNs = System.nanoTime();
@@ -435,37 +523,46 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                     // "windowExpired" the moment the next action arrives.
                     lastFlushNs = System.nanoTime();
                 }
-            } catch (InterruptedException ie) {
-                // Treated as a shutdown signal; loop condition will re-check `shutdown` and
-                // we'll drain any remaining items before exiting.
-                if (!batch.isEmpty()) {
-                    flushWithRetry(new ArrayList<>(batch));
-                    batch.clear();
-                    lastFlushNs = System.nanoTime();
-                }
+                } catch (InterruptedException ie) {
+                // The finally block owns local-batch cleanup. Keeping this
+                // batch intact also preserves pause semantics until shutdown.
                 if (shutdown) {
                     break;
                 }
-                // If this interrupt is the pause signal (setPaused(true) interrupts the
-                // worker to break it out of an armed poll()), do NOT restore the interrupt
-                // flag: clear it and continue so the loop cleanly re-enters and observes
-                // the `paused` guard below, freezing the pipeline WITHOUT polling another
-                // item out of the ring buffer. Restoring the flag here would make the very
-                // next blocking call throw immediately, reopening the race where an action
-                // submitted right after setPaused(true) gets pulled into the worker's local
-                // batch before the pause takes hold — which drops it from pendingSnapshot()
-                // and breaks the `paused = pipeline frozen` contract queueLookup() relies on.
+                // setPaused(true) interrupts the worker to break it out of an
+                // armed poll. Consume the interrupt so the next iteration can
+                // observe the paused guard without polling another ring item.
                 if (paused) {
                     continue;
                 }
-                // Spurious interrupt while still running (not paused, not shutdown) — restore
-                // flag and continue.
-                Thread.currentThread().interrupt();
-            } catch (RuntimeException re) {
-                LOG.error(MARKER, "Unexpected error in queue worker; continuing", re);
+                // Worker-internal interrupts are control signals, not a caller
+                // cancellation contract. Leaving the flag cleared prevents a
+                // tight loop of immediately interrupted polls.
+                continue;
+                } catch (RuntimeException re) {
+                    LOG.error(MARKER, "Unexpected error in queue worker; continuing", re);
+                }
+            }
+        } finally {
+            flushWorkerRemainder(batch);
+        }
+    }
+
+    private void flushWorkerRemainder(List<Action> batch) {
+        // The loop condition only sees the ring buffer. A shutdown can arrive
+        // while actions are held in the worker's local batch.
+        //
+        // Shutdown/pause interrupts are wake signals only. Clear any stale
+        // interrupt before the final drain so retry backoff is not spuriously
+        // aborted after the first failed sink attempt (global DB-down path).
+        Thread.interrupted();
+        if (!batch.isEmpty()) {
+            try {
+                flushWithRetry(new ArrayList<>(batch));
+            } finally {
+                batch.clear();
             }
         }
-        // Final drain on graceful exit.
         if (!queue.isEmpty()) {
             List<Action> tail = new ArrayList<>(queue.size());
             queue.drainTo(tail);
@@ -500,7 +597,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
 
     /**
      * Try the normal whole-batch retry path first. Returns {@code null} when
-     * the batch reached the sink or was counted as permanently dropped because
+     * the batch reached the sink or was retained by the quarantine path because
      * the caller's deadline/backoff was interrupted. A non-null exception means
      * all normal retry attempts failed and the caller can decide whether
      * poison-row isolation is appropriate.
@@ -526,6 +623,13 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 try {
                     Thread.sleep(backoffMillis(deadlineNs));
                 } catch (InterruptedException ie) {
+                    // drainAndFlush/close wake the worker with interrupt. That is a
+                    // poll/sleep wake, not cancellation of the unbounded final drain
+                    // retry budget. Keep fail-closed interrupt behavior for live
+                    // (non-shutdown) flushes and for deadline-bounded caller drains.
+                    if (shutdown && deadlineNs == Long.MAX_VALUE) {
+                        continue;
+                    }
                     Thread.currentThread().interrupt();
                     permanentlyDrop(batch, "interrupted during retry backoff");
                     return null;
@@ -594,9 +698,144 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         long total = permanentlyDropped.addAndGet(batch.size());
         LOG.warn(MARKER,
-                "Permanently dropped {} action(s): {} (total permanently dropped={})",
+                "Quarantining {} action(s) after sink failure: {} (total failed={})",
                 batch.size(), reason, total);
+        if (quarantineStore == null) return;
+        for (Action action : batch) {
+            try {
+                long sequence = quarantineStore.append(action);
+                if (sequence < 0L) {
+                    quarantineOverflow.incrementAndGet();
+                    quarantineRetentionLimitReached.set(true);
+                    LOG.error(MARKER, "Durable quarantine full; action id={} cannot be retained", action.id());
+                    continue;
+                }
+                synchronized (recovery) {
+                    recovery.put(sequence, new RecoveryItem(sequence, action, 0,
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(1L), false, false));
+                }
+            } catch (IOException e) {
+                quarantineWriteFailures.incrementAndGet();
+                LOG.error(MARKER, "Durable quarantine write failed for action id={}", action.id(), e);
+            }
+        }
     }
+
+    private boolean processDueRecovery() {
+        RecoveryItem item = null;
+        long now = System.nanoTime();
+        synchronized (recovery) {
+            for (RecoveryItem candidate : recovery.values()) {
+                if (candidate.nextRetryNs <= now) { item = candidate; break; }
+            }
+        }
+        if (item == null) return false;
+
+        Exception last = null;
+        boolean sinkSucceeded = item.sinkSucceeded;
+        boolean markerDurable = item.markerDurable;
+        if (!sinkSucceeded) {
+            for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
+                try {
+                    sink.flush(List.of(item.action));
+                    sinkSucceeded = true;
+                    break;
+                } catch (Exception failure) {
+                    last = failure;
+                    if (attempt < MAX_SINK_RETRIES) {
+                        try { Thread.sleep(RETRY_BACKOFF_MS); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (sinkSucceeded) {
+            // Persist durable sink-success before attempting ACK so a crash
+            // between sink and ACK never re-flushes on restart.
+            // sinkSucceeded (in-memory, skip reflush) is independent of
+            // markerDurable (journal SINK_SUCCEEDED persisted). After a
+            // marker failure keep sinkSucceeded=true but markerDurable=false
+            // and retry the marker on every due pass before ACK.
+            if (quarantineStore != null && !markerDurable) {
+                try {
+                    quarantineStore.markSinkSucceeded(item.sequence);
+                    markerDurable = true;
+                } catch (Exception markerFailure) {
+                    long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
+                    synchronized (recovery) {
+                        recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                                item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
+                                true, false));
+                    }
+                    LOG.warn(MARKER,
+                            "Quarantine sink-success marker deferred for action id={} after successful sink recovery: {}",
+                            item.action.id(), markerFailure.toString());
+                    return true;
+                }
+            }
+            // ACK only after the durable marker is confirmed. Never re-flush a
+            // row that already reached the sink just because journal retirement failed.
+            Exception ackFailure = null;
+            for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
+                try {
+                    if (quarantineStore != null) quarantineStore.acknowledge(item.sequence);
+                    synchronized (recovery) { recovery.remove(item.sequence); }
+                    recoveredFromQuarantine.incrementAndGet();
+                    return true;
+                } catch (Exception failure) {
+                    ackFailure = failure;
+                    if (attempt < MAX_SINK_RETRIES) {
+                        try { Thread.sleep(RETRY_BACKOFF_MS); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+            }
+            long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
+            synchronized (recovery) {
+                recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                        item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
+                        true, true));
+            }
+            LOG.warn(MARKER, "Quarantine ACK deferred for action id={} after successful sink recovery: {}",
+                    item.action.id(), ackFailure == null ? "interrupted" : ackFailure.toString());
+            return true;
+        }
+
+        long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
+        synchronized (recovery) {
+            recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                    item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
+                    false, false));
+        }
+        LOG.warn(MARKER, "Quarantine recovery deferred for action id={} after retries: {}",
+                item.action.id(), last == null ? "interrupted" : last.toString());
+        return true;
+    }
+
+    private long recoveryWaitMillis() {
+        long earliest = Long.MAX_VALUE;
+        synchronized (recovery) {
+            for (RecoveryItem item : recovery.values()) earliest = Math.min(earliest, item.nextRetryNs);
+        }
+        if (earliest == Long.MAX_VALUE) return -1L;
+        long remaining = earliest - System.nanoTime();
+        return remaining <= 0L ? 0L : TimeUnit.NANOSECONDS.toMillis(remaining);
+    }
+
+    /**
+     * @param sinkSucceeded  in-memory: recovery sink.flush already accepted this row; never re-flush
+     * @param markerDurable  journal SINK_SUCCEEDED is durable; only then may ACK proceed.
+     *                       On restart load, both are true when the entry carries SINK_SUCCEEDED.
+     */
+    private record RecoveryItem(long sequence, Action action, int attempts, long nextRetryNs,
+                                boolean sinkSucceeded, boolean markerDurable) {}
 
     private static boolean isLikelyRowSpecificFailure(Throwable t) {
         for (Throwable cur = t; cur != null; cur = cur.getCause()) {
@@ -608,6 +847,15 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             }
         }
         return false;
+    }
+
+    private static QuarantineStore openQuarantine(Path quarantinePath) {
+        if (quarantinePath == null) return null;
+        try {
+            return new QuarantineStore(quarantinePath);
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to open durable queue quarantine", e);
+        }
     }
 
     private void maybeLogDrop(long totalDropped) {

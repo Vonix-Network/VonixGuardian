@@ -17,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -56,6 +57,7 @@ class NbtRollbackRoundTripTest {
         Executor sync = Runnable::run;
         engine = new RollbackEngine(dao, mutator, sync);
         when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(1L);
+        when(dao.closeRollbackBatch(anyLong())).thenReturn(1);
     }
 
     @Test
@@ -214,25 +216,25 @@ class NbtRollbackRoundTripTest {
         final List<RespawnEntityCall> legacyRespawnEntity = Collections.synchronizedList(new ArrayList<>());
         final List<RespawnEntityCall> nbtRespawnEntity    = Collections.synchronizedList(new ArrayList<>());
 
-        @Override public void setBlock(String w, int x, int y, int z, String targetId, String targetMeta) {
-            legacySetBlock.add(new SetBlockCall(targetId, targetMeta, null, null));
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String targetId, String targetMeta) {
+            legacySetBlock.add(new SetBlockCall(targetId, targetMeta, null, null));            return true;
         }
-        @Override public void setBlock(String w, int x, int y, int z, String targetId, String targetMeta,
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String targetId, String targetMeta,
                                        String blockState, byte[] blockEntityNbt) {
-            nbtSetBlock.add(new SetBlockCall(targetId, targetMeta, blockState, blockEntityNbt));
+            nbtSetBlock.add(new SetBlockCall(targetId, targetMeta, blockState, blockEntityNbt));            return true;
         }
-        @Override public void giveOrDrop(String w, int x, int y, int z, String itemId, int amt, String meta) {
-            legacyGiveOrDrop.add(new GiveOrDropCall(itemId, amt, null));
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String itemId, int amt, String meta) {
+            legacyGiveOrDrop.add(new GiveOrDropCall(itemId, amt, null));            return true;
         }
-        @Override public void giveOrDrop(String w, int x, int y, int z, String itemId, int amt, String meta, byte[] itemNbt) {
-            nbtGiveOrDrop.add(new GiveOrDropCall(itemId, amt, itemNbt));
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String itemId, int amt, String meta, byte[] itemNbt) {
+            nbtGiveOrDrop.add(new GiveOrDropCall(itemId, amt, itemNbt));            return true;
         }
-        @Override public void removeFromContainer(String w, int x, int y, int z, String itemId, int amt) {}
-        @Override public void respawnEntity(String w, int x, int y, int z, String entityType, String targetMeta) {
-            legacyRespawnEntity.add(new RespawnEntityCall(entityType, null));
+        @Override public boolean tryRemoveFromContainer(String w, int x, int y, int z, String itemId, int amt) {return true; }
+        @Override public boolean tryRespawnEntity(String w, int x, int y, int z, String entityType, String targetMeta) {
+            legacyRespawnEntity.add(new RespawnEntityCall(entityType, null));            return true;
         }
-        @Override public void respawnEntity(String w, int x, int y, int z, String entityType, String targetMeta, byte[] entityNbt) {
-            nbtRespawnEntity.add(new RespawnEntityCall(entityType, entityNbt));
+        @Override public boolean tryRespawnEntity(String w, int x, int y, int z, String entityType, String targetMeta, byte[] entityNbt) {
+            nbtRespawnEntity.add(new RespawnEntityCall(entityType, entityNbt));            return true;
         }
     }
 }

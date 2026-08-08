@@ -50,7 +50,7 @@ class NbtRollbackFidelityTest {
 
         RecordingMutator m = new RecordingMutator();
         // Simulate the rollback engine handing the NBT-aware overload to the mutator.
-        m.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+        m.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                   a.newBlockState(), a.blockEntityNbt());
 
         assertThat(m.setBlockCalls).hasSize(1);
@@ -80,7 +80,7 @@ class NbtRollbackFidelityTest {
         assertThat(a.itemNbt()).isSameAs(itemNbt);
 
         RecordingMutator m = new RecordingMutator();
-        m.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.amount(),
+        m.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.amount(),
                      a.targetMeta(), a.itemNbt());
 
         assertThat(m.giveOrDropCalls).hasSize(1);
@@ -110,7 +110,7 @@ class NbtRollbackFidelityTest {
 
         RecordingMutator m = new RecordingMutator();
         // Rollback path: put back the chest at the recorded state + BE.
-        m.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+        m.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                   a.oldBlockState(), a.blockEntityNbt());
 
         assertThat(m.setBlockCalls).hasSize(1);
@@ -143,7 +143,7 @@ class NbtRollbackFidelityTest {
         // is the state of every loader cell in the repo at X1 time. The default
         // NBT overload from the interface must delegate here.
         LegacyOnlyMutator legacy = new LegacyOnlyMutator();
-        legacy.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+        legacy.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                        a.oldBlockState(), a.blockEntityNbt());
         assertThat(legacy.legacyCalls).isEqualTo(1);
     }
@@ -166,25 +166,25 @@ class NbtRollbackFidelityTest {
         final List<SetBlockCall> setBlockCalls = new ArrayList<>();
         final List<GiveOrDropCall> giveOrDropCalls = new ArrayList<>();
 
-        @Override public void setBlock(String w, int x, int y, int z, String t, String m) {
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String t, String m) {
             throw new AssertionError("legacy setBlock should not be called when NBT overload is implemented");
         }
-        @Override public void setBlock(String w, int x, int y, int z, String t, String m,
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String t, String m,
                                        String blockState, byte[] blockEntityNbt) {
             setBlockCalls.add(new SetBlockCall(blockState,
                 blockEntityNbt == null ? null : Arrays.copyOf(blockEntityNbt, blockEntityNbt.length)));
             // Also stash by-reference for the identity assertions.
-            setBlockCalls.set(setBlockCalls.size() - 1, new SetBlockCall(blockState, blockEntityNbt));
+            setBlockCalls.set(setBlockCalls.size() - 1, new SetBlockCall(blockState, blockEntityNbt));            return true;
         }
-        @Override public void giveOrDrop(String w, int x, int y, int z, String t, int a, String m) {
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String t, int a, String m) {
             throw new AssertionError("legacy giveOrDrop should not be called when NBT overload is implemented");
         }
-        @Override public void giveOrDrop(String w, int x, int y, int z, String t, int a, String m,
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String t, int a, String m,
                                          byte[] itemNbt) {
-            giveOrDropCalls.add(new GiveOrDropCall(itemNbt));
+            giveOrDropCalls.add(new GiveOrDropCall(itemNbt));            return true;
         }
-        @Override public void removeFromContainer(String w, int x, int y, int z, String t, int a) {}
-        @Override public void respawnEntity(String w, int x, int y, int z, String t, String m) {}
+        @Override public boolean tryRemoveFromContainer(String w, int x, int y, int z, String t, int a) {return true; }
+        @Override public boolean tryRespawnEntity(String w, int x, int y, int z, String t, String m) {return true; }
     }
 
     /**
@@ -198,8 +198,8 @@ class NbtRollbackFidelityTest {
         @Override public void setBlock(String w, int x, int y, int z, String t, String m) {
             legacyCalls++;
         }
-        @Override public void giveOrDrop(String w, int x, int y, int z, String t, int a, String m) {}
-        @Override public void removeFromContainer(String w, int x, int y, int z, String t, int a) {}
-        @Override public void respawnEntity(String w, int x, int y, int z, String t, String m) {}
+        @Override public void giveOrDrop(String w, int x, int y, int z, String t, int a, String m) { }
+        @Override public void removeFromContainer(String w, int x, int y, int z, String t, int a) { }
+        @Override public void respawnEntity(String w, int x, int y, int z, String t, String m) { }
     }
 }

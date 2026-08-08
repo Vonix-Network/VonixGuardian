@@ -23,7 +23,7 @@ import java.util.UUID;
  * @param affectedIds     action IDs that were (or would be, if preview) toggled
  * @param skippedIds      action IDs excluded from the plan because their type is not rollbackable
  * @param plannedSteps    number of world mutations the plan would dispatch
- * @param dispatchedSteps number of world mutations actually submitted to the executor
+ * @param dispatchedSteps number of world mutations confirmed after executor completion
  *                        ({@code 0} for previews)
  * @param originalFilter  the (rolledBack-normalized) filter the plan was built
  *                        from; may be {@code null} for legacy callers that

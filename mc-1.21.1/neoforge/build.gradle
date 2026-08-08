@@ -210,3 +210,15 @@ tasks.named('jar') {
 tasks.named('build') {
     dependsOn shadowJar
 }
+
+tasks.register('verifyProductionMappings') {
+    dependsOn 'shadowJar'
+    doLast {
+        File artifact = layout.buildDirectory.file("libs/${archivesBaseName}-${project.version}.jar").get().asFile
+        if (!artifact.isFile()) throw new GradleException("Missing NeoForge production artifact: ${artifact}")
+        String listing = ['jar', 'tf', artifact.absolutePath].execute().text
+        if (!listing.contains('network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeWorldMutator.class')) throw new GradleException("Missing NeoForge mutator in ${artifact}")
+    }
+}
+
+tasks.named('build') { dependsOn 'verifyProductionMappings' }

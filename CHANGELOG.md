@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.11] - 2026-08-08
+
+### Fixed
+
+- **Forge entity-change watchdog stall.** Fire-causer hard eviction no longer
+  performs an unbounded `ConcurrentHashMap.entrySet().removeIf` sweep on the
+  server thread. Eviction now uses a bounded FIFO candidate pass, preventing
+  `LivingDestroyBlockEvent` floods from monopolizing a tick while retaining the
+  cache bound.
+- **Queue shutdown durability.** Worker-local batches are finalized before exit,
+  including pause-to-shutdown and interrupt paths; failed rows remain in the
+  durable quarantine when configured.
+- **Command audit privacy.** Directly submitted command actions retain only the
+  command token at the final persistence boundary.
+- **Permission-filtered lookup pagination.** Visible pages now stream and filter
+  raw DAO pages so denied rows do not consume page slots; count-only queries keep
+  database-side permission-aware counts. DAO result-cap truncation fails closed
+  instead of being treated as a complete page.
+- **DAO page-cap signaling.** `queryPage` reports truncation only when a request
+  exceeds `maxResultRows` and the response fills that cap; short final pages are
+  treated as true EOF.
+- **Quarantine durability.** Compact rewrites force the replacement image before
+  rename; recovery ACKs no longer re-flush a row that already reached the sink.
+- **Queue observability.** Status now reports quarantined, recovered, and
+  quarantine-overflow counters.
+- **Fabric JarInJar packaging.** The four Fabric cells now use Loom's
+  `include modImplementation(...)` mechanism. SQLite, MySQL, PostgreSQL, core,
+  Gson, and HikariCP are nested under `META-INF/jars/`; the outer artifact has
+  no JDBC classes. Deterministic `verifyJarInJarPackaging` tasks guard this
+  layout. `-shadow`, `-all`, and `-slim` artifacts are not release assets.
+
 ## [1.3.10] - 2026-07-11
 
 ### Added

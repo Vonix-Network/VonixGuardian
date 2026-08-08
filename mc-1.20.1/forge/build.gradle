@@ -167,4 +167,29 @@ tasks.named('jar') { archiveClassifier = 'slim' }
 // the reobf pipeline so production-mapped classes (SRG) are produced.
 reobf { shadowJar {} }
 
-tasks.named('build') { dependsOn 'shadowJar' }
+// The canonical production artifact must be the post-reobfuscation SRG jar.
+// Never leave build/libs pointing at the pre-reobf shadow output.
+tasks.register('publishReobfShadowJar') {
+    dependsOn 'reobfShadowJar'
+    doLast {
+        File source = layout.buildDirectory.file('reobfShadowJar/output.jar').get().asFile
+        File target = layout.buildDirectory.file("libs/${archivesBaseName}-${project.version}.jar").get().asFile
+        if (!source.isFile()) throw new GradleException("Missing reobfuscated Forge artifact: ${source}")
+        java.nio.file.Files.copy(source.toPath(), target.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        logger.lifecycle "Published post-reobf artifact ${target.name}"
+    }
+}
+
+tasks.register('verifyProductionMappings') {
+    dependsOn 'publishReobfShadowJar'
+    doLast {
+        File artifact = layout.buildDirectory.file("libs/${archivesBaseName}-${project.version}.jar").get().asFile
+        String listing = ['jar', 'tf', artifact.absolutePath].execute().text
+        if (!listing.contains('network/vonix/guardian/mc/')) throw new GradleException("Missing loader classes in ${artifact}")
+        String bytecode = ['javap', '-classpath', artifact.absolutePath, '-c', '-p', 'network.vonix.guardian.mc.v1_20_1.forge.ForgeWorldMutator'].execute().text
+        if (!bytecode.contains('m_7731_') && !bytecode.contains('m_46473_')) throw new GradleException("Artifact is not SRG-mapped: ${artifact}")
+    }
+}
+
+tasks.named('build') { dependsOn 'verifyProductionMappings' }

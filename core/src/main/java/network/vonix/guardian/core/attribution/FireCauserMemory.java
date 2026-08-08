@@ -76,10 +76,10 @@ public final class FireCauserMemory {
     /** Amortised-cleanup stride: how many entries to scan per put/miss. */
     private static final int SWEEP_STRIDE = 32;
 
-    /** Gate on the O(n) hard-evict sweep (mirrors {@link TntPrimeMemory}). */
+    /** Gate on the bounded hard-evict pass. */
     static final int HARD_EVICT_STRIDE = 64;
 
-    /** Per-sweep cap on arbitrary evictions (mirrors {@link TntPrimeMemory}). */
+    /** Per-pass cap on candidate inspections/removals. */
     static final int HARD_EVICT_ARBITRARY_CAP = 128;
 
     private final ConcurrentHashMap<Key, CauserRecord> entries = new ConcurrentHashMap<>();
@@ -87,6 +87,19 @@ public final class FireCauserMemory {
     private final int maxEntries;
     private final int radius;
     private final java.util.function.LongSupplier clock;
+
+    /**
+     * Bounded insertion candidates for hard eviction.  Never scan
+     * {@link #entries} wholesale from the server thread: the previous
+     * {@code entrySet().removeIf(...)} path made a full-map O(n) sweep visible
+     * in watchdog traces during modded-entity floods.
+     */
+    private final Key[] evictionKeys;
+    private final CauserRecord[] evictionRecords;
+    private final Object evictionLock = new Object();
+    private final int evictionCandidateLimit;
+    private int evictionHead;
+    private int evictionSize;
 
     private java.util.Iterator<java.util.Map.Entry<Key, CauserRecord>> sweepCursor;
     private final Object sweepLock = new Object();
@@ -109,6 +122,11 @@ public final class FireCauserMemory {
         this.maxEntries = maxEntries;
         this.radius = radius;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.evictionCandidateLimit = maxEntries > Integer.MAX_VALUE - HARD_EVICT_ARBITRARY_CAP
+                ? Integer.MAX_VALUE
+                : maxEntries + HARD_EVICT_ARBITRARY_CAP;
+        this.evictionKeys = new Key[evictionCandidateLimit];
+        this.evictionRecords = new CauserRecord[evictionCandidateLimit];
     }
 
     /**
@@ -128,7 +146,10 @@ public final class FireCauserMemory {
     public void record(String worldId, int x, int y, int z, CauserRecord rec) {
         if (worldId == null || rec == null) return;
         long now = clock.getAsLong();
-        entries.put(new Key(worldId, x, y, z), rec.withTimestamp(now));
+        Key key = new Key(worldId, x, y, z);
+        CauserRecord stamped = rec.withTimestamp(now);
+        entries.put(key, stamped);
+        enqueueEvictionCandidate(key, stamped);
         maybeEvict(now);
         if (entries.size() > maxEntries
                 && (hardEvictCounter.incrementAndGet() % HARD_EVICT_STRIDE) == 0L) {
@@ -209,6 +230,12 @@ public final class FireCauserMemory {
         synchronized (sweepLock) {
             sweepCursor = null;
         }
+        synchronized (evictionLock) {
+            java.util.Arrays.fill(evictionKeys, null);
+            java.util.Arrays.fill(evictionRecords, null);
+            evictionHead = 0;
+            evictionSize = 0;
+        }
         hardEvictCounter.set(0L);
     }
 
@@ -245,20 +272,57 @@ public final class FireCauserMemory {
         }
     }
 
+    /**
+     * Remove expired/over-cap entries using only a bounded candidate deque.
+     * This deliberately does not call {@code entrySet().removeIf}: that
+     * operation is an unbounded O(n) server-thread sweep and was the direct
+     * cause of the watchdog stalls reported against Forge 1.3.10.
+     */
     private void hardEvict(long now) {
         hardEvictInvocations.incrementAndGet();
         long halfTtlBoundary = now - (ttlMs / 2);
-        entries.entrySet().removeIf(e -> e.getValue().causedAtMillis < halfTtlBoundary);
-        if (entries.size() <= maxEntries) return;
-        java.util.Iterator<java.util.Map.Entry<Key, CauserRecord>> it = entries.entrySet().iterator();
-        int dropped = 0;
-        while (entries.size() > maxEntries && it.hasNext() && dropped < HARD_EVICT_ARBITRARY_CAP) {
-            it.next();
-            it.remove();
-            dropped++;
+        synchronized (evictionLock) {
+            int inspected = 0;
+            while (entries.size() > maxEntries
+                    && inspected < HARD_EVICT_ARBITRARY_CAP
+                    && evictionSize > 0) {
+                Key candidateKey = evictionKeys[evictionHead];
+                CauserRecord candidateRecord = evictionRecords[evictionHead];
+                evictionKeys[evictionHead] = null;
+                evictionRecords[evictionHead] = null;
+                evictionHead = (evictionHead + 1) % evictionCandidateLimit;
+                evictionSize--;
+                inspected++;
+                CauserRecord current = entries.get(candidateKey);
+                if (current != candidateRecord) {
+                    continue;
+                }
+                // If the cache is over cap, removing a current young candidate
+                // is still preferable to exceeding the bound. Old candidates
+                // are naturally removed first because the deque is FIFO.
+                if (current.causedAtMillis < halfTtlBoundary || entries.size() > maxEntries) {
+                    entries.remove(candidateKey, current);
+                }
+            }
         }
         synchronized (sweepLock) {
             sweepCursor = null;
+        }
+    }
+
+    /** Add one candidate and trim the candidate structure in O(1) amortized time. */
+    private void enqueueEvictionCandidate(Key key, CauserRecord record) {
+        synchronized (evictionLock) {
+            int tail = (evictionHead + evictionSize) % evictionCandidateLimit;
+            if (evictionSize == evictionCandidateLimit) {
+                evictionKeys[evictionHead] = null;
+                evictionRecords[evictionHead] = null;
+                evictionHead = (evictionHead + 1) % evictionCandidateLimit;
+                evictionSize--;
+            }
+            evictionKeys[tail] = key;
+            evictionRecords[tail] = record;
+            evictionSize++;
         }
     }
 

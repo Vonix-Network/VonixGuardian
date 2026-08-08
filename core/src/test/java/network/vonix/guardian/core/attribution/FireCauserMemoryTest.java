@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * v1.3.10 C2 regression tests — {@link FireCauserMemory}.
+ * v1.3.11 C2 regression tests — {@link FireCauserMemory}.
  *
  * <p>Covers the orphan-fire pairing/suppression contract: an allowlisted
  * entity's break is paired with nearby fire (attributed + shared pairId); a
@@ -167,6 +167,41 @@ class FireCauserMemoryTest {
         assertThat(mem.size()).isEqualTo(1);
         mem.clear();
         assertThat(mem.size()).isEqualTo(0);
+    }
+
+    @Test
+    void overCapHardEvictionIsBoundedAndKeepsCacheWithinLimit() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        int maxEntries = 4;
+        FireCauserMemory mem = new FireCauserMemory(2_000L, maxEntries, 0, clock::get);
+
+        for (int i = 0; i < FireCauserMemory.HARD_EVICT_STRIDE + maxEntries; i++) {
+            mem.record(WORLD, i, 64, 0,
+                    FireCauserMemory.CauserRecord.suppressed("mod:entity", clock.get()));
+        }
+
+        assertThat(mem.hardEvictInvocations()).isEqualTo(1L);
+        assertThat(mem.size()).isLessThanOrEqualTo(maxEntries);
+    }
+
+    @Test
+    void hardEvictionSkipsStaleOverwrittenCandidate() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        int maxEntries = 1;
+        FireCauserMemory mem = new FireCauserMemory(2_000L, maxEntries, 0, clock::get);
+        FireCauserMemory.CauserRecord old = FireCauserMemory.CauserRecord.suppressed("old:entity", clock.get());
+        FireCauserMemory.CauserRecord replacement = FireCauserMemory.CauserRecord.suppressed("new:entity", clock.get());
+
+        mem.record(WORLD, 0, 64, 0, old);
+        for (int i = 0; i < FireCauserMemory.HARD_EVICT_STRIDE - 1; i++) {
+            mem.record(WORLD, i + 1, 64, 0,
+                    FireCauserMemory.CauserRecord.suppressed("mod:entity", clock.get()));
+        }
+        mem.record(WORLD, 0, 64, 0, replacement);
+
+        assertThat(mem.hardEvictInvocations()).isEqualTo(1L);
+        assertThat(mem.consume(WORLD, 0, 64, 0)).isNotNull()
+                .extracting(r -> r.entityKey).isEqualTo("new:entity");
     }
 
     @Test

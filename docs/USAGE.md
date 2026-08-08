@@ -188,13 +188,13 @@ matches `SHA256SUMS` published with the release.
 | Loader | MC | Library packaging | Boot time | Status |
 |---|---|---|---|---|
 | NeoForge | 1.21.1 | JarInJar (sqlite-jdbc + slf4j-api nested) | 1.4s | ✅ |
-| Fabric   | 1.21.1 | shade-unrelocated sqlite-jdbc, slf4j excluded | 0.9s | ✅ |
+| Fabric   | 1.21.1 | Loom JarInJar (`META-INF/jars`, slf4j excluded) | 0.9s | ✅ |
 | Forge    | 1.20.1 | FG6 jarJar (sqlite-jdbc + slf4j-api nested) | 3.4s | ✅ |
-| Fabric   | 1.20.1 | shade-unrelocated, slf4j excluded | ≤2s | ✅ |
+| Fabric   | 1.20.1 | Loom JarInJar (`META-INF/jars`, slf4j excluded) | ≤2s | ✅ |
 | Forge    | 1.19.2 | FG6 jarJar | 8.3s | ✅ |
-| Fabric   | 1.19.2 | shade-unrelocated | ≤2s | ✅ |
+| Fabric   | 1.19.2 | Loom JarInJar (`META-INF/jars`, slf4j excluded) | ≤2s | ✅ |
 | Forge    | 1.18.2 | FG6 jarJar | 44s* | ✅ |
-| Fabric   | 1.18.2 | shade-unrelocated | ≤2s | ✅ |
+| Fabric   | 1.18.2 | Loom JarInJar (`META-INF/jars`, slf4j excluded) | ≤2s | ✅ |
 
 *First-boot world generation on 1.18.2 Forge takes longer; subsequent boots are sub-3-second.
 
@@ -218,7 +218,9 @@ You're running a pre-v0.1.0 (or pre-fix) NeoForge/Forge jar. v0.1.0 ships sqlite
 
 ### "UnsatisfiedLinkError on first DB op"
 
-Shaded-relocated sqlite-jdbc has broken JNI symbols. v0.1.0+ ships unrelocated (Fabric) or nested via JarInJar (NF/Forge) — both preserve the canonical `org.sqlite.core.NativeDB` class path that the `.so`/`.dll`/`.dylib` needs. Upgrade.
+Shaded-relocated sqlite-jdbc has broken JNI symbols. Current artifacts ship the driver nested
+via JarInJar on every loader, preserving the canonical `org.sqlite.core.NativeDB` class path
+that the `.so`/`.dll`/`.dylib` needs. Upgrade if you are using an older artifact.
 
 ### "/vg command not recognised after first boot"
 

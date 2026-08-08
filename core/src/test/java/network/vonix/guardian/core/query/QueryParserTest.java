@@ -226,6 +226,35 @@ class QueryParserTest {
     }
 
     @Test
+    void enforceMaxRadius_onlyBoundsNumericRadius() {
+        QueryFilter numeric = parser.parse("r:20", CTX);
+        assertThatThrownBy(() -> QueryParser.enforceMaxRadius(numeric, 10))
+            .isInstanceOf(QueryParseException.class)
+            .hasMessageContaining("20")
+            .hasMessageContaining("10");
+        assertThatThrownBy(() -> QueryParser.enforceMaxRadius(parser.parse("r:10", CTX), 5))
+            .isInstanceOf(QueryParseException.class)
+            .hasMessageContaining("10")
+            .hasMessageContaining("5");
+        assertThatThrownBy(() -> QueryParser.enforceMaxRadius(numeric, -1))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("non-negative");
+        assertThatThrownBy(() -> QueryParser.enforceMaxRadius(null, 10))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("filter");
+
+        QueryFilter global = parser.parse("r:#global", null);
+        assertThat(QueryParser.enforceMaxRadius(global, 0)).isSameAs(global);
+
+        QueryFilter world = parser.parse("r:#world_the_nether", null);
+        assertThat(QueryParser.enforceMaxRadius(world, 0)).isSameAs(world);
+
+        QueryFilter worldEdit = parser.parse(
+            "r:#we", new QueryParseContext(100, 64, -200, java.util.UUID.randomUUID()));
+        assertThat(QueryParser.enforceMaxRadius(worldEdit, 0)).isSameAs(worldEdit);
+    }
+
+    @Test
     void parsesExplicitPositionTokenForInspectorLookups() {
         QueryFilter f = parser.parse("p:-12,70,345 r:1", CTX);
         assertThat(f.centerX()).isEqualTo(-12);
@@ -263,7 +292,7 @@ class QueryParserTest {
     void parsesWorldRadius() {
         QueryFilter f = parser.parse("r:#world_the_nether", null);
         assertThat(f.worldSel().global()).isFalse();
-        assertThat(f.worldSel().worldKey()).isEqualTo("the_nether");
+        assertThat(f.worldSel().worldKey()).isEqualTo("minecraft:the_nether");
     }
 
     @Test

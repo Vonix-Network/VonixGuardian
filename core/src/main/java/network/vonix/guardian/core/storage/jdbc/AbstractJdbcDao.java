@@ -239,6 +239,19 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     @Override
+    public GuardianDao.QueryPage queryPage(QueryFilter filter, int offset, int limit) throws SQLException {
+        List<Action> rows = query(filter, offset, limit);
+        // query() silently clamps to maxResultRows. A shortened non-empty page is
+        // only ambiguous when the caller asked for more than the cap AND the
+        // response filled that cap — fewer rows means true EOF. Fail closed on
+        // the ambiguous full-cap case so planners cannot treat it as completion.
+        boolean truncated = maxResultRows > 0
+                && limit > maxResultRows
+                && rows.size() == maxResultRows;
+        return new GuardianDao.QueryPage(rows, truncated);
+    }
+
+    @Override
     public long count(QueryFilter filter) throws SQLException {
         acquireLookupPermit();
         try {

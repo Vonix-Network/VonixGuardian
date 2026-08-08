@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,8 +20,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -35,7 +38,7 @@ class RollbackEngineTest {
     private QueryFilter filter;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         dao = mock(GuardianDao.class);
         mutator = new RecordingMutator();
         sync = Runnable::run; // synchronous "main thread"
@@ -43,6 +46,8 @@ class RollbackEngineTest {
         filter = QueryFilter.builder()
             .sinceMillis(System.currentTimeMillis() - 86_400_000L)
             .build();
+        // Successful close is the default; individual tests override for failure paths.
+        when(dao.closeRollbackBatch(anyLong())).thenReturn(1);
     }
 
     // ------------------------------------------------------------------ guards
@@ -376,6 +381,107 @@ class RollbackEngineTest {
     }
 
     @Test
+    void rollbackDoesNotMarkOrCloseBeforeWorldMutationCompletes() throws Exception {
+        Action place = action(80L, 100L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 1, "minecraft:stone", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(41L);
+        when(dao.closeRollbackBatch(41L)).thenReturn(1);
+        QueuedExecutor queued = new QueuedExecutor();
+        RollbackEngine delayed = new RollbackEngine(dao, mutator, queued);
+
+        CompletionStage<RollbackResult> completion = delayed.rollbackAsync(filter, false);
+
+        assertThat(completion.toCompletableFuture()).isNotDone();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+
+        queued.runAll();
+
+        RollbackResult result = completion.toCompletableFuture().join();
+        assertThat(result.affectedIds()).containsExactly(80L);
+        verify(dao).markRolledBack(List.of(80L), true);
+        verify(dao).closeRollbackBatch(41L);
+    }
+
+    @Test
+    void closeRollbackBatchZeroRowsFailsAndDoesNotReportSuccess() throws Exception {
+        Action place = action(83L, 100L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 1, "minecraft:stone", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(45L);
+        when(dao.closeRollbackBatch(45L)).thenReturn(0);
+
+        CompletionStage<RollbackResult> completion = engine.rollbackAsync(filter, false);
+
+        assertThatThrownBy(() -> completion.toCompletableFuture().join())
+            .hasCauseInstanceOf(IllegalStateException.class)
+            .cause()
+            .hasMessageContaining("closeRollbackBatch updated 0 rows")
+            .hasMessageContaining("45");
+        verify(dao).markRolledBack(List.of(83L), true);
+        verify(dao).closeRollbackBatch(45L);
+    }
+
+    @Test
+    void failedWorldMutationLeavesBatchOpenAndDoesNotMarkFailedAction() throws Exception {
+        Action place = action(81L, 100L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 1, "minecraft:stone", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(42L);
+        WorldMutator failing = new RecordingMutator() {
+            @Override
+            public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+                throw new IllegalStateException("mutation failed");
+            }
+        };
+        RollbackEngine failed = new RollbackEngine(dao, failing, Runnable::run);
+
+        CompletionStage<RollbackResult> completion = failed.rollbackAsync(filter, false);
+
+        assertThatThrownBy(() -> completion.toCompletableFuture().join())
+            .hasCauseInstanceOf(RollbackMutationException.class);
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
+    @Test
+    void executorRejectionAfterFirstBatchMarksAppliedPrefixAndLeavesBatchOpen() throws Exception {
+        List<Action> actions = new ArrayList<>();
+        for (int i = 0; i < RollbackEngine.BATCH_SIZE + 1; i++) {
+            actions.add(action(10_000L + i, 100L + i, ActionType.BLOCK_PLACE,
+                    "w", i, 64, 0, "minecraft:stone", null, 1, false));
+        }
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(actions, List.of());
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(44L);
+        RejectAfterFirstExecutor rejecting = new RejectAfterFirstExecutor();
+        RollbackEngine partial = new RollbackEngine(dao, mutator, rejecting);
+
+        CompletionStage<RollbackResult> completion = partial.rollbackAsync(filter, false);
+        rejecting.runFirst();
+
+        assertThatThrownBy(() -> completion.toCompletableFuture().join())
+                .hasCauseInstanceOf(RollbackMutationException.class);
+        verify(dao).markRolledBack(argThat(ids -> ids.size() == RollbackEngine.BATCH_SIZE), eq(true));
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
+    @Test
+    void unsupportedMutationIsReportedSkippedAndLeavesBatchOpen() throws Exception {
+        Action kill = action(82L, 100L, ActionType.ENTITY_KILL,
+            "w", 1, 64, 1, "minecraft:zombie", null, 1, true);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(kill));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(43L);
+
+        CompletionStage<RollbackResult> completion = engine.restoreAsync(filter, false);
+
+        assertThatThrownBy(() -> completion.toCompletableFuture().join())
+            .hasCauseInstanceOf(RollbackMutationException.class);
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
+    @Test
     void rollbackTaggedWithActor() throws Exception {
         UUID actor = UUID.randomUUID();
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of());
@@ -414,6 +520,23 @@ class RollbackEngineTest {
         verify(dao).query(any(), eq(2), eq(3));
         verify(dao, never()).query(any(), eq(0), eq(RollbackEngine.PAGE_SIZE));
         verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void cappedPageDoesNotLookLikeEndOfResults() throws Exception {
+        Action first = action(35L, 300L, ActionType.BLOCK_PLACE,
+            "w", 1, 64, 0, "minecraft:stone", null, 1, false);
+        // A DAO capped at one row returns fewer than the requested pageSize + 1
+        // rows. That must not be interpreted as EOF by rollback planning.
+        when(dao.queryPage(any(), eq(0), eq(3)))
+            .thenReturn(new GuardianDao.QueryPage(List.of(first), true));
+
+        RollbackOptions options = new RollbackOptions(2, 10, 10, () -> false, ignored -> { });
+
+        assertThatThrownBy(() -> engine.rollback(filter, true, options))
+            .isInstanceOf(RollbackLimitExceededException.class)
+            .hasMessageContaining("result cap");
+        verify(dao, never()).openRollbackBatch(any(), anyInt(), anyString(), any());
     }
 
     @Test
@@ -526,39 +649,39 @@ class RollbackEngineTest {
     }
 
     /** Records mutator invocations as flat strings for trivial equality assertions. */
-    private static final class RecordingMutator implements WorldMutator {
+    private static class RecordingMutator implements WorldMutator {
         final List<String> calls = Collections.synchronizedList(new ArrayList<>());
 
         @Override
-        public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
-            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);
+        public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
+        public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
                              String blockState, byte[] blockEntityNbt) {
             calls.add("setBlockNbt|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId
-                + "|" + targetMeta + "|" + blockState + "|" + (blockEntityNbt == null ? 0 : blockEntityNbt.length));
+                + "|" + targetMeta + "|" + blockState + "|" + (blockEntityNbt == null ? 0 : blockEntityNbt.length));            return true;
         }
 
         @Override
-        public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
-            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);
+        public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
+            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
-            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);
+        public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
+            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);            return true;
         }
 
         @Override
-        public void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
-            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);
+        public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
+            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void removeEntity(String worldId, int x, int y, int z, String entityType) {
-            calls.add("removeEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType);
+        public boolean tryRemoveEntity(String worldId, int x, int y, int z, String entityType) {
+            calls.add("removeEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType);            return true;
         }
     }
 
@@ -568,6 +691,36 @@ class RollbackEngineTest {
         public void execute(Runnable command) {
             runCount++;
             command.run();
+        }
+    }
+
+    private static final class QueuedExecutor implements Executor {
+        private final List<Runnable> pending = new ArrayList<>();
+
+        @Override
+        public void execute(Runnable command) {
+            pending.add(command);
+        }
+
+        void runAll() {
+            List<Runnable> work = new ArrayList<>(pending);
+            pending.clear();
+            work.forEach(Runnable::run);
+        }
+    }
+
+    private static final class RejectAfterFirstExecutor implements Executor {
+        private final List<Runnable> pending = new ArrayList<>();
+        private int submissions;
+
+        @Override
+        public void execute(Runnable command) {
+            if (submissions++ > 0) throw new java.util.concurrent.RejectedExecutionException("test rejection");
+            pending.add(command);
+        }
+
+        void runFirst() {
+            pending.remove(0).run();
         }
     }
 }

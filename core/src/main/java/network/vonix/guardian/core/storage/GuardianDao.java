@@ -25,6 +25,23 @@ public interface GuardianDao extends AutoCloseable {
     /** Synchronous query — runs on calling thread (caller is a worker, not the server thread). */
     List<Action> query(QueryFilter filter, int offset, int limit) throws Exception;
 
+    /**
+     * Query a page with explicit metadata for DAOs that cap result sizes.
+     * Existing implementations remain source-compatible through the default
+     * implementation; capped implementations must report a cap-shortened
+     * non-empty page so safety-sensitive consumers cannot treat it as EOF.
+     */
+    default QueryPage queryPage(QueryFilter filter, int offset, int limit) throws Exception {
+        return new QueryPage(query(filter, offset, limit), false);
+    }
+
+    /** Result of a bounded page fetch. */
+    record QueryPage(List<Action> rows, boolean truncated) {
+        public QueryPage {
+            rows = rows == null ? List.of() : List.copyOf(rows);
+        }
+    }
+
     /** Row count for the same filter — used by {@code /vg lookup #count}. */
     long count(QueryFilter filter) throws Exception;
 

@@ -203,6 +203,13 @@ public final class <Loader>AttributionResolver implements AttributionResolver {
 
 ## 5. WorldMutator impl skeleton
 
+The original public `void` mutation descriptors are retained for binary
+compatibility. Internal rollback/restore dispatch uses the distinct checked
+`try*` methods (`trySetBlock`, `tryGiveOrDrop`, `tryRemoveFromContainer`,
+`tryRespawnEntity`, and `tryRemoveEntity`). Each real loader cell overrides the
+checked methods and fails closed for unknown registry IDs, failed Minecraft
+mutation booleans, partial mutations, and malformed or inapplicable NBT.
+
 ```java
 public final class <Loader>WorldMutator implements WorldMutator {
     private final MinecraftServer server;

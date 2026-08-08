@@ -176,7 +176,10 @@ default 1000) and flushes them to the database every `queue.flushIntervalMs`
 (default 5000 ms).
 
 Net effect: typical per-event cost on the server thread is well under a tick
-budget, and the database does its work off-thread.
+budget, database work stays off-thread, and FireCauserMemory hard eviction uses
+bounded candidate inspection rather than a full-map server-thread sweep. This
+prevents `LivingDestroyBlockEvent` floods from turning attribution cleanup into
+a watchdog stall.
 
 ### Q18. How does it compare to CoreProtect performance-wise?
 
@@ -387,7 +390,8 @@ This keeps the data model stable and queryable across versions.
 ```
 
 Produces eight loader jars under each `mc-<ver>/<loader>/build/libs/`. The
-`core` engine is shaded into each loader jar via Gradle Shadow — there is no
+`core` engine is packaged into each loader jar, nested under `META-INF/jars/` on Fabric and
+through the loader's supported JarInJar/shaded path on Forge-family loaders — there is no
 separate `core` artifact to install. CI builds the full matrix on every push
 to `main`.
 

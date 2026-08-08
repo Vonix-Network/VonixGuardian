@@ -15,6 +15,7 @@ import java.util.concurrent.Executor;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -45,11 +46,12 @@ class ExplosionRollbackFidelityTest {
     private RollbackEngine engine;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         dao = mock(GuardianDao.class);
         mutator = new RecordingMutator();
         sync = Runnable::run;
         engine = new RollbackEngine(dao, mutator, sync);
+        when(dao.closeRollbackBatch(anyLong())).thenReturn(1);
     }
 
     /**
@@ -278,17 +280,17 @@ class ExplosionRollbackFidelityTest {
         final List<String> setBlockCalls = new ArrayList<>();
 
         @Override
-        public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
-            setBlockCalls.add(worldId + "|" + x + "|" + y + "|" + z + "|" + targetId);
+        public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+            setBlockCalls.add(worldId + "|" + x + "|" + y + "|" + z + "|" + targetId);            return true;
         }
 
         @Override
-        public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {}
+        public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {return true; }
 
         @Override
-        public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {}
+        public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {return true; }
 
         @Override
-        public void respawnEntity(String worldId, int x, int y, int z, String entityType, String nbt) {}
+        public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String nbt) {return true; }
     }
 }

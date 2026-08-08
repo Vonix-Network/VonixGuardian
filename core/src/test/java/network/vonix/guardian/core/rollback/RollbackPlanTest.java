@@ -39,7 +39,7 @@ class RollbackPlanTest {
     private QueryFilter filter;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         dao = mock(GuardianDao.class);
         mutator = new RecordingMutator();
         Executor sync = Runnable::run;
@@ -47,6 +47,7 @@ class RollbackPlanTest {
         filter = QueryFilter.builder()
             .sinceMillis(System.currentTimeMillis() - 86_400_000L)
             .build();
+        when(dao.closeRollbackBatch(anyLong())).thenReturn(1);
     }
 
     // ---------------------------------------------------------------- plan()
@@ -140,6 +141,7 @@ class RollbackPlanTest {
             "w", 2, 64, 0, "minecraft:stone", null, 1, false);
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
         when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(42L);
+        when(dao.closeRollbackBatch(42L)).thenReturn(1);
 
         RollbackPlan plan = engine.plan(filter, RollbackResult.Mode.ROLLBACK, null);
         RollbackResult r = engine.execute(plan, false);
@@ -257,23 +259,23 @@ class RollbackPlanTest {
         final List<String> calls = Collections.synchronizedList(new ArrayList<>());
 
         @Override
-        public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
-            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);
+        public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
-            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);
+        public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
+            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
-            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);
+        public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
+            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);            return true;
         }
 
         @Override
-        public void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
-            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);
+        public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
+            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);            return true;
         }
     }
 }

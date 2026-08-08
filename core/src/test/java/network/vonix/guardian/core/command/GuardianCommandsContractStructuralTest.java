@@ -65,6 +65,75 @@ class GuardianCommandsContractStructuralTest {
                 .contains("idFilter(prev.originalFilter(), prev.affectedIds())")
                 .doesNotContain("plan(originalFilter, inverse")
                 .doesNotContain("QueryFilter originalFilter = prev.originalFilter()");
+
+            assertThat(text)
+                .as("%s should enforce the configured numeric radius in every command path", cell)
+                .hasSizeGreaterThan(0)
+                .contains("QueryParser.enforceMaxRadius(")
+                .contains("g.config().lookup().maxRadius()");
+            assertThat(countOccurrences(text, "QueryParser.enforceMaxRadius("))
+                .as("%s should enforce radius for lookup, rollback, restore, and purge", cell)
+                .isEqualTo(4);
+            assertThat(text)
+                .as("%s should make #count a count-only lookup", cell)
+                .contains("if (filter.countOnly())")
+                .contains("[VonixGuardian] Count: ")
+                .contains("LookupPermissionFilter.countVisible(")
+                .doesNotContain("long total = g.dao().count(filter);");
+            assertThat(text)
+                .as("%s should fill pages in visible-row coordinates", cell)
+                .contains("LookupPermissionFilter.visiblePage(")
+                .contains("LookupPermissionFilter.VisiblePage visiblePage =")
+                .contains("if (!visiblePage.complete())")
+                .contains("visiblePage.rows()")
+                .contains("Lookup aborted: the permission-filtered page exceeded")
+                .doesNotContain("LookupPermissionFilter.visiblePage(\n                            g.dao(), g.perms(), viewer, PermissionNode.LOOKUP,\n                            filter, pageActual, perPageF).rows()");
+            assertThat(text.indexOf("if (filter.countOnly())"))
+                .as("%s should branch before the visible lookup query", cell)
+                .isLessThan(text.indexOf("LookupPermissionFilter.visiblePage("));
+            assertThat(text.indexOf("if (filter.countOnly())"))
+                .as("%s should branch before row formatting", cell)
+                .isLessThan(text.indexOf("LookupFormatter.page("));
+
+            // Rollback/restore must apply default radius BEFORE withDefaultWorld so an
+            // implicit player world does not suppress the required r:10 default.
+            String rollbackBlock =
+                    "qf = withDefaultRollbackRadius(qf, src);\n"
+                            + "                qf = qf.withDefaultWorld(playerWorldOf(src));\n"
+                            + "                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());";
+            int firstOrdered = text.indexOf(rollbackBlock);
+            assertThat(firstOrdered)
+                .as("%s rollback path must order defaultRadius before withDefaultWorld before enforceMaxRadius", cell)
+                .isGreaterThan(0);
+            int secondOrdered = text.indexOf(rollbackBlock, firstOrdered + 1);
+            assertThat(secondOrdered)
+                .as("%s restore path must order defaultRadius before withDefaultWorld before enforceMaxRadius", cell)
+                .isGreaterThan(firstOrdered);
+            // Negative: do not reintroduce world-before-radius ordering on either path.
+            assertThat(text)
+                .as("%s must not apply withDefaultWorld before withDefaultRollbackRadius", cell)
+                .doesNotContain(
+                        "qf = qf.withDefaultWorld(playerWorldOf(src));\n"
+                                + "                qf = withDefaultRollbackRadius(qf, src);");
+
+            // Explicit region selectors must not be narrowed by r:10 defaults.
+            // QueryParser leaves radius null for worldSel / worldEditPlayer paths.
+            assertThat(text)
+                .as("%s must preserve worldSel/worldEditPlayer when defaulting rollback radius", cell)
+                .contains("qf.radius() != null || qf.worldSel() != null || qf.worldEditPlayer() != null");
+            assertThat(countOccurrences(text,
+                    "if (qf.radius() != null || qf.worldSel() != null || qf.worldEditPlayer() != null)"))
+                .as("%s should have exactly one withDefaultRollbackRadius guard", cell)
+                .isEqualTo(1);
+            // Must not regress to radius-only short-circuit.
+            assertThat(text)
+                .as("%s must not use radius-only default guard", cell)
+                .doesNotContain("if (qf.radius() != null) {\n            return qf;\n        }");
+            // withDefaultRollbackRadius body must still apply DEFAULT_ROLLBACK_RADIUS
+            // when radius/worldSel/worldEdit are all absent (omitted player radius).
+            assertThat(text)
+                .as("%s withDefaultRollbackRadius must reference DEFAULT_ROLLBACK_RADIUS", cell)
+                .contains("DEFAULT_ROLLBACK_RADIUS");
         }
     }
 

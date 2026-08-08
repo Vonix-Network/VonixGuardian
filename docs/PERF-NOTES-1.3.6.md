@@ -1,5 +1,4 @@
 # VonixGuardian v1.3.6 — Perf Notes (CC2 sweep)
-
 Round-6 review of v1.3.5 surfaced 7 server-thread P1 findings and 15 P2
 findings. This document captures the analysis and fixes shipped in v1.3.6
 by CC2. CC1 shipped in parallel: canonicalisation of `GuardianConfig` shim

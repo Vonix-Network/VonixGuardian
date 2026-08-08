@@ -39,10 +39,10 @@ class ReloadRebuildsAutoPurgeTest {
         return t;
     };
     private static final WorldMutator NOOP_MUTATOR = new WorldMutator() {
-        @Override public void setBlock(String w, int x, int y, int z, String id, String meta) {}
-        @Override public void giveOrDrop(String w, int x, int y, int z, String id, int a, String meta) {}
-        @Override public void removeFromContainer(String w, int x, int y, int z, String id, int a) {}
-        @Override public void respawnEntity(String w, int x, int y, int z, String t, String meta) {}
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String id, String meta) {return true; }
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String id, int a, String meta) {return true; }
+        @Override public boolean tryRemoveFromContainer(String w, int x, int y, int z, String id, int a) {return true; }
+        @Override public boolean tryRespawnEntity(String w, int x, int y, int z, String t, String meta) {return true; }
     };
     private static final OpLevelFallback ZERO_OP = uuid -> 0;
 

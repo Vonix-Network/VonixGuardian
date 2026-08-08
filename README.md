@@ -11,7 +11,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 
-## Feature surface (v1.3.9)
+## Feature surface (v1.3.11)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -97,7 +97,11 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ```
 
-Produces 8 jars under `<module>/build/libs/`. Each jar bundles `core` via Gradle Shadow. The root `build` task configures every loader cell and is intentionally avoided in CI/release flows because multiple Fabric Loom versions can conflict when configured in one Gradle invocation.
+Produces 8 jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
+through Loom JarInJar under `META-INF/jars/`; Forge-family cells use their loader-supported
+packaging. The root `build` task configures every loader cell and is intentionally avoided in
+CI/release flows because multiple Fabric Loom versions can conflict when configured in one
+Gradle invocation. Classifier artifacts such as `-shadow`, `-all`, and `-slim` are not release assets.
 
 CI builds the full 8-jar matrix on every push to `main` and uploads them to the GitHub Release on tag push.
 
@@ -173,7 +177,7 @@ MIT. See [LICENSE](LICENSE). Inspired by CoreProtect (Artistic-2.0, separate cod
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — environment setup, IDE config, adding an `ActionType`, CI overview.
 - [SHARED-CONTRACTS.md](SHARED-CONTRACTS.md) — internal type contracts.
 - [SHARED-LOADER-CONTRACTS.md](SHARED-LOADER-CONTRACTS.md) — loader-glue contracts.
-- [LIBRARY-PACKAGING.md](LIBRARY-PACKAGING.md) — shade-unrelocated vs JarInJar strategy per loader.
+- [LIBRARY-PACKAGING.md](LIBRARY-PACKAGING.md) — JarInJar and loader packaging strategy.
 
 **Project**
 - [CHANGELOG.md](CHANGELOG.md) — release history (Keep a Changelog).

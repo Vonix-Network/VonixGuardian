@@ -6,6 +6,7 @@ package network.vonix.guardian.core;
 
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionBuilder;
+import network.vonix.guardian.core.action.CommandPayloadSanitizer;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.api.GuardianAPI;
 import network.vonix.guardian.core.api.VonixGuardianAPI;
@@ -109,7 +110,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     private final network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory;
     /**
-     * v1.3.10 C2: short-lived spatial cache mapping an entity's block change to
+     * v1.3.11 C2: short-lived spatial cache mapping an entity's block change to
      * who did it and whether it was allowlisted, so fire ignited as a side
      * effect can be paired/attributed (allowlisted causer) or suppressed as
      * orphan noise (non-allowlisted causer). Populated by the loader-side
@@ -230,7 +231,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                         lf.flush();
                     }
                 },
-                tf);
+                tf,
+                dataDir.resolve("config").resolve("vonixguardian").resolve("queue-quarantine.bin"));
 
         EventGate gate = new EventGate(config.actions());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
@@ -348,7 +350,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     /**
-     * v1.3.10 C2: shared fire-causer memory. The loader entity-block-change
+     * v1.3.11 C2: shared fire-causer memory. The loader entity-block-change
      * handler records here on every entity break (allowlisted or not); the fire
      * bridge consults it via
      * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveFireCauser}
@@ -925,6 +927,10 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         if (a == null) {
             return false;
         }
+        // This is the final persistence boundary. Producers and third-party
+        // callers may construct Actions directly, so command privacy must be
+        // enforced before either gating or queueing can retain the payload.
+        a = CommandPayloadSanitizer.sanitizeForPersistence(a);
         if (maintenanceWriteBlock.get()) {
             gated.incrementAndGet();
             return false;
@@ -1026,7 +1032,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     @Override
     public void submitCommand(UUID actorUuid, String actorName, String worldId, String command) {
-        submit(seed(ActionType.COMMAND, actorUuid, actorName, worldId).targetId(command).build());
+        submit(seed(ActionType.COMMAND, actorUuid, actorName, worldId)
+                .targetId(CommandPayloadSanitizer.sanitize(command)).build());
     }
 
     @Override

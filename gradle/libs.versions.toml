@@ -36,7 +36,7 @@ parchment-1_20 = "2023.09.03"
 parchment-1_19 = "2022.11.27"
 parchment-1_18 = "2022.11.06"
 
-# Storage / runtime (shaded into every jar via Shadow)
+# Storage / runtime (nested or loader-packaged per cell)
 sqlite-jdbc = "3.46.1.0"
 mysql-connector = "8.4.0"
 postgresql = "42.7.4"

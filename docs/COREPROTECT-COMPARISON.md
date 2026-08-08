@@ -258,7 +258,8 @@ The last row is a genuine bug — `EventSubmitter` promises the API surface, con
 ### 3.2 Driver packaging (VG modded runtime)
 
 - **Forge / NeoForge**: JarInJar (`jarJar` block per cell). Preserves JNI symbol path `Java_org_sqlite_core_NativeDB_*` (v1.0.0 fix).
-- **Fabric**: Shadow with `exclude 'module-info.class'` + `META-INF/versions/*/module-info.class` (v1.0.1 hotfix for Sinytra Connector JPMS layer collision).
+- **Fabric**: Loom JarInJar under `META-INF/jars/`; JDBC/JNI dependencies remain nested and
+  unrelocated. Forge-family shading rules remain loader-specific.
 - `org.sqlite` never relocated.
 
 ### 3.3 Schema

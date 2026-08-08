@@ -39,10 +39,10 @@ class GuardianStatusMixinSectionTest {
         return t;
     };
     private static final WorldMutator NOOP_MUTATOR = new WorldMutator() {
-        @Override public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {}
-        @Override public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {}
-        @Override public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {}
-        @Override public void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {}
+        @Override public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {return true; }
+        @Override public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {return true; }
+        @Override public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {return true; }
+        @Override public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {return true; }
     };
     private static final OpLevelFallback ZERO_OP = uuid -> 0;
 

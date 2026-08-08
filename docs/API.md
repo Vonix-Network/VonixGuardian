@@ -12,6 +12,17 @@ VonixGuardian has already collected.
 
 ## 1. Overview
 
+### WorldMutator compatibility boundary
+
+The legacy `WorldMutator` `void` method descriptors remain the stable public
+ABI for integrations compiled against prior releases. Rollback and restore use
+the distinct checked `trySetBlock`, `tryGiveOrDrop`, `tryRemoveFromContainer`,
+`tryRespawnEntity`, and `tryRemoveEntity` methods. Loader implementations
+override those checked methods and return `false` for unknown registry IDs,
+failed Minecraft mutations, partial container operations, or malformed/missing
+NBT. A checked `true` result confirms only the mutation API result; runtime
+read-back verification remains a separate requirement.
+
 VonixGuardian is built around a single facade — `network.vonix.guardian.core.Guardian`
 — which exposes two sides:
 
@@ -41,7 +52,7 @@ You do **not** need to depend on any loader jar to compile against the public AP
 ### Maven coordinate
 
 ```
-network.vonix.guardian:vonixguardian-core:1.3.8
+network.vonix.guardian:vonixguardian-core:1.3.11
 ```
 
 ### Consuming from Maven Local (after `./gradlew :core:publishToMavenLocal`)
@@ -57,7 +68,7 @@ dependencies {
     // already ships a shaded copy of core. `transitive = false` avoids pulling
     // storage backends (sqlite/hikaricp/gson) onto your compile classpath —
     // those are runtime-provided by the loader.
-    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.8') { transitive = false }
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.11') { transitive = false }
 }
 ```
 
@@ -76,7 +87,7 @@ repositories {
 }
 
 dependencies {
-    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.8') { transitive = false }
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.11') { transitive = false }
 }
 ```
 
@@ -93,7 +104,7 @@ usual way:
 
 ```groovy
 dependencies {
-    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.8') { transitive = false }
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.11') { transitive = false }
 }
 ```
 
@@ -443,7 +454,7 @@ repositories {
 
 dependencies {
     // Compile against the API but do NOT bundle VG — soft-dep at runtime.
-    compileOnly 'network.vonix.guardian:vonixguardian-core:1.3.8'
+    compileOnly 'network.vonix.guardian:vonixguardian-core:1.3.11'
 }
 ```
 
@@ -526,7 +537,7 @@ List<Object> results = (List<Object>) bl.invoke(apiHandle,
 | Method                                                                          | Purpose                                          |
 |---------------------------------------------------------------------------------|--------------------------------------------------|
 | `int apiVersion()`                                                              | API major (current: `1`). Bumps = breaking.      |
-| `String pluginVersion()`                                                        | Human-readable mod version (`"1.3.8"`).          |
+| `String pluginVersion()`                                                        | Human-readable mod version (`"1.3.11"`).          |
 | `boolean testAPI()`                                                             | Wiring smoke-test; always `true` on healthy VG.  |
 | `boolean hasPlaced(UUID, String, int, int, int, long)`                          | Did user place a block here in the last N sec?   |
 | `boolean hasRemoved(UUID, String, int, int, int, long)`                         | Did user break a block here in the last N sec?   |

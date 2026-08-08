@@ -16,7 +16,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Coordinates rollback and restore of logged actions.
@@ -33,7 +37,8 @@ import java.util.concurrent.Executor;
  *       mid-dispatch leaves recoverable state.</li>
  *   <li>If not a preview, submit the world mutations to the
  *       {@code mainThreadExecutor} in batches of {@link #BATCH_SIZE}.</li>
- *   <li>Mark the affected IDs in the DAO ({@code rolled_back=1} for rollback,
+ *   <li>Wait for each batch's completion outcome, mark only confirmed applied
+ *       IDs in the DAO ({@code rolled_back=1} for rollback,
  *       {@code rolled_back=0} for restore), then close the batch record.</li>
  * </ol>
  *
@@ -67,6 +72,7 @@ public final class RollbackEngine {
     private final GuardianDao dao;
     private final WorldMutator mutator;
     private final Executor mainThreadExecutor;
+    private final Executor completionExecutor;
     /**
      * Extra block radius applied to the supplemental EXPLOSION scan's spatial
      * pre-filter.
@@ -87,7 +93,7 @@ public final class RollbackEngine {
      *                           must not be {@code null}
      */
     public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor) {
-        this(dao, mutator, mainThreadExecutor, MAX_TNT_REACH);
+        this(dao, mutator, mainThreadExecutor, MAX_TNT_REACH, ForkJoinPool.commonPool());
     }
 
     /**
@@ -105,9 +111,27 @@ public final class RollbackEngine {
      */
     public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor,
                           int explosionSupplementalReach) {
+        this(dao, mutator, mainThreadExecutor, explosionSupplementalReach,
+            ForkJoinPool.commonPool());
+    }
+
+    /**
+     * Constructor variant with an explicit off-server completion executor.
+     * The executor runs the DAO finalization after server-thread mutation
+     * futures complete; it must not be the server-thread executor.
+     */
+    public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor,
+                          Executor completionExecutor) {
+        this(dao, mutator, mainThreadExecutor, MAX_TNT_REACH, completionExecutor);
+    }
+
+    /** Constructor variant with explicit scan reach and completion executor. */
+    public RollbackEngine(GuardianDao dao, WorldMutator mutator, Executor mainThreadExecutor,
+                          int explosionSupplementalReach, Executor completionExecutor) {
         this.dao = Objects.requireNonNull(dao, "dao");
         this.mutator = Objects.requireNonNull(mutator, "mutator");
         this.mainThreadExecutor = Objects.requireNonNull(mainThreadExecutor, "mainThreadExecutor");
+        this.completionExecutor = Objects.requireNonNull(completionExecutor, "completionExecutor");
         if (explosionSupplementalReach < 0) {
             throw new IllegalArgumentException(
                 "explosionSupplementalReach must be >= 0 (got " + explosionSupplementalReach + ")");
@@ -165,6 +189,34 @@ public final class RollbackEngine {
         return restore(filter, preview, actorUuid, RollbackOptions.defaults());
     }
 
+    /**
+     * Non-blocking rollback entry point. Planning and batch creation retain the
+     * DAO caller-thread contract; the returned stage completes only after all
+     * server-thread mutations and DAO finalization have completed.
+     */
+    public CompletionStage<RollbackResult> rollbackAsync(QueryFilter filter, boolean preview) throws Exception {
+        return rollbackAsync(filter, preview, null, RollbackOptions.defaults());
+    }
+
+    /** Non-blocking restore entry point. */
+    public CompletionStage<RollbackResult> restoreAsync(QueryFilter filter, boolean preview) throws Exception {
+        return restoreAsync(filter, preview, null, RollbackOptions.defaults());
+    }
+
+    /** Non-blocking rollback entry point with actor and safety controls. */
+    public CompletionStage<RollbackResult> rollbackAsync(QueryFilter filter, boolean preview,
+                                                          UUID actorUuid,
+                                                          RollbackOptions options) throws Exception {
+        return executeAsync(plan(filter, RollbackResult.Mode.ROLLBACK, actorUuid, options), preview);
+    }
+
+    /** Non-blocking restore entry point with actor and safety controls. */
+    public CompletionStage<RollbackResult> restoreAsync(QueryFilter filter, boolean preview,
+                                                         UUID actorUuid,
+                                                         RollbackOptions options) throws Exception {
+        return executeAsync(plan(filter, RollbackResult.Mode.RESTORE, actorUuid, options), preview);
+    }
+
     /** Execute rollback with explicit large-job safety controls. */
     public RollbackResult rollback(QueryFilter filter, boolean preview, RollbackOptions options) throws Exception {
         return rollback(filter, preview, null, options);
@@ -220,11 +272,33 @@ public final class RollbackEngine {
     /**
      * Phase 2 of the W2-01 two-phase pipeline: execute a previously built
      * {@link RollbackPlan}. Opens the {@code vg_rollback_batches} audit row,
-     * dispatches mutations to the main-thread executor, marks the affected
-     * IDs in the DAO, then closes the batch row. In {@code preview} mode no
-     * batch is opened and no mutations are dispatched.
+     * dispatches mutations to the main-thread executor, waits for their
+     * completion, marks confirmed IDs in the DAO, then closes the batch row.
+     * This compatibility wrapper blocks its caller until completion; callers
+     * on the server thread must use {@link #executeAsync}.
+     * In {@code preview} mode no batch is opened and no mutations are dispatched.
      */
     public RollbackResult execute(RollbackPlan plan, boolean preview) throws Exception {
+        try {
+            return executeAsync(plan, preview).toCompletableFuture().join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception exception) {
+                throw exception;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Execute a plan without blocking for server-thread work. A non-preview
+     * stage is completed only after confirmed mutation outcomes have been
+     * persisted and the rollback batch has been closed.
+     */
+    public CompletionStage<RollbackResult> executeAsync(RollbackPlan plan, boolean preview) throws Exception {
         Objects.requireNonNull(plan, "plan");
         RollbackResult.Mode mode = plan.mode();
         if (mode == null) {
@@ -243,35 +317,104 @@ public final class RollbackEngine {
         }
 
         if (preview || planned == 0) {
-            return new RollbackResult(actorUuid, mode, preview,
-                affectedIds, skippedIds, planned, 0, effective);
+            return CompletableFuture.completedFuture(new RollbackResult(actorUuid, mode, preview,
+                affectedIds, skippedIds, planned, 0, effective));
         }
 
         String filterJson = encodeFilter(effective);
         long batchId = dao.openRollbackBatch(actorUuid, mode.ordinal(), filterJson, affectedIds);
 
-        int dispatched;
+        CompletionStage<List<WorldMutationResult>> mutations;
         try {
-            dispatched = dispatchBatches(plan.ordered(), mode);
-            // Mark IDs *after* dispatch is enqueued. Mutation completion is async on
-            // the main-thread executor; the DB state reflects intent, not landing.
-            boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
-            dao.markRolledBack(affectedIds, targetFlag);
-        } catch (Exception e) {
-            LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
+            mutations = dispatchBatches(plan.ordered(), mode);
+        } catch (RuntimeException e) {
+            LOG.error("RollbackEngine.{}: batch id={} failed during dispatch; vg_rollback_batches row left OPEN for recovery",
                 mode, batchId, e);
-            throw e;
+            return failedStage(new RollbackMutationException(batchId, List.of(
+                WorldMutationResult.failed(-1L, e))));
+        }
+        return mutations.handleAsync((outcomes, failure) -> {
+            if (failure != null) {
+                Throwable cause = unwrapCompletionFailure(failure);
+                LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
+                    mode, batchId, cause);
+                throw new RollbackMutationException(batchId, List.of(
+                    WorldMutationResult.failed(-1L, cause)));
+            }
+            return finishBatch(batchId, actorUuid, mode, effective, skippedIds, planned, outcomes);
+        }, completionExecutor);
+    }
+
+    private RollbackResult finishBatch(long batchId,
+                                       UUID actorUuid,
+                                       RollbackResult.Mode mode,
+                                       QueryFilter effective,
+                                       List<Long> plannedSkippedIds,
+                                       int planned,
+                                       List<WorldMutationResult> outcomes) {
+        List<Long> appliedIds = new ArrayList<>();
+        List<WorldMutationResult> incomplete = new ArrayList<>();
+        for (WorldMutationResult outcome : outcomes) {
+            if (outcome.status() == WorldMutationResult.Status.APPLIED) {
+                appliedIds.add(outcome.actionId());
+            } else {
+                incomplete.add(outcome);
+            }
         }
 
+        boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
+        if (!incomplete.isEmpty()) {
+            if (!appliedIds.isEmpty()) {
+                markApplied(batchId, appliedIds, targetFlag);
+            }
+            LOG.error("RollbackEngine.{}: batch id={} incomplete; vg_rollback_batches row left OPEN for recovery",
+                mode, batchId);
+            throw new RollbackMutationException(batchId, incomplete);
+        }
+
+        markApplied(batchId, appliedIds, targetFlag);
         try {
-            dao.closeRollbackBatch(batchId);
+            int closed = dao.closeRollbackBatch(batchId);
+            if (closed != 1) {
+                LOG.error("RollbackEngine.{}: closeRollbackBatch id={} updated {} rows (expected 1); "
+                        + "audit row considered unclosed", mode, batchId, closed);
+                throw new IllegalStateException(
+                        "closeRollbackBatch updated " + closed + " rows for batch id=" + batchId
+                                + " (expected 1); audit row left unclosed");
+            }
         } catch (Exception e) {
             LOG.error("RollbackEngine.{}: failed to close batch id={}", mode, batchId, e);
-            throw e;
+            throw new CompletionException(e);
         }
 
         return new RollbackResult(actorUuid, mode, false,
-            affectedIds, skippedIds, planned, dispatched, effective);
+            appliedIds, plannedSkippedIds, planned, appliedIds.size(), effective);
+    }
+
+    private void markApplied(long batchId, List<Long> ids, boolean targetFlag) {
+        if (ids.isEmpty()) {
+            return;
+        }
+        try {
+            dao.markRolledBack(ids, targetFlag);
+        } catch (Exception e) {
+            LOG.error("RollbackEngine: failed to mark confirmed mutations for batch id={}; row left OPEN for recovery",
+                batchId, e);
+            throw new CompletionException(e);
+        }
+    }
+
+    private static <T> CompletionStage<T> failedStage(Throwable failure) {
+        CompletableFuture<T> stage = new CompletableFuture<>();
+        stage.completeExceptionally(failure);
+        return stage;
+    }
+
+    private static Throwable unwrapCompletionFailure(Throwable failure) {
+        if (failure instanceof CompletionException && failure.getCause() != null) {
+            return failure.getCause();
+        }
+        return failure;
     }
 
     /**
@@ -330,8 +473,16 @@ public final class RollbackEngine {
             // v1.3.1 X6 (P3-6): request limit+1 rows so we can detect "has more" without
             // a follow-up dao.query() round-trip below. Only the first `limit` rows
             // are actually consumed; the extra row is a boolean signal.
-            List<Action> pageWithProbe = dao.query(filter, offset, limit + 1);
-            if (pageWithProbe == null || pageWithProbe.isEmpty()) {
+            GuardianDao.QueryPage fetched = fetchPage(filter, offset, limit + 1);
+            if (fetched.truncated()) {
+                RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
+                options.publish(progress);
+                throw new RollbackLimitExceededException(
+                    "Rollback planning stopped because the DAO result cap truncated a page",
+                    progress);
+            }
+            List<Action> pageWithProbe = fetched.rows();
+            if (pageWithProbe.isEmpty()) {
                 break;
             }
             boolean probeHasMore = pageWithProbe.size() > limit;
@@ -454,8 +605,22 @@ public final class RollbackEngine {
                 break;
             }
             int limit = Math.min(options.pageSize(), remainingScanBudget);
-            List<Action> page = dao.query(supp, offset, limit);
-            if (page == null || page.isEmpty()) break;
+            // Same +1 probe as the primary scan: a full page without an extra
+            // row is EOF, while a capped page is reported via truncated=true.
+            GuardianDao.QueryPage fetched = fetchPage(supp, offset, limit + 1);
+            if (fetched.truncated()) {
+                RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
+                options.publish(progress);
+                throw new RollbackLimitExceededException(
+                    "Rollback planning stopped because the DAO result cap truncated a page",
+                    progress);
+            }
+            List<Action> pageWithProbe = fetched.rows();
+            if (pageWithProbe.isEmpty()) break;
+            boolean probeHasMore = pageWithProbe.size() > limit;
+            List<Action> page = probeHasMore
+                    ? new ArrayList<>(pageWithProbe.subList(0, limit))
+                    : pageWithProbe;
             pages++;
 
             List<Action> orderedPage = new ArrayList<>(page);
@@ -553,8 +718,19 @@ public final class RollbackEngine {
     }
 
     private boolean hasMoreRows(QueryFilter filter, int offset) throws Exception {
-        List<Action> probe = dao.query(filter, offset, 1);
-        return probe != null && !probe.isEmpty();
+        GuardianDao.QueryPage probe = fetchPage(filter, offset, 1);
+        // A truncated one-row probe still proves residual work exists behind the
+        // DAO cap; empty means EOF only when the page is not truncated.
+        return probe.truncated() || !probe.rows().isEmpty();
+    }
+
+    private GuardianDao.QueryPage fetchPage(QueryFilter filter, int offset, int limit) throws Exception {
+        GuardianDao.QueryPage fetched = dao.queryPage(filter, offset, limit);
+        // Preserve compatibility with mocks and older third-party DAO
+        // implementations that do not execute the additive default method.
+        return fetched != null
+            ? fetched
+            : new GuardianDao.QueryPage(dao.query(filter, offset, limit), false);
     }
 
     private static RollbackProgress progress(int pages,
@@ -627,74 +803,131 @@ public final class RollbackEngine {
         return GSON.toJson(m);
     }
 
-    private int dispatchBatches(List<Action> ordered, RollbackResult.Mode mode) {
-        int total = 0;
+    private CompletionStage<List<WorldMutationResult>> dispatchBatches(List<Action> ordered,
+                                                                        RollbackResult.Mode mode) {
+        List<CompletableFuture<List<WorldMutationResult>>> acceptedBatches = new ArrayList<>();
+        List<WorldMutationResult> notDispatched = new ArrayList<>();
         for (int i = 0; i < ordered.size(); i += BATCH_SIZE) {
             int end = Math.min(i + BATCH_SIZE, ordered.size());
             List<Action> batch = List.copyOf(ordered.subList(i, end));
-            mainThreadExecutor.execute(() -> applyBatch(batch, mode));
-            total += batch.size();
-        }
-        return total;
-    }
-
-    private void applyBatch(List<Action> batch, RollbackResult.Mode mode) {
-        for (Action a : batch) {
+            CompletableFuture<List<WorldMutationResult>> completion = new CompletableFuture<>();
             try {
-                if (mode == RollbackResult.Mode.ROLLBACK) {
-                    applyInverse(a);
-                } else {
-                    applyForward(a);
-                }
+                mainThreadExecutor.execute(() -> completion.complete(applyBatch(batch, mode)));
+                acceptedBatches.add(completion);
             } catch (RuntimeException e) {
-                LOG.warn("RollbackEngine: mutation failed for action id={} type={} ({})",
-                    a.id(), a.type(), e.toString());
+                // The executor may reject after earlier batches were accepted. Keep
+                // those futures in the outcome stream and represent every action
+                // from the rejected batch onward as incomplete. finishBatch() will
+                // mark only confirmed APPLIED ids and leave the audit batch OPEN.
+                for (int rejected = i; rejected < ordered.size(); rejected++) {
+                    notDispatched.add(WorldMutationResult.failed(ordered.get(rejected).id(), e));
+                }
+                break;
             }
         }
+        CompletableFuture<Void> all = CompletableFuture.allOf(
+            acceptedBatches.toArray(CompletableFuture[]::new));
+        return all.thenApply(ignored -> {
+            List<WorldMutationResult> outcomes = new ArrayList<>();
+            for (CompletableFuture<List<WorldMutationResult>> batch : acceptedBatches) {
+                outcomes.addAll(batch.join());
+            }
+            outcomes.addAll(notDispatched);
+            return outcomes;
+        });
     }
 
-    /** Apply the inverse of the action (used by rollback). */
-    private void applyInverse(Action a) {
+    private List<WorldMutationResult> applyBatch(List<Action> batch, RollbackResult.Mode mode) {
+        List<WorldMutationResult> outcomes = new ArrayList<>(batch.size());
+        for (Action a : batch) {
+            outcomes.add(applyMutation(a, mode));
+        }
+        return outcomes;
+    }
+
+    private WorldMutationResult applyMutation(Action action, RollbackResult.Mode mode) {
+        if (isUnsupportedAtDispatch(action, mode)) {
+            return WorldMutationResult.skipped(action.id());
+        }
+        try {
+            // Capture the mutator boolean. false is not APPLIED: no markRolledBack,
+            // action id stays out of confirmed IDs, audit batch remains open.
+            // Success is the mutation API result only — runtime read-back is a
+            // separate gap and is not claimed here.
+            boolean ok = mode == RollbackResult.Mode.ROLLBACK
+                ? applyInverse(action)
+                : applyForward(action);
+            if (!ok) {
+                IllegalStateException failure = new IllegalStateException(
+                    "WorldMutator reported unsuccessful mutation for action id="
+                        + action.id() + " type=" + action.type());
+                LOG.warn("RollbackEngine: mutation unsuccessful for action id={} type={}",
+                    action.id(), action.type());
+                return WorldMutationResult.failed(action.id(), failure);
+            }
+            return WorldMutationResult.applied(action.id());
+        } catch (Throwable failure) {
+            LOG.warn("RollbackEngine: mutation failed for action id={} type={} ({})",
+                action.id(), action.type(), failure.toString());
+            return WorldMutationResult.failed(action.id(), failure);
+        }
+    }
+
+    private static boolean isUnsupportedAtDispatch(Action action, RollbackResult.Mode mode) {
+        if (mode == RollbackResult.Mode.RESTORE && action.type() == ActionType.ENTITY_KILL) {
+            return true;
+        }
+        if (action.type() == ActionType.EXPLOSION) {
+            boolean hasSidecar = action.blockEntityNbt() != null && action.blockEntityNbt().length > 0;
+            return (hasSidecar
+                ? ExplosionAffectedList.parse(action.targetId(), action.blockEntityNbt())
+                : ExplosionAffectedList.parse(action.targetId())).isEmpty();
+        }
+        return false;
+    }
+
+    /** Apply the inverse of the action (used by rollback). @return mutator success */
+    private boolean applyInverse(Action a) {
         // v1.3.2 Y1: branch on a.hasNbt() and route through the NBT-aware
         // WorldMutator overloads when the row carries any NBT fidelity payload.
-        // The default WorldMutator overload delegates to the legacy method, so
-        // impl cells that opt in override the NBT variant to reconstruct
-        // block-state / BE / ItemStack / Entity via NbtIo.read. On decode failure
-        // the cell logs at DEBUG and falls back to the legacy behaviour — never
-        // throws. When hasNbt()==false we skip the NBT overload entirely so the
-        // hot path stays allocation-free for pre-v1.3.1 rows.
+        // Loader checked methods fail closed on decode, registry, or apply failure;
+        // the compatibility defaults never claim checked success for a void bridge.
+        // When hasNbt()==false we skip the NBT overload entirely so the hot path
+        // stays allocation-free for pre-v1.3.1 rows.
         boolean nbt = a.hasNbt();
-        switch (a.type()) {
+        return switch (a.type()) {
             case BLOCK_PLACE ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             case BLOCK_BREAK -> {
                 if (nbt) {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.oldBlockState(), a.blockEntityNbt());
                 } else {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             case CONTAINER_DEPOSIT ->
-                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             case CONTAINER_WITHDRAW -> {
                 if (nbt) {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
                 } else {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
-            case ITEM_DROP, ITEM_PICKUP ->
+            case ITEM_DROP, ITEM_PICKUP -> {
                 LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — item entity identity required", a.type(), a.id());
+                yield false;
+            }
             case ENTITY_KILL -> {
                 if (nbt) {
-                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryRespawnEntity(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), a.targetMeta(), a.entityNbt());
                 } else {
-                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.tryRespawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             case EXPLOSION ->
@@ -703,107 +936,132 @@ public final class RollbackEngine {
             // ENTITY_CHANGE_BLOCK: targetId carries oldBlockId; targetMeta carries newBlockId.
             case ENTITY_CHANGE_BLOCK -> {
                 if (nbt) {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null,
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null,
                         a.oldBlockState(), a.blockEntityNbt());
                 } else {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), null);
                 }
             }
             // Block was destroyed/changed-away — inverse is to restore the original block.
             case BURN, FADE, LEAVES_DECAY, BUCKET_FILL -> {
                 if (nbt) {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.oldBlockState(), a.blockEntityNbt());
                 } else {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             // Block was created — inverse is to clear it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH ->
-                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             case HOPPER_PULL -> {
                 if (nbt) {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
                 } else {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
             // --- v0.1.0 expansion: entities ---
             case HANGING_PLACE ->
-                mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
+                mutator.tryRemoveEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
             case HANGING_BREAK -> {
                 if (nbt) {
-                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryRespawnEntity(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), a.targetMeta(), a.entityNbt());
                 } else {
-                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.tryRespawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             // --- per-action explicit refusals (replacing the silent default branch) ---
-            case DISPENSE ->
+            case DISPENSE -> {
                 LOG.warn("RollbackEngine: refusing to roll back DISPENSE (id={}) — container slot tracking required", a.id());
-            case FORM, SPREAD ->
+                yield false;
+            }
+            case FORM, SPREAD -> {
                 LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — old replacement state not tracked", a.type(), a.id());
-            case PISTON_EXTEND, PISTON_RETRACT ->
+                yield false;
+            }
+            case PISTON_EXTEND, PISTON_RETRACT -> {
                 LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — source position not tracked", a.type(), a.id());
-            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW ->
+                yield false;
+            }
+            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW -> {
                 LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — player inventory mutation out of scope", a.type(), a.id());
-            case ITEM_CRAFT ->
+                yield false;
+            }
+            case ITEM_CRAFT -> {
                 LOG.warn("RollbackEngine: refusing to roll back ITEM_CRAFT (id={}) — inventory state required", a.id());
-            case ENTITY_SPAWN ->
+                yield false;
+            }
+            case ENTITY_SPAWN -> {
                 LOG.warn("RollbackEngine: refusing to roll back ENTITY_SPAWN (id={}) — despawn unsafe", a.id());
-            case ENTITY_INTERACT ->
+                yield false;
+            }
+            case ENTITY_INTERACT -> {
                 LOG.warn("RollbackEngine: refusing to roll back ENTITY_INTERACT (id={}) — no state change to undo", a.id());
-            case CHUNK_POPULATE ->
+                yield false;
+            }
+            case CHUNK_POPULATE -> {
                 LOG.warn("RollbackEngine: refusing to roll back CHUNK_POPULATE (id={}) — chunk-scale revert unsafe", a.id());
-            case CLICK ->
+                yield false;
+            }
+            case CLICK -> {
                 LOG.warn("RollbackEngine: refusing to roll back CLICK (id={}) — audit-only, no state change", a.id());
-            case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE ->
+                yield false;
+            }
+            case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE -> {
                 LOG.warn("RollbackEngine: refusing to roll back non-rollbackable {} (id={})", a.type(), a.id());
-        }
+                yield false;
+            }
+        };
     }
 
-    /** Reapply the original action (used by restore). */
-    private void applyForward(Action a) {
+    /** Reapply the original action (used by restore). @return mutator success */
+    private boolean applyForward(Action a) {
         // v1.3.2 Y1: mirror applyInverse's NBT branching. Restore semantics
         // re-apply the row's original mutation, so the NBT payload used here is
         // the "new state" side (post-change) — newBlockState + blockEntityNbt
         // for a BLOCK_PLACE, itemNbt for CONTAINER_DEPOSIT / ITEM_DROP /
         // HOPPER_PUSH, entityNbt for HANGING_PLACE.
         boolean nbt = a.hasNbt();
-        switch (a.type()) {
+        return switch (a.type()) {
             case BLOCK_PLACE -> {
                 if (nbt) {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.newBlockState(), a.blockEntityNbt());
                 } else {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             case BLOCK_BREAK ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             case CONTAINER_DEPOSIT -> {
                 if (nbt) {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
                 } else {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
             case CONTAINER_WITHDRAW ->
-                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
-            case ITEM_DROP, ITEM_PICKUP ->
+            case ITEM_DROP, ITEM_PICKUP -> {
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — item entity identity required", a.type(), a.id());
-            case ENTITY_KILL ->
+                yield false;
+            }
+            case ENTITY_KILL -> {
+                // Restoring a kill is intentionally a no-op (entity already dead path).
                 LOG.debug("RollbackEngine: restore of ENTITY_KILL id={} is best-effort no-op", a.id());
+                yield true;
+            }
             case EXPLOSION ->
                 clearExplosionBlocks(a);
             // --- v0.1.0 expansion: block events ---
@@ -811,97 +1069,125 @@ public final class RollbackEngine {
             case ENTITY_CHANGE_BLOCK -> {
                 String newId = a.targetMeta() != null ? a.targetMeta() : AIR;
                 if (nbt) {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null,
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null,
                         a.newBlockState(), a.blockEntityNbt());
                 } else {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null);
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), newId, null);
                 }
             }
             // Block was originally destroyed/changed-away — restoring means re-destroying.
             case BURN, FADE, LEAVES_DECAY, BUCKET_FILL ->
-                mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // Block was originally created — restoring means re-placing it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
                 if (nbt) {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.newBlockState(), a.blockEntityNbt());
                 } else {
-                    mutator.setBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH -> {
                 if (nbt) {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
                 } else {
-                    mutator.giveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
             case HOPPER_PULL ->
-                mutator.removeFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             // --- v0.1.0 expansion: entities ---
             case HANGING_PLACE -> {
                 if (nbt) {
-                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(),
+                    yield mutator.tryRespawnEntity(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), a.targetMeta(), a.entityNbt());
                 } else {
-                    mutator.respawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                    yield mutator.tryRespawnEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
             case HANGING_BREAK ->
-                mutator.removeEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
+                mutator.tryRemoveEntity(a.worldId(), a.x(), a.y(), a.z(), a.targetId());
             // --- per-action explicit refusals (replacing the silent default branch) ---
-            case DISPENSE ->
+            case DISPENSE -> {
                 LOG.warn("RollbackEngine: refusing to restore DISPENSE (id={}) — container slot tracking required", a.id());
-            case FORM, SPREAD ->
+                yield false;
+            }
+            case FORM, SPREAD -> {
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — old replacement state not tracked", a.type(), a.id());
-            case PISTON_EXTEND, PISTON_RETRACT ->
+                yield false;
+            }
+            case PISTON_EXTEND, PISTON_RETRACT -> {
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — source position not tracked", a.type(), a.id());
-            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW ->
+                yield false;
+            }
+            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW -> {
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — player inventory mutation out of scope", a.type(), a.id());
-            case ITEM_CRAFT ->
+                yield false;
+            }
+            case ITEM_CRAFT -> {
                 LOG.warn("RollbackEngine: refusing to restore ITEM_CRAFT (id={}) — inventory state required", a.id());
-            case ENTITY_SPAWN ->
+                yield false;
+            }
+            case ENTITY_SPAWN -> {
                 LOG.warn("RollbackEngine: refusing to restore ENTITY_SPAWN (id={}) — despawn unsafe", a.id());
-            case ENTITY_INTERACT ->
+                yield false;
+            }
+            case ENTITY_INTERACT -> {
                 LOG.warn("RollbackEngine: refusing to restore ENTITY_INTERACT (id={}) — no state change to redo", a.id());
-            case CHUNK_POPULATE ->
+                yield false;
+            }
+            case CHUNK_POPULATE -> {
                 LOG.warn("RollbackEngine: refusing to restore CHUNK_POPULATE (id={}) — chunk-scale revert unsafe", a.id());
-            case CLICK ->
+                yield false;
+            }
+            case CLICK -> {
                 LOG.warn("RollbackEngine: refusing to restore CLICK (id={}) — audit-only, no state change", a.id());
-            case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE ->
+                yield false;
+            }
+            case CHAT, COMMAND, SIGN, SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE -> {
                 LOG.warn("RollbackEngine: refusing to restore non-rollbackable {} (id={})", a.type(), a.id());
-        }
+                yield false;
+            }
+        };
     }
 
-    private void restoreExplosion(Action a) {
+    private boolean restoreExplosion(Action a) {
         boolean hasSidecar = a.blockEntityNbt() != null && a.blockEntityNbt().length > 0;
         ExplosionAffectedList list = hasSidecar
             ? ExplosionAffectedList.parse(a.targetId(), a.blockEntityNbt())
             : ExplosionAffectedList.parse(a.targetId());
-        if (list.isEmpty()) return;
+        if (list.isEmpty()) return false;
+        boolean allOk = true;
         for (ExplosionAffectedList.Entry e : list.entries()) {
             // Restore the pre-blast block state at each affected coord. Legacy
             // inline meta remains targetMeta; sidecar meta is v5 block-state props.
+            boolean ok;
             if (hasSidecar && (e.meta() != null || e.blockEntityNbt() != null)) {
-                mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), null,
+                ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), null,
                     e.meta(), e.blockEntityNbt());
             } else {
-                mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
+                ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
             }
+            if (!ok) allOk = false;
         }
+        return allOk;
     }
 
-    private void clearExplosionBlocks(Action a) {
+    private boolean clearExplosionBlocks(Action a) {
         ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
-        if (list.isEmpty()) return;
+        if (list.isEmpty()) return false;
+        boolean allOk = true;
         for (ExplosionAffectedList.Entry e : list.entries()) {
             // Restore direction: re-clear the affected area (re-apply the blast).
-            mutator.setBlock(a.worldId(), e.x(), e.y(), e.z(), AIR, null);
+            if (!mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), AIR, null)) {
+                allOk = false;
+            }
         }
+        return allOk;
     }
 
     /** For tests + internal use only. */

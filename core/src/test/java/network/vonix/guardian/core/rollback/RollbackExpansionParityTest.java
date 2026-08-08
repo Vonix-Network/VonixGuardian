@@ -15,6 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -106,6 +107,7 @@ class RollbackExpansionParityTest {
             action(5, 96, ActionType.HOPPER_PULL, 5)
         ));
         when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(77L);
+        when(dao.closeRollbackBatch(77L)).thenReturn(1);
 
         QueryFilter filter = QueryFilter.builder().sinceMillis(1L).build();
         RollbackResult result = engine.rollback(filter, false);
@@ -145,23 +147,23 @@ class RollbackExpansionParityTest {
         final List<String> calls = new ArrayList<>();
 
         @Override
-        public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
-            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);
+        public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
-            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);
+        public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
+            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);            return true;
         }
 
         @Override
-        public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
-            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);
+        public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
+            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);            return true;
         }
 
         @Override
-        public void respawnEntity(String worldId, int x, int y, int z, String entityType, String nbt) {
-            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + nbt);
+        public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String nbt) {
+            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + nbt);            return true;
         }
     }
 }

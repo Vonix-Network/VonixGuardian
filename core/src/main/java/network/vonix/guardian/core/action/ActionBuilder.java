@@ -411,6 +411,9 @@ public final class ActionBuilder {
         if (name == null && actorUuid == null) {
             name = UNKNOWN_ACTOR_NAME;
         }
+        String safeTargetId = type == ActionType.COMMAND
+            ? CommandPayloadSanitizer.sanitize(targetId)
+            : targetId;
         return new Action(
             id,
             ts,
@@ -419,7 +422,7 @@ public final class ActionBuilder {
             name,
             worldId,
             x, y, z,
-            targetId,
+            safeTargetId,
             targetMeta,
             amt,
             rolledBack,

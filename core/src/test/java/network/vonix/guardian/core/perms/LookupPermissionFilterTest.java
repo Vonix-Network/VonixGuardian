@@ -14,7 +14,14 @@ import java.util.UUID;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.query.QueryFilter;
+import network.vonix.guardian.core.storage.GuardianDao;
 import org.junit.jupiter.api.Test;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * W3-B7: verifies {@link LookupPermissionFilter} drops rows whose child node
@@ -139,5 +146,81 @@ class LookupPermissionFilterTest {
         PermissionResolver r = fakeResolver(4);
         List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, new ArrayList<>());
         assertThat(out).isEmpty();
+    }
+
+    @Test
+    void countVisibleCountsOnlyPermittedChildBucketsWithoutFetchingRows() throws Exception {
+        PermissionResolver resolver = fakeResolver(2);
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.count(any(QueryFilter.class))).thenAnswer(invocation -> {
+            QueryFilter f = invocation.getArgument(0);
+            return f.actions().stream().anyMatch(a -> a.type() == ActionType.BLOCK_PLACE) ? 4L : 99L;
+        });
+        QueryFilter filter = new QueryFilter(
+                List.of(), null, null, null, null, null, null, null,
+                List.of(
+                        new QueryFilter.ActionSelect(ActionType.BLOCK_PLACE, QueryFilter.ActionSelect.Sign.ANY),
+                        new QueryFilter.ActionSelect(ActionType.CHAT, QueryFilter.ActionSelect.Sign.ANY),
+                        new QueryFilter.ActionSelect(ActionType.COMMAND, QueryFilter.ActionSelect.Sign.ANY)),
+                List.of(), List.of(), null, true, false, false, false, false, null, Set.of());
+
+        long visible = LookupPermissionFilter.countVisible(
+                dao, resolver, USER, PermissionNode.LOOKUP, filter);
+
+        assertThat(visible).isEqualTo(4L);
+        verify(dao).count(any(QueryFilter.class));
+    }
+
+    @Test
+    void visiblePageSkipsDeniedRowsBeforeFillingVisiblePage() throws Exception {
+        PermissionResolver resolver = fakeResolver(2);
+        GuardianDao dao = mock(GuardianDao.class);
+        Action denied = a(10, ActionType.CHAT);
+        Action allowed = a(11, ActionType.BLOCK_PLACE);
+        when(dao.queryPage(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0), any(Integer.class)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(denied, allowed), false));
+        when(dao.queryPage(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(2), any(Integer.class)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(), false));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 1);
+
+        assertThat(page.rows()).extracting(Action::id).containsExactly(11L);
+        assertThat(page.rawRowsScanned()).isEqualTo(2);
+    }
+
+    @Test
+    void visiblePageReportsIncompleteWhenRawScanCapCannotProvePage() throws Exception {
+        PermissionResolver resolver = fakeResolver(2);
+        GuardianDao dao = mock(GuardianDao.class);
+        Action denied = a(12, ActionType.CHAT);
+        when(dao.queryPage(any(QueryFilter.class), org.mockito.ArgumentMatchers.anyInt(), any(Integer.class)))
+                .thenAnswer(invocation -> {
+                    int limit = invocation.getArgument(2);
+                    return new GuardianDao.QueryPage(java.util.Collections.nCopies(limit, denied), false);
+                });
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 1);
+
+        assertThat(page.complete()).isFalse();
+        assertThat(page.rows()).isEmpty();
+        assertThat(page.rawRowsScanned()).isEqualTo(100_000);
+    }
+
+    @Test
+    void visiblePageFailsClosedWhenDaoReportsTruncatedPage() throws Exception {
+        PermissionResolver resolver = fakeResolver(2);
+        GuardianDao dao = mock(GuardianDao.class);
+        Action allowed = a(13, ActionType.BLOCK_PLACE);
+        when(dao.queryPage(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0), any(Integer.class)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(allowed), true));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 1);
+
+        assertThat(page.complete()).isFalse();
+        assertThat(page.rows()).isEmpty();
+        assertThat(page.rawRowsScanned()).isEqualTo(1);
     }
 }

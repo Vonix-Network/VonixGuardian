@@ -75,6 +75,16 @@ public final class GuardianStatus {
         line(out, "  gated      " + g.gated());
         line(out, "  dropped    " + safe(() -> Long.toString(g.queue().dropped())));
         line(out, "  sinkDrops  " + safe(() -> Long.toString(g.queue().permanentlyDropped())));
+        line(out, "  quarantined " + safe(() -> Long.toString(g.queue().quarantined())));
+        line(out, "  recovered   " + safe(() -> Long.toString(g.queue().recoveredFromQuarantine())));
+        line(out, "  qOverflow   " + safe(() -> Long.toString(g.queue().quarantineOverflow()))
+                + " (" + safe(() -> g.queue().quarantineRetentionLimitReached()
+                        ? "RETENTION LIMIT REACHED; failed rows are not durably retained"
+                        : "retention limit not reached") + ")");
+        line(out, "  qWriteFail  " + safe(() -> Long.toString(g.queue().quarantineWriteFailures()))
+                + " (" + safe(() -> g.queue().quarantineEnabled()
+                        ? "quarantine write failures are not durably retained"
+                        : "durable quarantine disabled") + ")");
         Map<String, Long> submittedByType = safeMap(() -> g.queue().submittedByTypeSnapshot());
         if (!submittedByType.isEmpty()) {
             line(out, "  by-type    " + formatHistogram(submittedByType));

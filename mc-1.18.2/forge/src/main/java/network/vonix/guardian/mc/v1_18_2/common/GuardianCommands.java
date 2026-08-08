@@ -68,7 +68,6 @@ public final class GuardianCommands {
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianCommands.class);
     private static final QueryParser PARSER = new QueryParser();
-    private static final int DEFAULT_PAGE_SIZE = 10;
     private static final int DEFAULT_ROLLBACK_RADIUS = 10;
 
     /** Matches a pure page token, optionally with {@code :perPage}. */
@@ -297,6 +296,10 @@ public final class GuardianCommands {
         return src.getEntity() instanceof ServerPlayer p ? WorldKey.of(p.level) : null;
     }
 
+    private static int lookupDefaultPageSize(Guardian g) {
+        return Math.max(1, Math.min(50, g.config().lookup().defaultPageSize()));
+    }
+
     private static UUID actorUuid(CommandSourceStack src) {
         return src.getEntity() instanceof ServerPlayer p ? p.getUUID() : null;
     }
@@ -325,12 +328,20 @@ public final class GuardianCommands {
 
     /**
      * Returns a copy of {@code qf} with a default radius of {@code 10} centered
-     * on the caller, if the caller did not supply a radius selector. Mirrors
-     * CoreProtect's {@code /vg rollback} / {@code /vg restore} defaults. No-op
-     * when the source has no position (console).
+     * on the caller, if the caller did not supply a numeric radius and did not
+     * supply an explicit world selector ({@code r:#world_*}/{@code #nether}/
+     * {@code #overworld}/{@code #end}) or WorldEdit selector ({@code r:#we}/
+     * {@code r:#worldedit}). Preserves {@code r:#global} (radius -1) and any
+     * numeric radius. Mirrors CoreProtect's {@code /vg rollback} /
+     * {@code /vg restore} defaults. No-op when the source has no position
+     * (console).
      */
     private static QueryFilter withDefaultRollbackRadius(QueryFilter qf, CommandSourceStack src) {
-        if (qf.radius() != null) {
+        // Default r:10 only when the caller supplied neither a numeric radius
+        // (including r:#global => -1) nor an explicit world / WorldEdit selector.
+        // QueryParser leaves radius null for r:#world_*, #nether, #overworld,
+        // #end and for r:#we/#worldedit — those must not be narrowed to r:10.
+        if (qf.radius() != null || qf.worldSel() != null || qf.worldEditPlayer() != null) {
             return qf;
         }
         Vec3 v = src.getPosition();
@@ -386,7 +397,7 @@ public final class GuardianCommands {
             // CP pagination: if the FIRST whitespace token is `<n>` or `<n>:<m>`
             // treat it as page (and optional per-page) and strip it from the filter.
             int page = 1;
-            int perPage = Math.max(1, Math.min(50, g.config().lookup().defaultPageSize()));
+            int perPage = lookupDefaultPageSize(g);
             String filter = raw;
             String trimmed = raw == null ? "" : raw.trim();
             if (!trimmed.isEmpty()) {
@@ -416,18 +427,20 @@ public final class GuardianCommands {
             // `r:#world_<key>` scopes the query to the block's world so
             // cross-world coord collisions don't leak in.
             String f = "p:" + x + "," + y + "," + z + " r:2 t:30d r:#world_" + worldId;
-            runWithFilter(src, g, f, 1, DEFAULT_PAGE_SIZE);
+            runWithFilter(src, g, f, 1, lookupDefaultPageSize(g));
         }
 
         /** Back-compat overload — kept for existing callers (inspector). */
         public static int runWithFilter(CommandSourceStack src, Guardian g, String raw) {
-            return runWithFilter(src, g, raw, 1, DEFAULT_PAGE_SIZE);
+            return runWithFilter(src, g, raw, 1, lookupDefaultPageSize(g));
         }
 
         public static int runWithFilter(CommandSourceStack src, Guardian g, String raw, int page, int perPage) {
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw == null ? "" : raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
+                qf = PARSER.parse(raw == null ? "" : raw, ctxOf(src));
+                qf = qf.withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
@@ -440,13 +453,24 @@ public final class GuardianCommands {
             final UUID viewer = actorUuid(src);
             submitAsync(src, g, () -> {
                 try {
-                    long total = g.dao().count(filter);
+                    long total = LookupPermissionFilter.countVisible(
+                            g.dao(), g.perms(), viewer, PermissionNode.LOOKUP, filter);
+                    if (filter.countOnly()) {
+                        server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Count: " + total)));
+                        return;
+                    }
                     int pages = (int) Math.max(1L, (total + perPageF - 1) / Math.max(1, perPageF));
                     int pageActual = Math.min(Math.max(1, pageF), pages);
-                    int offset = (pageActual - 1) * perPageF;
-                    List<Action> rows = g.dao().query(filter, offset, perPageF);
-                    // W3-B7: filter rows by CoreProtect-style child perms (e.g. lookup.chat)
-                    rows = LookupPermissionFilter.filter(g.perms(), viewer, PermissionNode.LOOKUP, rows);
+                    LookupPermissionFilter.VisiblePage visiblePage = LookupPermissionFilter.visiblePage(
+                            g.dao(), g.perms(), viewer, PermissionNode.LOOKUP,
+                            filter, pageActual, perPageF);
+                    if (!visiblePage.complete()) {
+                        server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Lookup aborted: the permission-filtered page exceeded the 100000-row scan limit. Narrow the time, radius, or action filter and try again.")));
+                        return;
+                    }
+                    List<Action> rows = visiblePage.rows();
                     long now = System.currentTimeMillis();
                     List<Component> pageOut = LookupFormatter.page(g.theme(), rows, total, pageActual, perPageF, now, rawF);
                     final long totalF = total;
@@ -482,7 +506,7 @@ public final class GuardianCommands {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg near must be run by a player."));
                 return 0;
             }
-            return Lookup.runWithFilter(src, g, "r:5 t:1h", 1, DEFAULT_PAGE_SIZE);
+            return Lookup.runWithFilter(src, g, "r:5 t:1h", 1, lookupDefaultPageSize(g));
         }
     }
 
@@ -497,12 +521,14 @@ public final class GuardianCommands {
             String raw = StringArgumentType.getString(ctx, "filter");
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
+                qf = PARSER.parse(raw, ctxOf(src));
+                qf = withDefaultRollbackRadius(qf, src);
+                qf = qf.withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
             }
-            qf = withDefaultRollbackRadius(qf, src);
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
             final QueryFilter filter = qf;
@@ -546,12 +572,14 @@ public final class GuardianCommands {
             String raw = StringArgumentType.getString(ctx, "filter");
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
+                qf = PARSER.parse(raw, ctxOf(src));
+                qf = withDefaultRollbackRadius(qf, src);
+                qf = qf.withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
             }
-            qf = withDefaultRollbackRadius(qf, src);
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
             final QueryFilter filter = qf;
@@ -593,7 +621,9 @@ public final class GuardianCommands {
             String raw = StringArgumentType.getString(ctx, "filter");
             QueryFilter qf;
             try {
-                qf = PARSER.parse(raw, ctxOf(src)).withDefaultWorld(playerWorldOf(src));
+                qf = PARSER.parse(raw, ctxOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius())
+                    .withDefaultWorld(playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;

@@ -53,57 +53,105 @@ public final class FabricWorldMutator implements WorldMutator {
         this.server = Objects.requireNonNull(server, "server");
     }
 
+
+    // Stable ABI bridges: pre-1.3.10 integrations retain the original void
+    // descriptors while rollback/restore uses the checked try* methods.
     @Override
     public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
-        try {
-            ServerLevel level = level(worldId);
-            if (level == null) return;
-            ResourceLocation rl = ResourceLocation.tryParse(targetId);
-            if (rl == null) return;
-            Block block = Registry.BLOCK.get(rl);
-            if (block == null) return;
-            BlockState state = applyMeta(block.defaultBlockState(), targetMeta);
-            level.setBlock(new BlockPos(x, y, z), state, Block.UPDATE_ALL);
-        } catch (Throwable t) {
-            LOG.warn(Guardian.MARKER, "setBlock failed at {} {},{},{}", worldId, x, y, z, t);
-        }
+        trySetBlock(worldId, x, y, z, targetId, targetMeta);
+    }
+
+    @Override
+    public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
+                         String blockState, byte[] blockEntityNbt) {
+        trySetBlock(worldId, x, y, z, targetId, targetMeta, blockState, blockEntityNbt);
     }
 
     @Override
     public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
+        tryGiveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
+    }
+
+    @Override
+    public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount,
+                           String targetMeta, byte[] itemNbt) {
+        tryGiveOrDrop(worldId, x, y, z, itemId, amount, targetMeta, itemNbt);
+    }
+
+    @Override
+    public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
+        tryRemoveFromContainer(worldId, x, y, z, itemId, amount);
+    }
+
+    @Override
+    public void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
+        tryRespawnEntity(worldId, x, y, z, entityType, targetMeta);
+    }
+
+    @Override
+    public void respawnEntity(String worldId, int x, int y, int z, String entityType,
+                              String targetMeta, byte[] entityNbt) {
+        tryRespawnEntity(worldId, x, y, z, entityType, targetMeta, entityNbt);
+    }
+
+    @Override
+    public void removeEntity(String worldId, int x, int y, int z, String entityType) {
+        tryRemoveEntity(worldId, x, y, z, entityType);
+    }
+
+    @Override
+    public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
         try {
             ServerLevel level = level(worldId);
-            if (level == null) return;
+            if (level == null) return false;
+            ResourceLocation rl = ResourceLocation.tryParse(targetId);
+            if (rl == null) return false;
+            Block block = Registry.BLOCK.get(rl);
+            if (block == null || !rl.equals(Registry.BLOCK.getKey(block))) return false;
+            BlockState state = applyMeta(block.defaultBlockState(), targetMeta);
+            return level.setBlock(new BlockPos(x, y, z), state, Block.UPDATE_ALL);
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "setBlock failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
+        try {
+            ServerLevel level = level(worldId);
+            if (level == null) return false;
             ResourceLocation rl = ResourceLocation.tryParse(itemId);
-            if (rl == null) return;
+            if (rl == null) return false;
             Item item = Registry.ITEM.get(rl);
-            if (item == null) return;
+            if (item == null || !rl.equals(Registry.ITEM.getKey(item))) return false;
             ItemStack stack = new ItemStack(item, Math.max(1, amount));
 
             BlockPos pos = new BlockPos(x, y, z);
             BlockEntity be = level.getBlockEntity(pos);
             if (be instanceof Container c && tryInsert(c, stack)) {
-                return;
+                return true;
             }
             ItemEntity drop = new ItemEntity(level, x + 0.5, y + 0.5, z + 0.5, stack);
             drop.setDefaultPickUpDelay();
-            level.addFreshEntity(drop);
+            return level.addFreshEntity(drop);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "giveOrDrop failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
         }
     }
 
     @Override
-    public void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
+    public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
         try {
             ServerLevel level = level(worldId);
-            if (level == null) return;
+            if (level == null) return false;
             BlockEntity be = level.getBlockEntity(new BlockPos(x, y, z));
-            if (!(be instanceof Container c)) return;
+            if (!(be instanceof Container c)) return false;
             ResourceLocation rl = ResourceLocation.tryParse(itemId);
-            if (rl == null) return;
+            if (rl == null) return false;
             Item want = Registry.ITEM.get(rl);
-            if (want == null) return;
+            if (want == null || !rl.equals(Registry.ITEM.getKey(want))) return false;
             int remaining = Math.max(1, amount);
             for (int slot = 0; slot < c.getContainerSize() && remaining > 0; slot++) {
                 ItemStack s = c.getItem(slot);
@@ -116,26 +164,29 @@ public final class FabricWorldMutator implements WorldMutator {
                 }
             }
             c.setChanged();
+            return remaining == 0;
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "removeFromContainer failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
         }
     }
 
     @Override
-    public void respawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
+    public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
         try {
             ServerLevel level = level(worldId);
-            if (level == null) return;
+            if (level == null) return false;
             ResourceLocation rl = ResourceLocation.tryParse(entityType);
-            if (rl == null) return;
+            if (rl == null) return false;
             EntityType<?> type = Registry.ENTITY_TYPE.get(rl);
-            if (type == null) return;
+            if (type == null || !rl.equals(Registry.ENTITY_TYPE.getKey(type))) return false;
             Entity e = type.create(level);
-            if (e == null) return;
+            if (e == null) return false;
             e.moveTo(x + 0.5, y, z + 0.5, 0f, 0f);
-            level.addFreshEntity(e);
+            return level.addFreshEntity(e);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "respawnEntity failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
         }
     }
 
@@ -145,119 +196,178 @@ public final class FabricWorldMutator implements WorldMutator {
     // NbtIo.read runs on the main-thread executor (RollbackEngine dispatches
     // WorldMutator calls there), so it is safe to touch ServerLevel /
     // BlockEntity / EntityType.loadEntityRecursive here. Decode + registry
-    // lookup failures log at DEBUG and fall back to the legacy behaviour —
-    // never throw.
+    // lookup failures log at DEBUG and return false from the checked path —
+    // never throw or perform a second mutation.
 
     @Override
-    public void setBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
+    public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
                          String blockState, byte[] blockEntityNbt) {
+        ServerLevel level = null;
+        BlockState previousState = null;
+        CompoundTag previousBlockEntityNbt = null;
+        boolean mutationStarted = false;
         try {
-            ServerLevel level = level(worldId);
-            if (level == null) return;
+            level = level(worldId);
+            if (level == null) return false;
             ResourceLocation rl = ResourceLocation.tryParse(targetId);
-            if (rl == null) return;
+            if (rl == null) return false;
             Block block = Registry.BLOCK.get(rl);
-            if (block == null) return;
+            if (block == null || !rl.equals(Registry.BLOCK.getKey(block))) return false;
             BlockState state = block.defaultBlockState();
             if (blockState != null && !blockState.isEmpty()) {
                 state = applyMeta(state, blockState);
             } else if (targetMeta != null && !targetMeta.isEmpty()) {
                 state = applyMeta(state, targetMeta);
             }
-            BlockPos pos = new BlockPos(x, y, z);
-            level.setBlock(pos, state, Block.UPDATE_ALL);
-
+            // Decode before touching the world. A malformed block-entity payload
+            // must not leave a placed block behind while the checked path returns false.
+            CompoundTag decodedBlockEntityNbt = null;
             if (blockEntityNbt != null && blockEntityNbt.length > 0) {
-                CompoundTag tag = decodeNbt(blockEntityNbt);
-                if (tag == null) return;
+                decodedBlockEntityNbt = decodeNbt(blockEntityNbt);
+                if (decodedBlockEntityNbt == null) return false;
+            }
+
+            BlockPos pos = new BlockPos(x, y, z);
+            if (decodedBlockEntityNbt != null) {
+                previousState = level.getBlockState(pos);
+                BlockEntity previousBlockEntity = level.getBlockEntity(pos);
+                if (previousBlockEntity != null) {
+                    previousBlockEntityNbt = previousBlockEntity.saveWithoutMetadata();
+                }
+            }
+
+            mutationStarted = true;
+            boolean placed = level.setBlock(pos, state, Block.UPDATE_ALL);
+
+            if (!placed) {
+                restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+                return false;
+            }
+
+            if (decodedBlockEntityNbt != null) {
+                CompoundTag tag = decodedBlockEntityNbt;
                 BlockEntity be = level.getBlockEntity(pos);
-                if (be == null) return;
+                if (be == null) {
+                    restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+                    return false;
+                }
                 try {
                     be.load(tag);
                     be.setChanged();
                 } catch (Throwable t) {
                     LOG.debug(Guardian.MARKER,
-                        "setBlock NBT apply failed at {} {},{},{}; block placed without BE contents",
+                        "setBlock NBT apply failed at {} {},{},{}; restoring prior block state",
                         worldId, x, y, z, t);
+                    restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+                    return false;
                 }
             }
+            return true;
         } catch (Throwable t) {
+            if (mutationStarted && level != null && previousState != null) {
+                restoreBlockMutation(level, new BlockPos(x, y, z), previousState, previousBlockEntityNbt);
+            }
             LOG.warn(Guardian.MARKER, "setBlock (nbt) failed at {} {},{},{}", worldId, x, y, z, t);
-            setBlock(worldId, x, y, z, targetId, targetMeta);
+            return false;
         }
     }
 
+
+    private static boolean restoreBlockMutation(ServerLevel level, BlockPos pos, BlockState previousState,
+                                                CompoundTag previousBlockEntityNbt) {
+        if (level == null || pos == null || previousState == null) return false;
+        try {
+            if (!level.setBlock(pos, previousState, Block.UPDATE_ALL)) return false;
+            if (!level.getBlockState(pos).equals(previousState)) return false;
+            if (previousBlockEntityNbt != null) {
+                BlockEntity restored = level.getBlockEntity(pos);
+                if (restored == null) return false;
+                restored.load(previousBlockEntityNbt);
+                restored.setChanged();
+            }
+            return true;
+        } catch (Throwable restoreFailure) {
+            LOG.warn(Guardian.MARKER, "setBlock NBT rollback failed at {}", pos, restoreFailure);
+            return false;
+        }
+    }
+
+
     @Override
-    public void giveOrDrop(String worldId, int x, int y, int z, String itemId, int amount,
+    public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount,
                            String targetMeta, byte[] itemNbt) {
         try {
             if (itemNbt == null || itemNbt.length == 0) {
-                giveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
-                return;
+                return tryGiveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
             }
             ServerLevel level = level(worldId);
-            if (level == null) return;
+            if (level == null) return false;
+            ResourceLocation itemRl = ResourceLocation.tryParse(itemId);
+            if (itemRl == null) return false;
+            Item requestedItem = Registry.ITEM.get(itemRl);
+            if (requestedItem == null || !itemRl.equals(Registry.ITEM.getKey(requestedItem))) return false;
             CompoundTag tag = decodeNbt(itemNbt);
             if (tag == null) {
-                giveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
-                return;
+                return false;
             }
             ItemStack stack;
             try {
                 stack = ItemStack.of(tag);
             } catch (Throwable t) {
                 LOG.debug(Guardian.MARKER,
-                    "giveOrDrop NBT parse failed at {} {},{},{}; falling back to legacy",
+                    "giveOrDrop NBT parse failed at {} {},{},{}; rejecting NBT mutation",
                     worldId, x, y, z, t);
-                giveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
-                return;
+                return false;
             }
-            if (stack == null || stack.isEmpty()) {
-                giveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
-                return;
+            if (stack == null || stack.isEmpty()
+                    || !itemRl.equals(Registry.ITEM.getKey(stack.getItem()))) {
+                return false;
             }
             if (amount > 0) stack.setCount(Math.max(1, amount));
             BlockPos pos = new BlockPos(x, y, z);
             BlockEntity be = level.getBlockEntity(pos);
             if (be instanceof Container c && tryInsert(c, stack)) {
-                return;
+                return true;
             }
             ItemEntity drop = new ItemEntity(level, x + 0.5, y + 0.5, z + 0.5, stack);
             drop.setDefaultPickUpDelay();
-            level.addFreshEntity(drop);
+            return level.addFreshEntity(drop);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "giveOrDrop (nbt) failed at {} {},{},{}", worldId, x, y, z, t);
-            giveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
+            return false;
         }
     }
 
     @Override
-    public void respawnEntity(String worldId, int x, int y, int z, String entityType,
+    public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType,
                               String targetMeta, byte[] entityNbt) {
         try {
             if (entityNbt == null || entityNbt.length == 0) {
-                respawnEntity(worldId, x, y, z, entityType, targetMeta);
-                return;
+                return tryRespawnEntity(worldId, x, y, z, entityType, targetMeta);
             }
             ServerLevel level = level(worldId);
-            if (level == null) return;
+            if (level == null) return false;
+            ResourceLocation entityRl = ResourceLocation.tryParse(entityType);
+            if (entityRl == null) return false;
+            EntityType<?> requestedType = Registry.ENTITY_TYPE.get(entityRl);
+            if (requestedType == null || !entityRl.equals(Registry.ENTITY_TYPE.getKey(requestedType))) return false;
             CompoundTag tag = decodeNbt(entityNbt);
             if (tag == null) {
-                respawnEntity(worldId, x, y, z, entityType, targetMeta);
-                return;
+                return false;
             }
             Entity e = EntityType.loadEntityRecursive(tag, level, x0 -> {
                 x0.moveTo(x + 0.5, y, z + 0.5, x0.getYRot(), x0.getXRot());
                 return x0;
             });
-            if (e == null) {
-                respawnEntity(worldId, x, y, z, entityType, targetMeta);
-                return;
+            if (e == null || e.getType() != requestedType) {
+                // The row's entity id is an integrity boundary; never spawn a
+                // decoded entity whose registry type differs from the request.
+                return false;
             }
-            level.addFreshEntity(e);
+            return level.addFreshEntity(e);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "respawnEntity (nbt) failed at {} {},{},{}", worldId, x, y, z, t);
-            respawnEntity(worldId, x, y, z, entityType, targetMeta);
+            return false;
         }
     }
 
@@ -271,23 +381,25 @@ public final class FabricWorldMutator implements WorldMutator {
     }
 
     @Override
-    public void removeEntity(String worldId, int x, int y, int z, String entityType) {
+    public boolean tryRemoveEntity(String worldId, int x, int y, int z, String entityType) {
         try {
             ServerLevel level = level(worldId);
-            if (level == null) return;
+            if (level == null) return false;
             ResourceLocation rl = ResourceLocation.tryParse(entityType);
-            if (rl == null) return;
+            if (rl == null) return false;
             EntityType<?> type = Registry.ENTITY_TYPE.get(rl);
-            if (type == null) return;
+            if (type == null || !rl.equals(Registry.ENTITY_TYPE.getKey(type))) return false;
             BlockPos pos = new BlockPos(x, y, z);
             AABB box = new AABB(x - 1.0, y - 1.0, z - 1.0, x + 2.0, y + 2.0, z + 2.0);
             for (Entity e : level.getEntitiesOfClass(Entity.class, box,
                     e -> e.getType() == type && e.blockPosition().equals(pos))) {
                 e.discard();
-                return;
+                return true;
             }
+            return false;
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "removeEntity failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
         }
     }
 

@@ -1,12 +1,12 @@
 /*
  * VonixGuardian — mc-1.19.2 :fabric
  *
- * Fabric loader 1.19.2. Shades core + sqlite + Hikari + Gson into the jar.
+ * Fabric loader 1.19.2. Nests core and runtime libraries through Fabric Loom's
+ * JarInJar include configuration.
  */
 
 plugins {
     id 'fabric-loom' version '1.4.6'
-    id 'com.gradleup.shadow' version '8.3.5'
     id 'java-library'
 }
 
@@ -30,34 +30,23 @@ repositories {
     mavenCentral()
 }
 
-configurations {
-    // shaded is INDEPENDENT — does NOT extend implementation. We feed it
-    // to shadowJar explicitly. We also re-add it as compileOnly via the
-    // dependencies block so source compiles against the same classes.
-    shaded
-    include
-}
-
-// Exclude slf4j-api from shaded so it doesn't leak into the outer fat jar.
-configurations.shaded.exclude group: 'org.slf4j'
-
 dependencies {
     minecraft "com.mojang:minecraft:1.19.2"
     mappings loom.officialMojangMappings()
     modImplementation "net.fabricmc:fabric-loader:0.15.11"
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.77.0+1.19.2"
 
-    // shaded is for ShadowJar packaging only — does NOT extend implementation.
-    // We mirror each as compileOnly below so source compiles.
-    shaded project(':core')
-    shaded libs.sqlite.jdbc                       // unrelocated (JNI parity)
-    shaded libs.mysql.connector                   // pure-Java JDBC, no JNI
-    shaded libs.postgresql                        // pure-Java JDBC, no JNI
-    shaded(libs.hikaricp) { exclude group: 'org.slf4j' }
-    shaded libs.gson
+    // Fabric Loom's include(modImplementation(...)) produces nested jars under
+    // META-INF/jars. This preserves canonical JDBC/JNI packages and avoids
+    // placing JDBC classes in the outer mod artifact.
+    include modImplementation('org.xerial:sqlite-jdbc:3.46.1.0')
+    include modImplementation('com.mysql:mysql-connector-j:8.4.0')
+    include modImplementation('org.postgresql:postgresql:42.7.4')
+    include(modImplementation('com.zaxxer:HikariCP:5.1.0')) { exclude group: 'org.slf4j' }
+    include modImplementation('com.google.code.gson:gson:2.10.1')
 
-    // Mirror onto compileClasspath so source compiles. slf4j-api is here too
-    // (excluded from shaded, but loader provides at runtime).
+    // Compile-only mirrors keep loader source compilation independent of the
+    // nested-jar runtime layout. The loader provides slf4j-api at runtime.
     compileOnly project(':core')
     compileOnly libs.sqlite.jdbc
     compileOnly libs.mysql.connector
@@ -86,34 +75,54 @@ tasks.named('processResources') {
     }
 }
 
-shadowJar {
-    archiveClassifier = 'shadow'
-    configurations = [project.configurations.shaded]
-
-    relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
-    relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
-    // Do NOT relocate org.sqlite — JNI symbols hardcoded against package path.
-
-    minimize {
-        exclude(dependency('org.xerial:sqlite-jdbc:.*'))
-        exclude(dependency('com.mysql:mysql-connector-j:.*'))
-        exclude(dependency('org.postgresql:postgresql:.*'))
-        exclude(dependency('com.zaxxer:HikariCP:.*'))
+tasks.register('embedCoreJarInJar') {
+    dependsOn ':core:jar', 'remapJar'
+    doLast {
+        File artifact = tasks.named('remapJar').get().archiveFile.get().asFile
+        File coreJar = project(':core').tasks.named('jar').get().archiveFile.get().asFile
+        File tmp = new File(artifact.parentFile, artifact.name + '.core.tmp')
+        String entryName = "META-INF/jars/${coreJar.name}"
+        new java.util.zip.ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
+            new java.util.zip.ZipFile(artifact).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    if (entry.name == entryName) return
+                    out.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(out) }
+                    out.closeEntry()
+                }
+            }
+            out.putNextEntry(new java.util.zip.ZipEntry(entryName))
+            coreJar.withInputStream { it.transferTo(out) }
+            out.closeEntry()
+        }
+        java.nio.file.Files.move(tmp.toPath(), artifact.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE)
     }
-
-    mergeServiceFiles()
-    exclude 'META-INF/*.DSA'
-    exclude 'META-INF/*.RSA'
-    exclude 'META-INF/*.SF'
-    exclude 'META-INF/maven/**'
-    exclude 'module-info.class'
 }
 
-// remapJar takes the shaded jar as input so the final jar is BOTH remapped AND fat.
-tasks.named('remapJar') {
-    inputFile = shadowJar.archiveFile
+tasks.register('verifyJarInJarPackaging') {
+    dependsOn 'embedCoreJarInJar'
+    doLast {
+        File artifact = tasks.named('remapJar').get().archiveFile.get().asFile
+        def nested = zipTree(artifact).matching { include 'META-INF/jars/*.jar' }.files*.name
+        assert nested.containsAll([
+            "core-${project.version}.jar".toString(), 'sqlite-jdbc-3.46.1.0.jar',
+            'mysql-connector-j-8.4.0.jar', 'postgresql-42.7.4.jar',
+            'HikariCP-5.1.0.jar', 'gson-2.10.1.jar'
+        ])
+        def modJson = zipTree(artifact).matching { include 'fabric.mod.json' }.singleFile.text
+        assert modJson.contains('META-INF/jars/core-1.3.11.jar')
+        def outerJdbcClasses = zipTree(artifact).matching {
+            include 'org/sqlite/**/*.class'
+            include 'com/mysql/**/*.class'
+            include 'org/postgresql/**/*.class'
+        }.files
+        assert outerJdbcClasses.empty
+        assert zipTree(artifact).matching { include 'META-INF/services/java.sql.Driver' }.files.empty
+        logger.lifecycle("Verified Fabric JarInJar artifact: ${artifact.name}")
+    }
 }
 
-tasks.named('build') {
-    dependsOn 'remapJar'
-}
+
+tasks.named('build') { dependsOn 'embedCoreJarInJar' }

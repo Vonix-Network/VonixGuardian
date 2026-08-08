@@ -111,6 +111,32 @@ public final class QueryParser {
         return b.build();
     }
 
+    /**
+     * Enforces the configured lookup bound for numeric radii.
+     *
+     * <p>Keyword radius selectors are intentionally left unchanged: {@code r:#global}
+     * uses {@code -1}, while {@code r:#world_*} and {@code r:#we} do not carry a
+     * numeric radius in the parsed filter.</p>
+     *
+     * @param filter parsed lookup filter
+     * @param maxRadius maximum accepted numeric radius
+     * @return {@code filter} when it is within bounds or uses a keyword selector
+     * @throws QueryParseException when a numeric radius exceeds {@code maxRadius}
+     */
+    public static QueryFilter enforceMaxRadius(QueryFilter filter, int maxRadius) {
+        if (filter == null) {
+            throw new IllegalArgumentException("filter must not be null");
+        }
+        if (maxRadius < 0) {
+            throw new IllegalArgumentException("maxRadius must be non-negative");
+        }
+        if (filter.radius() != null && filter.radius() >= 0 && filter.radius() > maxRadius) {
+            throw new QueryParseException("r:" + filter.radius(),
+                "radius " + filter.radius() + " exceeds configured maximum " + maxRadius);
+        }
+        return filter;
+    }
+
     // --- per-token dispatch -------------------------------------------------
 
     private void parseToken(String tok, QueryFilter.Builder b, QueryParseContext ctx) {
@@ -306,8 +332,7 @@ public final class QueryParser {
                         if (key.isEmpty()) {
                             throw bad(tok, "r:#world_<key> requires a world key after '#world_'");
                         }
-                        // Allow shorthand: "nether" -> "minecraft:the_nether" is NOT done here;
-                        // the parser keeps the raw key. The lookup engine resolves shorthands.
+                        key = canonicalWorldKey(key);
                         b.worldSel(new QueryFilter.WorldSel(key, false));
                     } else {
                         throw bad(tok, "unknown radius keyword '" + value
@@ -336,8 +361,18 @@ public final class QueryParser {
         }
     }
 
-    // --- p: -----------------------------------------------------------------
+    private static String canonicalWorldKey(String raw) {
+        String key = raw.toLowerCase(Locale.ROOT);
+        if (key.indexOf(':') >= 0) return key;
+        return switch (key) {
+            case "overworld" -> "minecraft:overworld";
+            case "nether", "the_nether" -> "minecraft:the_nether";
+            case "end", "the_end" -> "minecraft:the_end";
+            default -> key;
+        };
+    }
 
+    // --- p: -----------------------------------------------------------------
     /**
      * Explicit center position for inspector/API paths that know the clicked
      * block. Syntax is {@code p:x,y,z}. It intentionally only sets the center;

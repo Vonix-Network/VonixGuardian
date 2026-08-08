@@ -348,11 +348,11 @@ This guarantees the tree is registered exactly once, regardless of event order.
 
 See `LIBRARY-PACKAGING.md` for full detail. Summary:
 
-- **Fabric**: JarInJar (`nestedJars` in `fabric.mod.json`) for `core.jar`,
-  HikariCP, JDBC drivers, Caffeine.
-- **Forge / NeoForge**: shade `core.jar` and runtime deps into the loader
-  jar with a relocation prefix to avoid colliding with other mods'
-  vendored copies.
+- **Fabric**: Loom nests core, SQLite, JDBC drivers, Gson, and HikariCP under
+  `META-INF/jars/` through `include modImplementation(...)`. JDBC/JNI classes
+  and service names remain canonical; the loader-owned slf4j API is excluded.
+- **Forge / NeoForge**: core and pure-Java runtime dependencies are shaded,
+  while SQLite and JDBC drivers are supplied through loader JarInJar.
 
 ---
 
@@ -447,7 +447,14 @@ The full algorithm — chain depth caps, time windows, entity-vs-projectile
 disambiguation, transitive summon trees — lives in
 `docs/MODDED-ATTRIBUTION.md`. The engine code is in
 `core/src/main/java/network/vonix/guardian/core/attribution/`
-(`Attribution`, `AttributionKind`, `AttributionResolver`, `DamageHistory`).
+`Attribution`, `AttributionKind`, `AttributionResolver`, `DamageHistory`).
+
+For Forge and NeoForge entity-block-change attribution, `FireCauserMemory`
+records short-lived candidates for fire-cause resolution. Its hard-eviction path
+uses a bounded FIFO candidate ring with identity checks; it does not perform a
+full-map `ConcurrentHashMap.entrySet().removeIf` sweep on the server thread.
+This protects the `LivingDestroyBlockEvent` hot path from watchdog stalls while
+preserving the configured cache bound.
 
 ---
 

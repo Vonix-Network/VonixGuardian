@@ -13,6 +13,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -80,6 +82,37 @@ class BatchedAsyncWriteQueueTest {
         @Override
         public void flush(List<Action> batch) {
             attempts.incrementAndGet();
+            throw new RuntimeException("database down");
+        }
+    }
+
+    /**
+     * Global sink failure that also plants a sticky worker interrupt on the
+     * first attempt, matching drainAndFlush's wake-interrupt race against
+     * retry backoff.
+     */
+    private static final class ShutdownWakeFailingSink implements BatchSink {
+        final AtomicInteger attempts = new AtomicInteger();
+
+        @Override
+        public void flush(List<Action> batch) {
+            int n = attempts.incrementAndGet();
+            if (n == 1) {
+                Thread.currentThread().interrupt();
+            }
+            throw new RuntimeException("database down");
+        }
+    }
+
+    private static final class InterruptingFailingSink implements BatchSink {
+        final AtomicInteger attempts = new AtomicInteger();
+
+        @Override
+        public void flush(List<Action> batch) {
+            attempts.incrementAndGet();
+            // The retry backoff observes this interrupt and must not leave the
+            // flag set while QuarantineStore opens and forces its journal.
+            Thread.currentThread().interrupt();
             throw new RuntimeException("database down");
         }
     }
@@ -186,6 +219,76 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void exhaustedSinkRetryIsDurableAndRecoversAfterRestart() throws Exception {
+        Path dir = Files.createTempDirectory("vg-quarantine-test");
+        Path journal = dir.resolve("quarantine.bin");
+        AlwaysFailingSink failing = new AlwaysFailingSink();
+        BatchedAsyncWriteQueue first = new BatchedAsyncWriteQueue(16, 25L, 4, failing, DAEMON, journal);
+        first.setPaused(true);
+        first.submit(action(700));
+        first.drainAndFlush(5_000L);
+
+        assertThat(first.quarantined()).isEqualTo(1L);
+        assertThat(Files.size(journal)).isGreaterThan(0L);
+
+        CapturingSink recovered = new CapturingSink(1);
+        BatchedAsyncWriteQueue second = new BatchedAsyncWriteQueue(16, 25L, 4, recovered, DAEMON, journal);
+        try {
+            assertThat(recovered.latch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(recovered.seen).extracting(Action::x).containsExactly(700);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2L);
+            while (second.quarantined() != 0L && System.nanoTime() < deadline) {
+                Thread.sleep(10L);
+            }
+            assertThat(second.quarantined()).isZero();
+            assertThat(second.recoveredFromQuarantine()).isEqualTo(1L);
+        } finally {
+            second.close();
+        }
+    }
+
+    @Test
+    void interruptedRetryStillForcesQuarantineAndRepeatsInSameJvm() throws Exception {
+        Path dir = Files.createTempDirectory("vg-interrupted-quarantine-test");
+        Path journal = dir.resolve("quarantine.bin");
+
+        for (int iteration = 0; iteration < 2; iteration++) {
+            InterruptingFailingSink failing = new InterruptingFailingSink();
+            BatchedAsyncWriteQueue first = new BatchedAsyncWriteQueue(
+                    16, 25L, 4, failing, DAEMON, journal);
+            try {
+                first.submit(action(800 + iteration));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3L);
+                while (first.quarantined() == 0L && System.nanoTime() < deadline) {
+                    Thread.sleep(10L);
+                }
+                assertThat(first.quarantined()).isEqualTo(1L);
+                assertThat(failing.attempts.get()).isEqualTo(1);
+                assertThat(Files.size(journal)).isGreaterThan(0L);
+            } finally {
+                first.close();
+            }
+
+            CapturingSink recovered = new CapturingSink(1);
+            BatchedAsyncWriteQueue second = new BatchedAsyncWriteQueue(
+                    16, 25L, 4, recovered, DAEMON, journal);
+            try {
+                assertThat(recovered.latch.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThat(recovered.seen).extracting(Action::x)
+                        .containsExactly(800 + iteration);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2L);
+                while (second.quarantined() != 0L && System.nanoTime() < deadline) {
+                    Thread.sleep(10L);
+                }
+                assertThat(second.quarantined()).isZero();
+                assertThat(second.recoveredFromQuarantine()).isEqualTo(1L);
+            } finally {
+                second.close();
+            }
+        }
+    }
+
+    @Test
     void poisonActionDoesNotDropGoodActionsFromSameBatch() {
         RejectingPoisonSink sink = new RejectingPoisonSink(99);
         try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 8, sink, DAEMON)) {
@@ -223,6 +326,30 @@ class BatchedAsyncWriteQueueTest {
     @Test
     void globalSinkFailureDoesNotBisectWholeBatch() {
         AlwaysFailingSink sink = new AlwaysFailingSink();
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 8, sink, DAEMON)) {
+            q.setPaused(true);
+            for (int i = 0; i < 8; i++) {
+                q.submit(action(i));
+            }
+
+            long start = System.nanoTime();
+            q.drainAndFlush(5_000L);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            assertThat(sink.attempts.get()).isEqualTo(BatchedAsyncWriteQueue.MAX_SINK_RETRIES);
+            assertThat(q.permanentlyDropped()).isEqualTo(8L);
+            assertThat(q.dropped()).isZero();
+            assertThat(elapsedMs).isLessThan(2_000L);
+        }
+    }
+
+    @Test
+    void globalSinkFailureKeepsFullRetryBudgetWhenShutdownWakeLandsMidFlush() {
+        // REGRESSION: drainAndFlush interrupts the worker to wake poll/sleep. That
+        // wake signal used to remain sticky into retry backoff, so a global DB-down
+        // failure permanently dropped after attempt 1/MAX_SINK_RETRIES and skipped
+        // the non-bisection path's intended retry budget.
+        ShutdownWakeFailingSink sink = new ShutdownWakeFailingSink();
         try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 5_000L, 8, sink, DAEMON)) {
             q.setPaused(true);
             for (int i = 0; i < 8; i++) {
@@ -345,5 +472,300 @@ class BatchedAsyncWriteQueueTest {
         assertThat(spawned.get(0).isAlive())
                 .as("worker thread must exit after close()")
                 .isFalse();
+    }
+
+    @Test
+    void pauseThenShutdownFlushesLocalBatchAndQueuedTail() throws Exception {
+        CapturingSink sink = new CapturingSink(2);
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(8, 5_000L, 8, sink, DAEMON);
+        try {
+            q.submit(action(800));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (q.depth() != 0 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(q.depth()).as("first action must be held by worker batch").isZero();
+
+            q.setPaused(true);
+            q.submit(action(801));
+            q.drainAndFlush(2_000L);
+
+            assertThat(sink.latch.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(sink.seen).extracting(Action::x).containsExactly(800, 801);
+            assertThat(q.permanentlyDropped()).isZero();
+        } finally {
+            q.close();
+        }
+    }
+
+    @Test
+    void successfulSinkDoesNotReflushWhenAckFailsTransiently() throws Exception {
+        Path dir = Files.createTempDirectory("vg-ack-defer-test");
+        Path journal = dir.resolve("quarantine.bin");
+
+        AlwaysFailingSink failing = new AlwaysFailingSink();
+        BatchedAsyncWriteQueue first = new BatchedAsyncWriteQueue(16, 25L, 4, failing, DAEMON, journal);
+        first.setPaused(true);
+        first.submit(action(910));
+        first.drainAndFlush(5_000L);
+        assertThat(first.quarantined()).isEqualTo(1L);
+
+        AtomicInteger flushes = new AtomicInteger();
+        BatchSink recovering = batch -> flushes.incrementAndGet();
+        TransientAckStore ackFailsOnce = new TransientAckStore(journal);
+        BatchedAsyncWriteQueue second = new BatchedAsyncWriteQueue(
+                16, 25L, 4, recovering, DAEMON, ackFailsOnce);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6L);
+            while (second.recoveredFromQuarantine() == 0L && System.nanoTime() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertThat(second.recoveredFromQuarantine()).isEqualTo(1L);
+            assertThat(flushes.get())
+                    .as("successful sink must not be repeated while only ACK is outstanding")
+                    .isEqualTo(1);
+            assertThat(second.quarantined()).isZero();
+            assertThat(ackFailsOnce.ackAttempts()).isGreaterThanOrEqualTo(2);
+        } finally {
+            second.close();
+        }
+    }
+
+    @Test
+    void durableSinkSuccessSkipsReflushAfterRestartAndOnlyAcks() throws Exception {
+        Path dir = Files.createTempDirectory("vg-durable-sink-success");
+        Path journal = dir.resolve("quarantine.bin");
+
+        // Seed an ADD, then durable-mark sink success without ACK.
+        QuarantineStore seed = new QuarantineStore(journal, 8, 1_000_000L);
+        long seq = seed.append(action(920));
+        assertThat(seq).isPositive();
+        seed.markSinkSucceeded(seq);
+        assertThat(seed.entries()).singleElement()
+                .extracting(QuarantineStore.Entry::sinkSucceeded).isEqualTo(true);
+
+        AtomicInteger flushes = new AtomicInteger();
+        BatchSink sink = batch -> flushes.incrementAndGet();
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(16, 25L, 4, sink, DAEMON, journal);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4L);
+            while (q.recoveredFromQuarantine() == 0L && System.nanoTime() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertThat(q.recoveredFromQuarantine())
+                    .as("queue recovery must ACK a durable sink-success entry")
+                    .isEqualTo(1L);
+            assertThat(flushes.get())
+                    .as("restart must not re-flush when SINK_SUCCEEDED is durable")
+                    .isZero();
+            assertThat(q.quarantined()).isZero();
+        } finally {
+            q.close();
+        }
+
+        QuarantineStore after = new QuarantineStore(journal, 8, 1_000_000L);
+        assertThat(after.entries()).isEmpty();
+    }
+
+    private static final class TransientAckStore extends QuarantineStore {
+        private final AtomicInteger ackAttempts = new AtomicInteger();
+
+        TransientAckStore(Path path) throws Exception {
+            super(path, 8, 1_000_000L);
+        }
+
+        int ackAttempts() {
+            return ackAttempts.get();
+        }
+
+        @Override
+        synchronized void acknowledge(long sequence) throws java.io.IOException {
+            if (ackAttempts.incrementAndGet() == 1) {
+                throw new java.io.IOException("controlled transient ACK failure");
+            }
+            super.acknowledge(sequence);
+        }
+    }
+
+    /**
+     * Proves marker retry with sinkSucceeded kept true (no reflush) across a simulated
+     * restart boundary where only ADD is durable.
+     */
+    private static final class ControllableMarkerStore extends QuarantineStore {
+        private final AtomicInteger markerAttempts = new AtomicInteger();
+        private volatile boolean allow;
+
+        ControllableMarkerStore(Path path) throws Exception {
+            super(path, 8, 1_000_000L);
+        }
+
+        void allowMarkers() {
+            allow = true;
+        }
+
+        int markerAttempts() {
+            return markerAttempts.get();
+        }
+
+        @Override
+        synchronized void markSinkSucceeded(long sequence) throws java.io.IOException {
+            markerAttempts.incrementAndGet();
+            if (!allow) {
+                throw new java.io.IOException("controlled marker failure");
+            }
+            super.markSinkSucceeded(sequence);
+        }
+    }
+
+    @Test
+    void markerFailureRetriesWithoutReflushAndSurvivesRestartBoundary() throws Exception {
+        Path dir = Files.createTempDirectory("vg-marker-retry");
+        Path journal = dir.resolve("quarantine.bin");
+
+        // Seed durable ADD only (no SINK_SUCCEEDED) — crash boundary mid-recovery.
+        QuarantineStore seed = new QuarantineStore(journal, 8, 1_000_000L);
+        long seq = seed.append(action(921));
+        assertThat(seq).isPositive();
+        assertThat(seed.entries()).singleElement()
+                .extracting(QuarantineStore.Entry::sinkSucceeded).isEqualTo(false);
+
+        ControllableMarkerStore failingMarkers = new ControllableMarkerStore(journal);
+        AtomicInteger flushes = new AtomicInteger();
+        BatchSink sink = batch -> flushes.incrementAndGet();
+        BatchedAsyncWriteQueue first = new BatchedAsyncWriteQueue(16, 25L, 4, sink, DAEMON, failingMarkers);
+        try {
+            // Wait until sink flush has succeeded and at least one marker attempt failed.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+            while ((flushes.get() < 1 || failingMarkers.markerAttempts() < 1)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertThat(flushes.get())
+                    .as("recovery must flush once before marker")
+                    .isEqualTo(1);
+            assertThat(failingMarkers.markerAttempts())
+                    .as("marker persistence must be attempted and fail closed")
+                    .isGreaterThanOrEqualTo(1);
+            assertThat(first.recoveredFromQuarantine())
+                    .as("must not ACK/recover before marker is durable")
+                    .isZero();
+
+            // Allow markers; next due pass retries markSinkSucceeded (backoff starts at 2s).
+            failingMarkers.allowMarkers();
+            long recoverDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8L);
+            while (first.recoveredFromQuarantine() == 0L && System.nanoTime() < recoverDeadline) {
+                Thread.sleep(50L);
+            }
+            assertThat(first.recoveredFromQuarantine())
+                    .as("marker retry must succeed then ACK without a second sink flush")
+                    .isEqualTo(1L);
+            assertThat(flushes.get())
+                    .as("must not reflush while only marker was outstanding")
+                    .isEqualTo(1);
+            assertThat(failingMarkers.markerAttempts())
+                    .as("marker must be retried after the controlled failure")
+                    .isGreaterThanOrEqualTo(2);
+            assertThat(first.quarantined()).isZero();
+        } finally {
+            first.close();
+        }
+
+        QuarantineStore afterLive = new QuarantineStore(journal, 8, 1_000_000L);
+        assertThat(afterLive.entries()).isEmpty();
+
+        // Simulated restart boundary with only ADD durable (marker never written).
+        Path journal2 = dir.resolve("quarantine-restart.bin");
+        QuarantineStore seed2 = new QuarantineStore(journal2, 8, 1_000_000L);
+        long seq2 = seed2.append(action(922));
+        assertThat(seq2).isPositive();
+
+        ControllableMarkerStore restartFail = new ControllableMarkerStore(journal2);
+        AtomicInteger flushesRestartPhase = new AtomicInteger();
+        BatchedAsyncWriteQueue crashMid = new BatchedAsyncWriteQueue(
+                16, 25L, 4, batch -> flushesRestartPhase.incrementAndGet(), DAEMON, restartFail);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+            while ((flushesRestartPhase.get() < 1 || restartFail.markerAttempts() < 1)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertThat(flushesRestartPhase.get()).isEqualTo(1);
+            assertThat(restartFail.markerAttempts()).isGreaterThanOrEqualTo(1);
+            assertThat(crashMid.recoveredFromQuarantine()).isZero();
+        } finally {
+            crashMid.close();
+        }
+
+        QuarantineStore mid = new QuarantineStore(journal2, 8, 1_000_000L);
+        assertThat(mid.entries()).singleElement()
+                .satisfies(e -> {
+                    assertThat(e.sequence()).isEqualTo(seq2);
+                    assertThat(e.sinkSucceeded())
+                            .as("failed marker must leave only ADD durable across restart")
+                            .isFalse();
+                });
+
+        // Fresh queue after restart: will reflush once (no durable marker), then
+        // marker succeeds, then ACK.
+        ControllableMarkerStore okMarkers = new ControllableMarkerStore(journal2);
+        okMarkers.allowMarkers();
+        AtomicInteger flushesAfterRestart = new AtomicInteger();
+        BatchSink sink2 = batch -> flushesAfterRestart.incrementAndGet();
+        BatchedAsyncWriteQueue second = new BatchedAsyncWriteQueue(16, 25L, 4, sink2, DAEMON, okMarkers);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+            while (second.recoveredFromQuarantine() == 0L && System.nanoTime() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertThat(second.recoveredFromQuarantine()).isEqualTo(1L);
+            assertThat(flushesAfterRestart.get())
+                    .as("restart without durable marker requires exactly one reflush")
+                    .isEqualTo(1);
+            assertThat(okMarkers.markerAttempts()).isGreaterThanOrEqualTo(1);
+            assertThat(second.quarantined()).isZero();
+        } finally {
+            second.close();
+        }
+
+        QuarantineStore after = new QuarantineStore(journal2, 8, 1_000_000L);
+        assertThat(after.entries()).isEmpty();
+    }
+
+    @Test
+    void oversizedQuarantineAppendMarksRetentionLimitReached() throws Exception {
+        Path dir = Files.createTempDirectory("vg-quarantine-byte-cap");
+        Path journal = dir.resolve("quarantine.bin");
+        long tinyCap = 200L;
+
+        QuarantineStore store = new QuarantineStore(journal, 8, tinyCap);
+        byte[] huge = new byte[512];
+        Action oversized = new Action(-1L, System.currentTimeMillis(), ActionType.BLOCK_PLACE,
+                UUID.randomUUID(), "tester", "minecraft:overworld",
+                930, 64, 0, "minecraft:stone", null, 1, false, null,
+                null, null, null, null, null,
+                huge, null, null);
+
+        AlwaysFailingSink failing = new AlwaysFailingSink();
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(8, 25L, 4, failing, DAEMON, store);
+        try {
+            q.setPaused(true);
+            q.submit(oversized);
+            q.drainAndFlush(5_000L);
+
+            assertThat(store.append(oversized))
+                    .as("direct store path also fails closed for oversized frame")
+                    .isEqualTo(-1L);
+            assertThat(Files.exists(journal) ? Files.size(journal) : 0L)
+                    .isLessThanOrEqualTo(tinyCap);
+            assertThat(store.entries()).isEmpty();
+            assertThat(q.quarantineRetentionLimitReached())
+                    .as("queue/status path marks retention limit reached on -1 append")
+                    .isTrue();
+            assertThat(q.quarantineOverflow()).isGreaterThanOrEqualTo(1L);
+            assertThat(q.permanentlyDropped()).isGreaterThanOrEqualTo(1L);
+            assertThat(q.quarantined()).isZero();
+        } finally {
+            q.close();
+        }
     }
 }
