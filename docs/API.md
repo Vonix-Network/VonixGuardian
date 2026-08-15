@@ -52,7 +52,7 @@ You do **not** need to depend on any loader jar to compile against the public AP
 ### Maven coordinate
 
 ```
-network.vonix.guardian:vonixguardian-core:1.3.11
+network.vonix.guardian:vonixguardian-core:1.3.12-rc.1
 ```
 
 ### Consuming from Maven Local (after `./gradlew :core:publishToMavenLocal`)
@@ -68,7 +68,7 @@ dependencies {
     // already ships a shaded copy of core. `transitive = false` avoids pulling
     // storage backends (sqlite/hikaricp/gson) onto your compile classpath —
     // those are runtime-provided by the loader.
-    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.11') { transitive = false }
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.12-rc.1') { transitive = false }
 }
 ```
 
@@ -87,7 +87,7 @@ repositories {
 }
 
 dependencies {
-    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.11') { transitive = false }
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.12-rc.1') { transitive = false }
 }
 ```
 
@@ -104,7 +104,7 @@ usual way:
 
 ```groovy
 dependencies {
-    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.11') { transitive = false }
+    compileOnly('network.vonix.guardian:vonixguardian-core:1.3.12-rc.1') { transitive = false }
 }
 ```
 
@@ -454,7 +454,7 @@ repositories {
 
 dependencies {
     // Compile against the API but do NOT bundle VG — soft-dep at runtime.
-    compileOnly 'network.vonix.guardian:vonixguardian-core:1.3.11'
+    compileOnly 'network.vonix.guardian:vonixguardian-core:1.3.12-rc.1'
 }
 ```
 
@@ -537,7 +537,7 @@ List<Object> results = (List<Object>) bl.invoke(apiHandle,
 | Method                                                                          | Purpose                                          |
 |---------------------------------------------------------------------------------|--------------------------------------------------|
 | `int apiVersion()`                                                              | API major (current: `1`). Bumps = breaking.      |
-| `String pluginVersion()`                                                        | Human-readable mod version (`"1.3.11"`).          |
+| `String pluginVersion()`                                                        | Human-readable mod version (`"1.3.12-rc.1"`).          |
 | `boolean testAPI()`                                                             | Wiring smoke-test; always `true` on healthy VG.  |
 | `boolean hasPlaced(UUID, String, int, int, int, long)`                          | Did user place a block here in the last N sec?   |
 | `boolean hasRemoved(UUID, String, int, int, int, long)`                         | Did user break a block here in the last N sec?   |

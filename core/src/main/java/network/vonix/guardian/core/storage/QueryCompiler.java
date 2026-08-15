@@ -41,6 +41,16 @@ public final class QueryCompiler {
       + "a.sign_side, a.sign_dye_color, a.sign_waxed, "
       + "a.old_block_state, a.new_block_state, a.block_entity_nbt, a.item_nbt, a.entity_nbt";
 
+    /**
+     * Lookup-display projection. Omits the five v1.3.1 NBT fidelity columns so
+     * permission-filtered paging does not materialize rollback payloads.
+     * Rollback/restore MUST keep using {@link #SELECT_PROJECTION}.
+     */
+    public static final String SELECT_PROJECTION_DISPLAY =
+        "a.id, a.ts, a.type, u.uuid, u.name, w.world_key, "
+      + "a.x, a.y, a.z, a.target, a.meta, a.amount, a.rolled_back, a.source_tag, "
+      + "a.sign_side, a.sign_dye_color, a.sign_waxed";
+
     private static final String FROM_JOIN =
         " FROM vg_actions a "
       + "JOIN vg_users  u ON u.id = a.user_id "
@@ -51,9 +61,21 @@ public final class QueryCompiler {
     /** Result of compilation: SQL string + ordered bind values. */
     public record Compiled(String sql, List<Object> binds) {}
 
-    /** Build a SELECT for paged retrieval. */
+    /** Build a SELECT for paged retrieval, including NBT fidelity columns. */
     public static Compiled compileSelect(QueryFilter filter, int offset, int limit) {
-        StringBuilder sb = new StringBuilder("SELECT ").append(SELECT_PROJECTION).append(FROM_JOIN);
+        return compileSelect(filter, offset, limit, SELECT_PROJECTION);
+    }
+
+    /**
+     * Build a SELECT for lookup display. Same filter/order/limit as
+     * {@link #compileSelect(QueryFilter, int, int)} but without NBT payload columns.
+     */
+    public static Compiled compileSelectForDisplay(QueryFilter filter, int offset, int limit) {
+        return compileSelect(filter, offset, limit, SELECT_PROJECTION_DISPLAY);
+    }
+
+    private static Compiled compileSelect(QueryFilter filter, int offset, int limit, String projection) {
+        StringBuilder sb = new StringBuilder("SELECT ").append(projection).append(FROM_JOIN);
         List<Object> binds = new ArrayList<>();
         appendWhere(sb, filter, binds);
         sb.append(" ORDER BY a.ts DESC, a.id DESC LIMIT ? OFFSET ?");

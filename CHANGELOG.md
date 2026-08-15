@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.12-rc.1] - 2026-08-15
+
+### Changed
+
+- **Permission-aware lookup planning.** Child-permission checks are cached per
+  lookup invocation and permitted action types are pushed into SQL, replacing
+  the previous per-permission-bucket count fan-out.
+- **Lighter lookup pages.** Lookup display pages omit rollback NBT/block-state
+  payload columns while rollback, restore, API, and full query callers retain
+  the complete projection.
+- **Bounded pagination semantics.** Result-cap truncation and the 100,000-row
+  fail-closed scan bound remain enforced for permission-filtered pages.
+
+### Verification
+
+- Full core test suite and isolated eight-loader release matrix pass.
+- This prerelease contains no quantitative performance claim; matched repeated
+  before/after profiling is still required before asserting a runtime improvement.
+
 ## [1.3.11] - 2026-08-08
 
 ### Fixed

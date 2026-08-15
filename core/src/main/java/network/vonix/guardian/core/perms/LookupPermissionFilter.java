@@ -65,18 +65,12 @@ public final class LookupPermissionFilter {
         if (uuid == null) {
             return new ArrayList<>(rows);
         }
+        Map<PermissionNode, Boolean> granted = new EnumMap<>(PermissionNode.class);
         List<Action> out = new ArrayList<>(rows.size());
         for (Action a : rows) {
-            PermissionNode child = PermissionNode.childForAction(family, a.type());
-            if (child == family) {
-                // Fall-open — no scoped child exists, family perm is enough.
-                out.add(a);
-                continue;
-            }
-            if (resolver.has(uuid, child)) {
+            if (isVisibleType(resolver, uuid, family, a.type(), granted)) {
                 out.add(a);
             }
-            // else: silently drop
         }
         return out;
     }
@@ -84,8 +78,10 @@ public final class LookupPermissionFilter {
     /**
      * Counts only rows visible under the same child-permission rules as
      * {@link #filter(PermissionResolver, UUID, PermissionNode, List)}.
-     * Counts stay database-side: one bounded SQL COUNT per permitted child
-     * bucket, with action types partitioned so no raw rows are materialized.
+     * Counts stay database-side: one bounded SQL COUNT of the permitted
+     * action types, so unrestricted lookups do not issue one COUNT per
+     * child-permission bucket. Denied child buckets are omitted from the
+     * {@code a.type IN (...)} predicate; no raw rows are materialized.
      */
     public static long countVisible(
             GuardianDao dao,
@@ -100,27 +96,11 @@ public final class LookupPermissionFilter {
             return dao.count(filter);
         }
 
-        Map<PermissionNode, EnumSet<ActionType>> buckets = new EnumMap<>(PermissionNode.class);
-        if (filter.actions().isEmpty()) {
-            for (ActionType type : ActionType.values()) {
-                buckets.computeIfAbsent(PermissionNode.childForAction(family, type),
-                        ignored -> EnumSet.noneOf(ActionType.class)).add(type);
-            }
-        } else {
-            for (QueryFilter.ActionSelect select : filter.actions()) {
-                if (select.type() == null) continue;
-                buckets.computeIfAbsent(PermissionNode.childForAction(family, select.type()),
-                        ignored -> EnumSet.noneOf(ActionType.class)).add(select.type());
-            }
+        EnumSet<ActionType> visibleTypes = visibleActionTypes(resolver, uuid, family, filter);
+        if (visibleTypes.isEmpty()) {
+            return 0L;
         }
-
-        long visible = 0L;
-        for (Map.Entry<PermissionNode, EnumSet<ActionType>> entry : buckets.entrySet()) {
-            PermissionNode child = entry.getKey();
-            if (child != family && !resolver.has(uuid, child)) continue;
-            visible = Math.addExact(visible, dao.count(withActionTypes(filter, entry.getValue())));
-        }
-        return visible;
+        return dao.count(restrictToVisibleTypes(filter, visibleTypes));
     }
 
     /**
@@ -145,13 +125,31 @@ public final class LookupPermissionFilter {
             throw new IllegalArgumentException("page and pageSize must be > 0");
         }
 
+        EnumSet<ActionType> visibleTypes = null;
+        QueryFilter pageFilter = filter;
+        if (uuid != null) {
+            visibleTypes = visibleActionTypes(resolver, uuid, family, filter);
+            if (visibleTypes.isEmpty()) {
+                return new VisiblePage(List.of(), true, 0);
+            }
+            pageFilter = restrictToVisibleTypes(filter, visibleTypes);
+        }
+
         long visibleSkip = (long) (page - 1) * pageSize;
         int rawOffset = 0;
         int scanned = 0;
         List<Action> out = new ArrayList<>(pageSize);
         while (scanned < MAX_RAW_ROWS_SCANNED && out.size() < pageSize) {
-            int fetchLimit = Math.min(RAW_PAGE_SIZE, MAX_RAW_ROWS_SCANNED - scanned);
-            GuardianDao.QueryPage rawPage = dao.queryPage(filter, rawOffset, fetchLimit);
+            int stillNeed = pageSize - out.size();
+            long wantLong = stillNeed + visibleSkip;
+            int want = wantLong >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) wantLong;
+            int fetchLimit = Math.min(RAW_PAGE_SIZE, Math.min(want, MAX_RAW_ROWS_SCANNED - scanned));
+            if (fetchLimit < 1) {
+                break;
+            }
+            // Display projection: lookup formatting never reads NBT payloads.
+            // Rollback/restore keep using GuardianDao.queryPage (full columns).
+            GuardianDao.QueryPage rawPage = dao.queryPageForDisplay(pageFilter, rawOffset, fetchLimit);
             List<Action> raw = rawPage.rows();
             if (raw.isEmpty()) {
                 return new VisiblePage(out, true, scanned);
@@ -168,7 +166,10 @@ public final class LookupPermissionFilter {
             }
             rawOffset += raw.size();
 
-            for (Action action : filter(resolver, uuid, family, raw)) {
+            for (Action action : raw) {
+                if (visibleTypes != null && !visibleTypes.contains(action.type())) {
+                    continue;
+                }
                 if (visibleSkip > 0L) {
                     visibleSkip--;
                 } else {
@@ -189,11 +190,85 @@ public final class LookupPermissionFilter {
         }
     }
 
+    /**
+     * Action types the viewer may see under {@code family}. Console callers
+     * never reach this helper. Child probes are cached so each distinct
+     * permission bucket is resolved once.
+     */
+    private static EnumSet<ActionType> visibleActionTypes(
+            PermissionResolver resolver,
+            UUID uuid,
+            PermissionNode family,
+            QueryFilter filter) {
+        EnumSet<ActionType> visible = EnumSet.noneOf(ActionType.class);
+        Map<PermissionNode, Boolean> granted = new EnumMap<>(PermissionNode.class);
+        if (filter.actions().isEmpty()) {
+            for (ActionType type : ActionType.values()) {
+                if (isVisibleType(resolver, uuid, family, type, granted)) {
+                    visible.add(type);
+                }
+            }
+            return visible;
+        }
+        for (QueryFilter.ActionSelect select : filter.actions()) {
+            if (select.type() == null) continue;
+            if (isVisibleType(resolver, uuid, family, select.type(), granted)) {
+                visible.add(select.type());
+            }
+        }
+        return visible;
+    }
+
+    private static boolean isVisibleType(
+            PermissionResolver resolver,
+            UUID uuid,
+            PermissionNode family,
+            ActionType type,
+            Map<PermissionNode, Boolean> granted) {
+        PermissionNode child = PermissionNode.childForAction(family, type);
+        if (child == family) {
+            return true;
+        }
+        return granted.computeIfAbsent(child, node -> resolver.has(uuid, node));
+    }
+
+    /**
+     * Narrow {@code source} to {@code visible} types in one SQL predicate.
+     * Unrestricted filters that already permit every {@link ActionType} are
+     * left unchanged so COUNT/SELECT can keep the original plan (no
+     * {@code a.type IN} clause).
+     */
+    private static QueryFilter restrictToVisibleTypes(QueryFilter source, EnumSet<ActionType> visible) {
+        if (source.actions().isEmpty()) {
+            if (visible.size() == ActionType.values().length) {
+                return source;
+            }
+            return withActionTypes(source, visible);
+        }
+        List<QueryFilter.ActionSelect> kept = new ArrayList<>(source.actions().size());
+        boolean dropped = false;
+        for (QueryFilter.ActionSelect select : source.actions()) {
+            if (select.type() != null && visible.contains(select.type())) {
+                kept.add(select);
+            } else {
+                dropped = true;
+            }
+        }
+        if (!dropped) {
+            return source;
+        }
+        return copyWithActions(source, kept);
+    }
+
     private static QueryFilter withActionTypes(QueryFilter source, EnumSet<ActionType> types) {
         List<QueryFilter.ActionSelect> actions = new ArrayList<>(types.size());
         for (ActionType type : types) {
             actions.add(new QueryFilter.ActionSelect(type, QueryFilter.ActionSelect.Sign.ANY));
         }
+        return copyWithActions(source, actions);
+    }
+
+    private static QueryFilter copyWithActions(QueryFilter source, List<QueryFilter.ActionSelect> actions) {
         return new QueryFilter(
                 source.users(), source.sinceMillis(), source.untilMillis(), source.radius(),
                 source.worldSel(), source.centerX(), source.centerY(), source.centerZ(),
