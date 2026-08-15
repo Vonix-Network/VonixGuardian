@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.12-rc.1] - 2026-08-15
+
+### Changed
+
+- **Permission-aware lookup planning.** Child-permission checks are cached per
+  lookup invocation. Visible action counts now use one combined SQL count rather
+  than a count query per permission bucket, and non-count lookups no longer pay
+  for a redundant preliminary `COUNT` query.
+- **SQL-side visible-action filtering.** Permitted action types are applied before
+  permission-filtered pagination, while the existing lookup selectors and
+  CoreProtect-visible permission behavior remain intact.
+- **Lighter lookup pages.** Lookup display pages omit rollback NBT/block-state
+  payload columns while rollback, restore, API, and full query callers retain
+  the complete projection.
+- **Bounded pagination semantics.** Result-cap truncation and the 100,000-row
+  fail-closed scan bound remain enforced for permission-filtered pages.
+
+### Verification
+
+- Full core test suite passed.
+- Serialized isolated release builds passed for Forge/Fabric on 1.18.2,
+  1.19.2, and 1.20.1, plus NeoForge/Fabric on 1.21.1; Fabric JarInJar
+  packaging verification passed.
+
+### Known limitations
+
+- The aggregate all-profile Gradle invocation remains environment-blocked at
+  `mc-1.20.1/fabric` by the Fabric Loom 1.7.4
+  `BuildSharedServiceManager` classloader conflict; the isolated release matrix
+  was the successful release build gate.
+- This prerelease contains no quantitative performance claim. Matched repeated
+  before/after runtime profiling is still required before asserting an
+  improvement.
+
 ## [1.3.11] - 2026-08-08
 
 ### Fixed

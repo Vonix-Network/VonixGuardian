@@ -86,4 +86,14 @@ class AbstractJdbcDaoQueryPageCapTest {
         assertThat(eof.truncated()).isFalse();
         assertThat(eof.rows()).hasSize(1);
     }
+
+    @Test
+    void queryPageForDisplayMarksTruncatedOnlyWhenCapIsFilled() throws Exception {
+        Connection full = mockConnReturning(2);
+        CapDao dao = new CapDao(full, 2);
+        GuardianDao.QueryPage truncated = dao.queryPageForDisplay(QueryFilter.empty(), 0, 5);
+        assertThat(truncated.truncated()).isTrue();
+        assertThat(truncated.rows()).hasSize(2);
+        assertThat(truncated.rows().get(0).blockEntityNbt()).isNull();
+    }
 }

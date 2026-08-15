@@ -28,13 +28,15 @@ import java.util.concurrent.Semaphore;
  * single serialised connection (SQLite). The DAO contract states callers are worker
  * threads, never the server thread.
  *
- * <p>Read-side rate limit: {@link #query} and {@link #count} acquire a permit from
- * {@code lookupSemaphore} (sized at construction by {@code config.lookup().maxConcurrent()})
- * for the duration of the call, providing simple back-pressure for ad-hoc operator
- * queries. If the semaphore is {@code null}, no rate limit is applied (test-only path).
+ * <p>Read-side rate limit: {@link #query}, {@link #queryPageForDisplay}, and {@link #count}
+ * acquire a permit from {@code lookupSemaphore} (sized at construction by
+ * {@code config.lookup().maxConcurrent()}) for the duration of the call, providing
+ * simple back-pressure for ad-hoc operator queries. If the semaphore is {@code null},
+ * no rate limit is applied (test-only path).
  *
- * <p>Result-size cap: {@link #query} clamps the {@code limit} argument to
- * {@code min(limit, maxResultRows)}. A value of {@code 0} disables the cap.
+ * <p>Result-size cap: {@link #query} and {@link #queryPageForDisplay} clamp the
+ * {@code limit} argument to {@code min(limit, maxResultRows)}. A value of {@code 0}
+ * disables the cap.
  */
 public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
@@ -216,17 +218,35 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
     @Override
     public List<Action> query(QueryFilter filter, int offset, int limit) throws SQLException {
+        return query(filter, offset, limit, true);
+    }
+
+    @Override
+    public GuardianDao.QueryPage queryPage(QueryFilter filter, int offset, int limit) throws SQLException {
+        return toQueryPage(query(filter, offset, limit, true), limit);
+    }
+
+    @Override
+    public GuardianDao.QueryPage queryPageForDisplay(QueryFilter filter, int offset, int limit)
+            throws SQLException {
+        return toQueryPage(query(filter, offset, limit, false), limit);
+    }
+
+    private List<Action> query(QueryFilter filter, int offset, int limit, boolean includePayload)
+            throws SQLException {
         int effectiveLimit = (maxResultRows > 0) ? Math.min(limit, maxResultRows) : limit;
         acquireLookupPermit();
         try {
-            QueryCompiler.Compiled q = QueryCompiler.compileSelect(filter, offset, effectiveLimit);
+            QueryCompiler.Compiled q = includePayload
+                    ? QueryCompiler.compileSelect(filter, offset, effectiveLimit)
+                    : QueryCompiler.compileSelectForDisplay(filter, offset, effectiveLimit);
             Connection c = borrow();
             try (PreparedStatement ps = c.prepareStatement(q.sql())) {
                 bind(ps, q.binds());
                 try (ResultSet rs = ps.executeQuery()) {
                     List<Action> out = new ArrayList<>();
                     while (rs.next()) {
-                        out.add(readAction(rs));
+                        out.add(readAction(rs, includePayload));
                     }
                     return out;
                 }
@@ -238,15 +258,13 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         }
     }
 
-    @Override
-    public GuardianDao.QueryPage queryPage(QueryFilter filter, int offset, int limit) throws SQLException {
-        List<Action> rows = query(filter, offset, limit);
+    private GuardianDao.QueryPage toQueryPage(List<Action> rows, int requestedLimit) {
         // query() silently clamps to maxResultRows. A shortened non-empty page is
         // only ambiguous when the caller asked for more than the cap AND the
         // response filled that cap — fewer rows means true EOF. Fail closed on
         // the ambiguous full-cap case so planners cannot treat it as completion.
         boolean truncated = maxResultRows > 0
-                && limit > maxResultRows
+                && requestedLimit > maxResultRows
                 && rows.size() == maxResultRows;
         return new GuardianDao.QueryPage(rows, truncated);
     }
@@ -286,7 +304,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         }
     }
 
-    private Action readAction(ResultSet rs) throws SQLException {
+    private Action readAction(ResultSet rs, boolean includePayload) throws SQLException {
         long id = rs.getLong(1);
         long ts = rs.getLong(2);
         ActionType type = ActionType.byId(rs.getInt(3));
@@ -304,6 +322,10 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         String signDyeColor = rs.getString(16);
         boolean waxedRaw = rs.getBoolean(17);
         Boolean signWaxed = rs.wasNull() ? null : waxedRaw;
+        if (!includePayload) {
+            return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
+                              rolledBack, sourceTag, signSide, signDyeColor, signWaxed);
+        }
         // v1.3.1 X1 NBT columns. Read regardless of storage.persistNbt so
         // historical rows survive the operator toggling the flag back off.
         String oldBlockState = rs.getString(18);

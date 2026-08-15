@@ -19,8 +19,38 @@ class QueryCompilerTest {
             .contains(" FROM vg_actions a ")
             .doesNotContain(" WHERE ")
             .contains("ORDER BY a.ts DESC")
-            .endsWith("LIMIT ? OFFSET ?");
+            .endsWith("LIMIT ? OFFSET ?")
+            .contains("a.block_entity_nbt")
+            .contains("a.item_nbt")
+            .contains("a.entity_nbt");
         assertThat(c.binds()).containsExactly(50, 0);
+    }
+
+    @Test
+    void display_select_omits_nbt_payload_columns_but_keeps_the_same_filter_shape() {
+        QueryFilter f = QueryFilter.builder()
+            .sinceMillis(1000L)
+            .addAction(new QueryFilter.ActionSelect(ActionType.BLOCK_PLACE, QueryFilter.ActionSelect.Sign.ANY))
+            .build();
+        QueryCompiler.Compiled full = QueryCompiler.compileSelect(f, 3, 9);
+        QueryCompiler.Compiled display = QueryCompiler.compileSelectForDisplay(f, 3, 9);
+
+        assertThat(display.sql())
+            .doesNotContain("a.old_block_state")
+            .doesNotContain("a.new_block_state")
+            .doesNotContain("a.block_entity_nbt")
+            .doesNotContain("a.item_nbt")
+            .doesNotContain("a.entity_nbt")
+            .contains("a.sign_waxed")
+            .contains("a.ts >= ?")
+            .contains("a.type IN (?)")
+            .contains("ORDER BY a.ts DESC, a.id DESC LIMIT ? OFFSET ?");
+        assertThat(full.sql())
+            .contains("a.block_entity_nbt")
+            .contains("a.item_nbt")
+            .contains("a.entity_nbt");
+        assertThat(display.binds()).containsExactly(full.binds().toArray());
+        assertThat(display.binds()).containsExactly(1000L, ActionType.BLOCK_PLACE.id(), 9, 3);
     }
 
     @Test

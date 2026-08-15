@@ -35,6 +35,15 @@ public interface GuardianDao extends AutoCloseable {
         return new QueryPage(query(filter, offset, limit), false);
     }
 
+    /**
+     * Lookup-display page fetch. Implementations MAY omit NBT/block-state
+     * payload columns. Callers must not use the result for rollback/restore.
+     * The default implementation delegates to {@link #queryPage}.
+     */
+    default QueryPage queryPageForDisplay(QueryFilter filter, int offset, int limit) throws Exception {
+        return queryPage(filter, offset, limit);
+    }
+
     /** Result of a bounded page fetch. */
     record QueryPage(List<Action> rows, boolean truncated) {
         public QueryPage {
