@@ -201,7 +201,7 @@ public final class EventGate {
         if (!mixinHotEventsEnabled && mixinSourced) {
             return false;
         }
-        if (!typeEnabled(a.type())) {
+        if (!typeEnabled(a)) {
             return false;
         }
         if (worldBlacklist.contains(a.worldId())) {
@@ -235,6 +235,14 @@ public final class EventGate {
         return t != null && enabledTypes.contains(t);
     }
 
+    private boolean typeEnabled(Action a) {
+        if (a == null || a.type() == null) return false;
+        if (a.type() == ActionType.FLUID_FLOW) {
+            return isLava(a) ? cfg.logLavaFlow() : cfg.logWaterFlow();
+        }
+        return typeEnabled(a.type());
+    }
+
     private static EnumSet<ActionType> enabledTypes(GuardianConfig.Actions cfg) {
         EnumSet<ActionType> out = EnumSet.noneOf(ActionType.class);
         for (ActionType t : ActionType.values()) {
@@ -251,7 +259,11 @@ public final class EventGate {
             case CONTAINER -> cfg.logContainers();
             case ITEM -> cfg.logItems();
             case ENTITY -> cfg.logEntities();
-            case WORLD -> (t == ActionType.EXPLOSION) ? cfg.logExplosions() : cfg.logWorldEvents();
+            case WORLD -> switch (t) {
+                case EXPLOSION -> cfg.logExplosions();
+                case FLUID_FLOW -> cfg.logWaterFlow() || cfg.logLavaFlow();
+                default -> cfg.logWorldEvents();
+            };
             case MESSAGE -> switch (t) {
                 case CHAT -> cfg.logChat();
                 case COMMAND -> cfg.logCommands();
@@ -261,5 +273,10 @@ public final class EventGate {
             case SESSION -> cfg.logSessions();
             case INTERACT -> cfg.logInteractions();
         };
+    }
+
+    private static boolean isLava(Action a) {
+        String target = a.targetId();
+        return target != null && target.toLowerCase(java.util.Locale.ROOT).contains("lava");
     }
 }

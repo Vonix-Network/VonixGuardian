@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -381,6 +383,51 @@ class RollbackEngineTest {
     }
 
     @Test
+    void rollbackDispatchesOnlyOneWorldMutationBatchAtATime() throws Exception {
+        List<Action> actions = new ArrayList<>();
+        for (int i = 0; i < RollbackEngine.BATCH_SIZE * 2 + 1; i++) {
+            actions.add(action(20_000L + i, 100L + i, ActionType.BLOCK_PLACE,
+                    "w", i, 64, 0, "minecraft:stone", null, 1, false));
+        }
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(actions, List.of());
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(46L);
+
+        QueuedExecutor queued = new QueuedExecutor();
+        RollbackEngine serial = new RollbackEngine(dao, mutator, queued, Runnable::run);
+        CompletionStage<RollbackResult> completion = serial.rollbackAsync(filter, false);
+
+        assertThat(queued.pendingCount()).isEqualTo(1);
+        queued.runNext();
+        assertThat(queued.pendingCount()).isEqualTo(1);
+        queued.runNext();
+        assertThat(queued.pendingCount()).isEqualTo(1);
+        queued.runNext();
+
+        assertThat(completion.toCompletableFuture().join().affectedCount())
+                .isEqualTo(RollbackEngine.BATCH_SIZE * 2 + 1);
+        assertThat(mutator.calls).hasSize(RollbackEngine.BATCH_SIZE * 2 + 1);
+    }
+
+    @Test
+    void rejectedCompletionExecutorFinalizesAppliedBatchOnFallback() throws Exception {
+        Action place = action(84L, 100L, ActionType.BLOCK_PLACE,
+                "w", 1, 64, 1, "minecraft:stone", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(47L);
+        Executor rejecting = task -> {
+            throw new RejectedExecutionException("completion executor stopped");
+        };
+        RollbackEngine rejected = new RollbackEngine(dao, mutator, sync, rejecting);
+
+        CompletionStage<RollbackResult> completion = rejected.rollbackAsync(filter, false);
+
+        RollbackResult result = completion.toCompletableFuture().get(2L, TimeUnit.SECONDS);
+        assertThat(result.affectedIds()).containsExactly(84L);
+        verify(dao).markRolledBack(List.of(84L), true);
+        verify(dao).closeRollbackBatch(47L);
+    }
+
+    @Test
     void rollbackDoesNotMarkOrCloseBeforeWorldMutationCompletes() throws Exception {
         Action place = action(80L, 100L, ActionType.BLOCK_PLACE,
             "w", 1, 64, 1, "minecraft:stone", null, 1, false);
@@ -706,6 +753,14 @@ class RollbackEngineTest {
             List<Runnable> work = new ArrayList<>(pending);
             pending.clear();
             work.forEach(Runnable::run);
+        }
+
+        int pendingCount() {
+            return pending.size();
+        }
+
+        void runNext() {
+            pending.remove(0).run();
         }
     }
 

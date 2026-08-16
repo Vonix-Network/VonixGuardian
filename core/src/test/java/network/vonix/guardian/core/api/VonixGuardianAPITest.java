@@ -12,6 +12,7 @@ import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.rollback.WorldMutator;
 import network.vonix.guardian.core.storage.GuardianDao;
 import network.vonix.guardian.core.storage.jdbc.SqliteDao;
+import network.vonix.guardian.core.storage.jdbc.LookupBusyException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -190,6 +192,16 @@ class VonixGuardianAPITest {
         assertThat(r.blockId()).isEqualTo("minecraft:stone");
         assertThat(r.action()).isEqualTo("block"); // "+block" → sign stripped
         verify(mockDao, times(1)).query(any(), eq(0), anyInt());
+    }
+
+    @Test
+    void public_lookup_preserves_retryable_lookup_busy_signal() throws Exception {
+        LookupBusyException busy = new LookupBusyException("lookup capacity is busy");
+        when(mockDao.query(any(), anyInt(), anyInt())).thenThrow(busy);
+
+        assertThatThrownBy(() -> guardian.api()
+                .blockLookup("minecraft:overworld", 5, 64, 6, 3600))
+                .isSameAs(busy);
     }
 
     @Test

@@ -10,6 +10,7 @@ import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
+import network.vonix.guardian.core.storage.jdbc.LookupBusyException;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -37,7 +38,9 @@ import java.util.UUID;
  *
  * <p>Wraps checked exceptions from the DAO in {@link RuntimeException} — the
  * public API surface is intentionally exception-free at method signature
- * level to match CoreProtect's contract.
+ * level to match CoreProtect's contract. The bounded-capacity
+ * {@link LookupBusyException} is propagated unchanged so callers can retry
+ * without confusing capacity backpressure with a database failure.
  *
  * @since 1.1.7 (W3-B12+B13)
  */
@@ -47,7 +50,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
     public static final int API_VERSION = 1;
 
     /** Plugin display version — mirrors {@code gradle.properties#mod_version}. */
-    public static final String PLUGIN_VERSION = "1.3.12-rc.1";
+    public static final String PLUGIN_VERSION = "1.3.12";
 
     private final Guardian guardian;
 
@@ -92,6 +95,8 @@ public final class GuardianAPI implements VonixGuardianAPI {
         long windowMillis = Math.max(0L, withinSeconds) * 1000L;
         try {
             return guardian.dao().hasActionsInWindow(user, worldId, x, y, z, types, windowMillis);
+        } catch (LookupBusyException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("VonixGuardianAPI DAO probe failed", e);
         }
@@ -163,6 +168,8 @@ public final class GuardianAPI implements VonixGuardianAPI {
         List<Action> rows;
         try {
             rows = guardian.dao().query(f, 0, effLimit);
+        } catch (LookupBusyException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("VonixGuardianAPI message lookup failed", e);
         }
@@ -288,6 +295,8 @@ public final class GuardianAPI implements VonixGuardianAPI {
                 : guardian.config().lookup().defaultPageSize();
         try {
             return guardian.dao().query(b.build(), 0, effLimit);
+        } catch (LookupBusyException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("VonixGuardianAPI user-scoped lookup failed", e);
         }
@@ -370,6 +379,8 @@ public final class GuardianAPI implements VonixGuardianAPI {
                 limit = guardian.config().lookup().defaultPageSize();
             }
             return guardian.dao().query(f, 0, limit);
+        } catch (LookupBusyException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("VonixGuardianAPI lookup failed", e);
         }

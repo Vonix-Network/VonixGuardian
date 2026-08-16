@@ -333,16 +333,34 @@ public final class RollbackEngine {
             return failedStage(new RollbackMutationException(batchId, List.of(
                 WorldMutationResult.failed(-1L, e))));
         }
-        return mutations.handleAsync((outcomes, failure) -> {
-            if (failure != null) {
-                Throwable cause = unwrapCompletionFailure(failure);
-                LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
-                    mode, batchId, cause);
-                throw new RollbackMutationException(batchId, List.of(
-                    WorldMutationResult.failed(-1L, cause)));
+        return finalizeAsync(mutations, batchId, actorUuid, mode, effective, skippedIds, planned);
+    }
+
+    private CompletionStage<RollbackResult> finalizeAsync(CompletionStage<List<WorldMutationResult>> mutations,
+                                                            long batchId,
+                                                            UUID actorUuid,
+                                                            RollbackResult.Mode mode,
+                                                            QueryFilter effective,
+                                                            List<Long> plannedSkippedIds,
+                                                            int planned) {
+        CompletableFuture<RollbackResult> result = new CompletableFuture<>();
+        mutations.whenComplete((outcomes, failure) -> executeCompletion(() -> {
+            try {
+                if (failure != null) {
+                    Throwable cause = unwrapCompletionFailure(failure);
+                    LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
+                        mode, batchId, cause);
+                    result.completeExceptionally(new RollbackMutationException(batchId, List.of(
+                        WorldMutationResult.failed(-1L, cause))));
+                    return;
+                }
+                result.complete(finishBatch(batchId, actorUuid, mode, effective,
+                    plannedSkippedIds, planned, outcomes));
+            } catch (Throwable finalizationFailure) {
+                result.completeExceptionally(finalizationFailure);
             }
-            return finishBatch(batchId, actorUuid, mode, effective, skippedIds, planned, outcomes);
-        }, completionExecutor);
+        }, "batch finalization"));
+        return result;
     }
 
     private RollbackResult finishBatch(long batchId,
@@ -415,6 +433,31 @@ public final class RollbackEngine {
             return failure.getCause();
         }
         return failure;
+    }
+
+    /**
+     * Schedule off-server completion work with a process-local fallback. A
+     * stopping primary completion executor must not discard outcomes that were
+     * already applied on the server thread; the common pool preserves the DAO
+     * caller-thread contract in that failure mode. Inline execution is the
+     * final fail-safe only when the process-wide fallback also rejects.
+     */
+    private void executeCompletion(Runnable task, String operation) {
+        try {
+            completionExecutor.execute(task);
+            return;
+        } catch (RuntimeException primaryFailure) {
+            LOG.warn("RollbackEngine: {} executor rejected work; using common-pool fallback", operation,
+                primaryFailure);
+        }
+        try {
+            ForkJoinPool.commonPool().execute(task);
+            return;
+        } catch (RuntimeException fallbackFailure) {
+            LOG.error("RollbackEngine: common-pool fallback rejected {}; running inline", operation,
+                fallbackFailure);
+        }
+        task.run();
     }
 
     /**
@@ -805,36 +848,65 @@ public final class RollbackEngine {
 
     private CompletionStage<List<WorldMutationResult>> dispatchBatches(List<Action> ordered,
                                                                         RollbackResult.Mode mode) {
-        List<CompletableFuture<List<WorldMutationResult>>> acceptedBatches = new ArrayList<>();
-        List<WorldMutationResult> notDispatched = new ArrayList<>();
-        for (int i = 0; i < ordered.size(); i += BATCH_SIZE) {
-            int end = Math.min(i + BATCH_SIZE, ordered.size());
-            List<Action> batch = List.copyOf(ordered.subList(i, end));
-            CompletableFuture<List<WorldMutationResult>> completion = new CompletableFuture<>();
-            try {
-                mainThreadExecutor.execute(() -> completion.complete(applyBatch(batch, mode)));
-                acceptedBatches.add(completion);
-            } catch (RuntimeException e) {
-                // The executor may reject after earlier batches were accepted. Keep
-                // those futures in the outcome stream and represent every action
-                // from the rejected batch onward as incomplete. finishBatch() will
-                // mark only confirmed APPLIED ids and leave the audit batch OPEN.
-                for (int rejected = i; rejected < ordered.size(); rejected++) {
-                    notDispatched.add(WorldMutationResult.failed(ordered.get(rejected).id(), e));
-                }
-                break;
-            }
+        CompletableFuture<List<WorldMutationResult>> result = new CompletableFuture<>();
+        dispatchNextBatch(ordered, mode, 0, new ArrayList<>(), result);
+        return result;
+    }
+
+    /**
+     * Handoff exactly one mutation batch to the server executor. The next batch
+     * is admitted only from the off-server completion executor after the prior
+     * batch has returned. This keeps world access on the server thread while
+     * preventing large rollbacks from preloading an unbounded number of tasks
+     * into a modded server's tick executor.
+     */
+    private void dispatchNextBatch(List<Action> ordered,
+                                   RollbackResult.Mode mode,
+                                   int start,
+                                   List<WorldMutationResult> outcomes,
+                                   CompletableFuture<List<WorldMutationResult>> result) {
+        if (start >= ordered.size()) {
+            result.complete(outcomes);
+            return;
         }
-        CompletableFuture<Void> all = CompletableFuture.allOf(
-            acceptedBatches.toArray(CompletableFuture[]::new));
-        return all.thenApply(ignored -> {
-            List<WorldMutationResult> outcomes = new ArrayList<>();
-            for (CompletableFuture<List<WorldMutationResult>> batch : acceptedBatches) {
-                outcomes.addAll(batch.join());
-            }
-            outcomes.addAll(notDispatched);
-            return outcomes;
+        int end = Math.min(start + BATCH_SIZE, ordered.size());
+        List<Action> batch = List.copyOf(ordered.subList(start, end));
+        CompletableFuture<List<WorldMutationResult>> completion = new CompletableFuture<>();
+        try {
+            mainThreadExecutor.execute(() -> {
+                try {
+                    completion.complete(applyBatch(batch, mode));
+                } catch (Throwable failure) {
+                    completion.completeExceptionally(failure);
+                }
+            });
+        } catch (RuntimeException failure) {
+            appendFailed(outcomes, ordered, start, failure);
+            result.complete(outcomes);
+            return;
+        }
+
+        completion.whenComplete((batchOutcomes, failure) -> {
+            Runnable continuation = () -> {
+                if (failure != null) {
+                    appendFailed(outcomes, ordered, start, unwrapCompletionFailure(failure));
+                    result.complete(outcomes);
+                    return;
+                }
+                outcomes.addAll(batchOutcomes);
+                dispatchNextBatch(ordered, mode, end, outcomes, result);
+            };
+            executeCompletion(continuation, "batch continuation");
         });
+    }
+
+    private static void appendFailed(List<WorldMutationResult> outcomes,
+                                     List<Action> ordered,
+                                     int start,
+                                     Throwable failure) {
+        for (int i = start; i < ordered.size(); i++) {
+            outcomes.add(WorldMutationResult.failed(ordered.get(i).id(), failure));
+        }
     }
 
     private List<WorldMutationResult> applyBatch(List<Action> batch, RollbackResult.Mode mode) {

@@ -15,8 +15,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
@@ -89,6 +91,9 @@ public final class ExplosionJoinWorker implements AutoCloseable {
      */
     static final int MAX_JOIN_CHARS = 3800;
 
+    /** Bounded handoff capacity so a griefing burst cannot create an unbounded executor queue. */
+    static final int MAX_PENDING_TASKS = 1024;
+
     private final ExecutorService worker;
 
     /** Wall-time (ns) sink for the join step. Read from tests / benchmarks. */
@@ -101,11 +106,15 @@ public final class ExplosionJoinWorker implements AutoCloseable {
     private volatile long chunkCount;
 
     public ExplosionJoinWorker() {
-        this(Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "VonixGuardian-ExplosionJoin");
-            t.setDaemon(true);
-            return t;
-        }));
+        this(new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(MAX_PENDING_TASKS),
+                r -> {
+                    Thread t = new Thread(r, "VonixGuardian-ExplosionJoin");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy()));
     }
 
     /** Test hook — inject a same-thread executor to observe join synchronously. */
@@ -227,14 +236,27 @@ public final class ExplosionJoinWorker implements AutoCloseable {
                 List<ExplosionAffectedList.Entry> sidecar = null;
                 boolean first = true;
                 int emitted = 0;
-                for (int i = chunkStart; i < chunkEnd; i++) {
-                    if (sb.length() > MAX_JOIN_CHARS) break;
+                int nextStart = chunkStart;
+                while (nextStart < chunkEnd) {
+                    int i = nextStart;
                     String id = ids[i];
-                    if (id == null || id.isEmpty()) continue;
+                    if (id == null || id.isEmpty()) {
+                        nextStart++;
+                        continue;
+                    }
+                    String entry = xs[i] + ":" + ys[i] + ":" + zs[i] + "=" + id;
+                    int separatorLength = first ? 0 : 1;
+                    // Do not consume an entry that would overflow the row. It
+                    // becomes the first entry of the next chunk, so long modded
+                    // identifiers cannot make valid coordinates disappear.
+                    // An individual oversized entry is still emitted intact: data
+                    // fidelity is safer than silently dropping a block record.
+                    if (!first && sb.length() + separatorLength + entry.length() > MAX_JOIN_CHARS) {
+                        break;
+                    }
                     if (!first) sb.append(',');
+                    sb.append(entry);
                     first = false;
-                    sb.append(xs[i]).append(':').append(ys[i]).append(':').append(zs[i])
-                      .append('=').append(id);
                     String meta = metas != null ? metas[i] : null;
                     byte[] nbt = nbts != null ? nbts[i] : null;
                     if ((meta != null && !meta.isEmpty()) || (nbt != null && nbt.length > 0)) {
@@ -242,13 +264,17 @@ public final class ExplosionJoinWorker implements AutoCloseable {
                         sidecar.add(new ExplosionAffectedList.Entry(xs[i], ys[i], zs[i], id, meta, nbt));
                     }
                     emitted++;
+                    nextStart++;
                 }
                 if (emitted > 0) {
                     byte[] sidecarBytes = ExplosionAffectedList.serializeSidecar(sidecar);
                     s.submitExplosion(au, an, wid, cx, cy, cz, sb.toString(), st, sidecarBytes);
                     chunkChunks++;
                 }
-                chunkStart = chunkEnd;
+                // Advance to the first entry not consumed by this chunk. The
+                // previous chunkEnd assignment skipped the suffix whenever the
+                // character budget stopped the inner loop early.
+                chunkStart = nextStart;
             }
             lastJoinNanos = System.nanoTime() - t0;
             joinedCount++;

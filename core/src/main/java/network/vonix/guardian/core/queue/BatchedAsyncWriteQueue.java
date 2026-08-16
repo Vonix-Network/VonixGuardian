@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -56,6 +57,11 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final int batchSize;
     private final BatchSink sink;
     private final QuarantineStore quarantineStore;
+    private final Runnable terminationListener;
+    private final Runnable admissionProbe;
+    private final Object admissionLock = new Object();
+    private final CountDownLatch workerTerminated = new CountDownLatch(1);
+    private final AtomicBoolean terminationNotified = new AtomicBoolean();
     private final Map<Long, RecoveryItem> recovery = new LinkedHashMap<>();
     private final Thread worker;
 
@@ -132,13 +138,27 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      */
     public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                                   BatchSink sink, ThreadFactory tf) {
-        this(maxSize, flushIntervalMs, batchSize, sink, tf, (QuarantineStore) null);
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, (QuarantineStore) null, null);
     }
 
     /** Production constructor with a durable local quarantine journal. */
     public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                                   BatchSink sink, ThreadFactory tf, Path quarantinePath) {
-        this(maxSize, flushIntervalMs, batchSize, sink, tf, openQuarantine(quarantinePath));
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, openQuarantine(quarantinePath), null);
+    }
+
+    /**
+     * Production constructor with a callback that runs only after the worker
+     * has finished its final sink call. Resource owners use this to defer DAO
+     * and log closure when a sink cannot be interrupted within the shutdown
+     * budget; closing those dependencies while the worker is still flushing
+     * would race an in-flight write.
+     */
+    public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                                  BatchSink sink, ThreadFactory tf, Path quarantinePath,
+                                  Runnable terminationListener) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf,
+                openQuarantine(quarantinePath), terminationListener);
     }
 
     /**
@@ -148,6 +168,19 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      */
     BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                            BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore, null);
+    }
+
+    BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                           BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
+                           Runnable terminationListener) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore,
+                terminationListener, null);
+    }
+
+    BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                           BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
+                           Runnable terminationListener, Runnable admissionProbe) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize must be > 0");
         }
@@ -162,6 +195,8 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         this.batchSize = batchSize;
         this.sink = Objects.requireNonNull(sink, "sink");
         this.quarantineStore = quarantineStore;
+        this.terminationListener = terminationListener == null ? () -> { } : terminationListener;
+        this.admissionProbe = admissionProbe;
         if (quarantineStore != null) {
             long firstRetry = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
             for (QuarantineStore.Entry entry : quarantineStore.entries()) {
@@ -225,18 +260,20 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         rateBuckets.tick(nowNs);
         aggregateRate.tick(nowNs);
-        if (shutdown || closed) {
-            long total = dropped.incrementAndGet();
-            LongAdder droppedCounter = droppedByType.get(typeKey);
-            if (droppedCounter == null) {
-                droppedCounter = droppedByType.computeIfAbsent(typeKey, k -> new LongAdder());
+        boolean accepted;
+        synchronized (admissionLock) {
+            if (shutdown || closed) {
+                accepted = false;
+            } else {
+                // Test-only probe runs inside the same admission boundary as
+                // offer(), allowing a deterministic late-producer regression.
+                if (admissionProbe != null) {
+                    admissionProbe.run();
+                }
+                accepted = queue.offer(a);
             }
-            droppedCounter.increment();
-            maybeLogDrop(total);
-            maybeLogHistogram();
-            return false;
         }
-        if (!queue.offer(a)) {
+        if (!accepted) {
             long total = dropped.incrementAndGet();
             LongAdder droppedCounter = droppedByType.get(typeKey);
             if (droppedCounter == null) {
@@ -253,14 +290,18 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
 
     @Override
     public void drainAndFlush(long timeoutMs) {
-        if (closed) {
-            return;
+        synchronized (admissionLock) {
+            if (closed) {
+                return;
+            }
+            // Admission and the state transition are one critical section:
+            // no producer can pass the check and enqueue after shutdown has
+            // begun. The worker owns the final sink drain before its listener.
+            shutdown = true;
         }
-        shutdown = true;
         worker.interrupt();
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
         try {
-            long remaining = deadline - System.nanoTime();
+            long remaining = TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
             if (remaining > 0) {
                 worker.join(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining)));
             }
@@ -275,21 +316,43 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             List<Action> abandoned = new ArrayList<>(queue.size());
             queue.drainTo(abandoned);
             permanentlyDrop(abandoned, "drain timeout while worker still alive");
-            closed = true;
+            synchronized (admissionLock) {
+                closed = true;
+            }
             return;
         }
 
-        // Force-flush whatever the worker didn't get to, but keep the caller's
-        // original drain deadline across retries and poison isolation.
+        // The worker's finally block drains its local batch and queue tail
+        // before notifying the termination listener. Never call the sink here:
+        // the listener may already have closed DAO/log resources.
         if (!queue.isEmpty()) {
-            List<Action> remainder = new ArrayList<>(queue.size());
-            queue.drainTo(remainder);
-            if (!remainder.isEmpty()) {
-                flushWithRetry(remainder, deadline);
-            }
+            List<Action> abandoned = new ArrayList<>(queue.size());
+            queue.drainTo(abandoned);
+            permanentlyDrop(abandoned, "worker terminated before final queue drain");
         }
+        synchronized (admissionLock) {
+            closed = true;
+        }
+    }
 
-        closed = true;
+    /**
+     * Wait for the worker, including its final sink call and termination
+     * listener, to finish. This is intentionally separate from
+     * {@link #drainAndFlush(long)} so a caller can distinguish a timed-out
+     * worker from a fully owned shutdown.
+     */
+    public boolean awaitWorkerTermination(long timeoutMs) {
+        try {
+            return workerTerminated.await(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /** @return true after the worker and its termination listener have completed. */
+    public boolean isWorkerTerminated() {
+        return workerTerminated.getCount() == 0L;
     }
 
     @Override
@@ -544,7 +607,33 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 }
             }
         } finally {
-            flushWorkerRemainder(batch);
+            // Publish the admission boundary before any final drain. This also covers
+            // unexpected Error exits: no producer may enqueue between the last queue
+            // drain and the termination callback that closes dependent resources.
+            synchronized (admissionLock) {
+                shutdown = true;
+            }
+            try {
+                flushWorkerRemainder(batch);
+            } finally {
+                notifyWorkerTerminated();
+            }
+        }
+    }
+
+    private void notifyWorkerTerminated() {
+        if (!terminationNotified.compareAndSet(false, true)) {
+            return;
+        }
+        synchronized (admissionLock) {
+            shutdown = true;
+        }
+        try {
+            terminationListener.run();
+        } catch (Throwable t) {
+            LOG.error(MARKER, "Queue termination listener failed", t);
+        } finally {
+            workerTerminated.countDown();
         }
     }
 

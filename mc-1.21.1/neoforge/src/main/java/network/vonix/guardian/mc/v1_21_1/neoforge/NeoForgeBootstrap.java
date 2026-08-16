@@ -11,6 +11,7 @@ import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.DamageHistory;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.mc.v1_21_1.common.GuardianCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,17 +81,26 @@ public final class NeoForgeBootstrap {
      */
     public static void onServerStopping(ServerStoppingEvent ev) {
         Guardian g = VonixGuardianNeoForge.guardian();
-        if (g != null) {
-            try {
-                g.close();
-            } catch (Throwable t) {
-                LOG.warn(Guardian.MARKER, "Guardian.close() raised", t);
+        boolean commandsStopped = GuardianCommands.reset(() -> {
+            boolean inspectorsStopped = NeoForgeEvents.reset(() -> {
+                try {
+                    if (g != null) {
+                        g.close();
+                    }
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Guardian.close() raised", t);
+                }
+            });
+            if (!inspectorsStopped) {
+                LOG.warn(Guardian.MARKER, "Inspector worker did not terminate; Guardian cleanup is deferred");
             }
-        }
+        });
         if (damageHistory != null) {
             damageHistory.clear();
         }
+        if (!commandsStopped) {
+            LOG.warn(Guardian.MARKER, "Command worker did not terminate; Guardian cleanup is deferred");
+        }
         VonixGuardianNeoForge.setGuardian(null);
-        NeoForgeEvents.reset();
     }
 }

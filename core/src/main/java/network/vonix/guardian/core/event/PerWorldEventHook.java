@@ -46,7 +46,7 @@ public final class PerWorldEventHook implements EventHook {
         if (over == null) {
             return Decision.PASS;
         }
-        if (!typeEnabled(over, a.type())) {
+        if (!typeEnabled(over, a)) {
             return Decision.DENY;
         }
         if (contains(over.worldBlacklist(), a.worldId())) {
@@ -70,7 +70,14 @@ public final class PerWorldEventHook implements EventHook {
         return list.contains(v);
     }
 
-    private static boolean typeEnabled(GuardianConfig.Actions cfg, ActionType t) {
+    private static boolean typeEnabled(GuardianConfig.Actions cfg, Action a) {
+        ActionType t = a.type();
+        if (t == ActionType.FLUID_FLOW) {
+            String target = a.targetId();
+            boolean lava = target != null
+                    && target.toLowerCase(java.util.Locale.ROOT).contains("lava");
+            return lava ? cfg.logLavaFlow() : cfg.logWaterFlow();
+        }
         return switch (t.category()) {
             case BLOCK -> cfg.logBlocks();
             case CONTAINER -> cfg.logContainers();

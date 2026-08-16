@@ -64,6 +64,7 @@ import network.vonix.guardian.core.attribution.FluidSourceMemory;
 import network.vonix.guardian.core.attribution.TntPrimeMemory;
 import network.vonix.guardian.core.diagnostics.MixinHotEventFilter;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.concurrent.BoundedGenerationExecutor;
 import network.vonix.guardian.core.attribution.Attribution;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.config.IpHasher;
@@ -85,8 +86,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -112,12 +112,9 @@ public final class ForgeEvents {
     private static final Map<String, AtomicLong> SPAWN_LIMIT = new ConcurrentHashMap<>();
     private static final long SPAWN_LIMIT_MS = 1_000L;
 
-    /** Daemon worker for off-tick JDBC (inspector lookups). */
-    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "VonixGuardian-ForgeEvents-Worker");
-        t.setDaemon(true);
-        return t;
-    });
+    /** Bounded off-tick JDBC worker with generation-safe server-stop handling. */
+    private static final BoundedGenerationExecutor WORKER =
+            new BoundedGenerationExecutor("VonixGuardian-ForgeEvents-Worker", 64);
 
     /** Last right-clicked container position per player (for open/close snapshot diff). */
     private static final Map<UUID, BlockPos> LAST_CONTAINER_RC = new ConcurrentHashMap<>();
@@ -217,7 +214,7 @@ public final class ForgeEvents {
                         final MinecraftServer server = sp.getServer();
                         final String wid = WorldKey.of((Level) ev.getLevel());
                         final int x = pos.getX(), y = pos.getY(), z = pos.getZ();
-                        WORKER.submit(() -> {
+                        submitLookup(() -> {
                             try {
                                 List<String> lines = gg.lookupAtPos(wid, x, y, z, 10, System.currentTimeMillis());
                                 if (server != null) {
@@ -977,7 +974,7 @@ public final class ForgeEvents {
                 final MinecraftServer server = sp.getServer();
                 final String worldId = WorldKey.of((Level) ev.getLevel());
                 final int x = pos.getX(), y = pos.getY(), z = pos.getZ();
-                WORKER.submit(() -> {
+                submitLookup(() -> {
                     try {
                         List<String> lines = g.lookupAtPos(worldId, x, y, z, 10, System.currentTimeMillis());
                         if (server != null) {
@@ -1510,12 +1507,28 @@ public final class ForgeEvents {
         }
     }
 
-    /** Clears the deferred dispatcher on server stop to avoid retaining the server graph
-     *  across an in-JVM restart. Idempotent. */
+    private static void submitLookup(Runnable task) {
+        try {
+            WORKER.execute(task);
+        } catch (RejectedExecutionException ex) {
+            LOG.warn(Guardian.MARKER, "Inspector lookup worker saturated or stopping; request dropped");
+        }
+    }
+
+    /** Clears deferred command state and stops the inspector worker; safe across restarts. */
     public static void reset() {
         pendingDispatcher = null;
         clearNaturalBlockCache();
         clearHopperTracker();
+        WORKER.reset(null);
+    }
+
+    /** Stops this server generation and closes Guardian only after worker termination. */
+    public static boolean reset(Runnable afterWorkerTermination) {
+        pendingDispatcher = null;
+        clearNaturalBlockCache();
+        clearHopperTracker();
+        return WORKER.reset(afterWorkerTermination);
     }
 
     // ====================================================================== v1.3.2 Y2 — event-bus parity handlers

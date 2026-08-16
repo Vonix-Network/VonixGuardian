@@ -4,6 +4,7 @@ import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.jdbc.SqliteDao;
+import network.vonix.guardian.core.storage.jdbc.LookupBusyException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -195,6 +197,37 @@ class SqliteDaoIntegrationTest {
         List<Action> after = dao.query(QueryFilter.empty(), 0, 100);
         long flagged = after.stream().filter(Action::rolledBack).count();
         assertThat(flagged).isEqualTo(5);
+    }
+
+    @Test
+    void mark_rolled_back_chunks_large_id_sets_transactionally() throws Exception {
+        List<Action> batch = new ArrayList<>();
+        for (int i = 0; i < 1_200; i++) {
+            batch.add(new Action(-1L, 1_700_000_000_000L + i, ActionType.BLOCK_BREAK,
+                users.get(0), userNames.get(0), worlds.get(0),
+                i, 64, 0, "minecraft:stone", null, 1, false, null));
+        }
+        dao.insertBatch(batch);
+        List<Long> ids = dao.query(QueryFilter.empty(), 0, 2_000).stream()
+                .map(Action::id).toList();
+
+        assertThat(dao.markRolledBack(ids, true)).isEqualTo(1_200);
+        assertThat(dao.query(QueryFilter.empty(), 0, 2_000)).allMatch(Action::rolledBack);
+    }
+
+    @Test
+    void lookup_permit_timeout_fails_closed_instead_of_blocking_forever() throws Exception {
+        Semaphore permits = new Semaphore(0);
+        SqliteDao limited = new SqliteDao("jdbc:sqlite::memory:", permits, 0);
+        limited.init();
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                    () -> limited.count(QueryFilter.empty()))
+                .isInstanceOf(LookupBusyException.class)
+                .hasMessageContaining("lookup capacity");
+        } finally {
+            limited.close();
+        }
     }
 
     @Test

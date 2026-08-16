@@ -138,6 +138,33 @@ class ExplosionJoinWorkerTest {
     }
 
     @Test
+    void longJoinedEntries_advanceFromLastConsumedEntryWithoutSkippingCoordinates() {
+        ExplosionJoinWorker w = syncWorker();
+        RecordingExplosionSubmitter s = new RecordingExplosionSubmitter();
+        int n = 120;
+        int[] xs = new int[n];
+        int[] ys = new int[n];
+        int[] zs = new int[n];
+        String[] ids = new String[n];
+        for (int i = 0; i < n; i++) {
+            xs[i] = i;
+            ys[i] = 64;
+            zs[i] = 0;
+            ids[i] = "modded:" + "x".repeat(70);
+        }
+
+        w.submit(s, UUID.randomUUID(), "creeper", "minecraft:overworld",
+                 0, 64, 0, "#tnt", xs, ys, zs, ids, n);
+
+        String joined = s.rows.stream().map(RecordingExplosionSubmitter.Row::affected)
+                .reduce("", (a, b) -> a.isEmpty() ? b : a + "," + b);
+        for (int i = 0; i < n; i++) {
+            assertThat(joined).contains(i + ":64:0=" + ids[i]);
+        }
+        assertThat(s.rows).isNotEmpty();
+    }
+
+    @Test
     void nullActorName_defaultsToExplosionSentinel() {
         ExplosionJoinWorker w = syncWorker();
         RecordingExplosionSubmitter s = new RecordingExplosionSubmitter();

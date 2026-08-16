@@ -217,6 +217,25 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
         final JsonLinesLogFile logRef = logFile;
         final AtomicReference<JsonLinesLogFile> logHolder = new AtomicReference<>(logRef);
+        final AtomicBoolean downstreamClosed = new AtomicBoolean();
+        final Runnable closeDownstream = () -> {
+            if (!downstreamClosed.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                JsonLinesLogFile lf = logHolder.get();
+                if (lf != null) {
+                    lf.close();
+                }
+            } catch (Throwable e) {
+                LOG.warn(MARKER, "Deferred log-file close raised", e);
+            }
+            try {
+                dao.close();
+            } catch (Throwable e) {
+                LOG.warn(MARKER, "Deferred DAO close raised", e);
+            }
+        };
         BatchedAsyncWriteQueue queue = new BatchedAsyncWriteQueue(
                 config.queue().maxSize(),
                 config.queue().flushIntervalMs(),
@@ -232,7 +251,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                     }
                 },
                 tf,
-                dataDir.resolve("config").resolve("vonixguardian").resolve("queue-quarantine.bin"));
+                dataDir.resolve("config").resolve("vonixguardian").resolve("queue-quarantine.bin"),
+                closeDownstream);
 
         EventGate gate = new EventGate(config.actions());
         PermissionResolver perms = new PermissionResolver(config.permissions(), opLookup);
@@ -1527,18 +1547,12 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         } catch (Exception e) {
             LOG.warn(MARKER, "Queue drain raised", e);
         }
-        try {
-            JsonLinesLogFile lf = logFileRef.get();
-            if (lf != null) {
-                lf.close();
-            }
-        } catch (Exception e) {
-            LOG.warn(MARKER, "Log-file close raised", e);
-        }
-        try {
-            dao.close();
-        } catch (Exception e) {
-            LOG.warn(MARKER, "DAO close raised", e);
+        if (!queue.isWorkerTerminated()) {
+            // The termination listener owns log/DAO closure and will run after
+            // an uninterruptible sink returns. Never close those resources here:
+            // doing so would race the worker's in-flight write.
+            LOG.error(MARKER,
+                    "Queue worker did not terminate within shutdown budget; deferring log/DAO close until it exits");
         }
         try {
             tntPrimeMemory.clear();

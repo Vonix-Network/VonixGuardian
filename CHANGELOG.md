@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.12-rc.1] - 2026-08-15
+## [1.3.12] - 2026-08-16
 
 ### Changed
 
+- **Bounded generation-aware command workers.** Loader command execution is now
+  bounded, generation-fenced, and lifecycle-safe across all supported Fabric,
+  Forge, and NeoForge cells; reset closes admission before old workers drain.
+- **Deterministic rollback finalization.** Applied rollback batches are finalized
+  through a safe fallback when the configured completion executor rejects work,
+  preserving partial-batch results and failure reporting.
 - **Permission-aware lookup planning.** Child-permission checks are cached per
   lookup invocation. Visible action counts now use one combined SQL count rather
   than a count query per permission bucket, and non-count lookups no longer pay
@@ -37,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mc-1.20.1/fabric` by the Fabric Loom 1.7.4
   `BuildSharedServiceManager` classloader conflict; the isolated release matrix
   was the successful release build gate.
-- This prerelease contains no quantitative performance claim. Matched repeated
+- This release contains no quantitative performance claim. Matched repeated
   before/after runtime profiling is still required before asserting an
   improvement.
 

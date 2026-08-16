@@ -47,10 +47,11 @@ class GuardianCommandsContractStructuralTest {
                 .contains("hasPerm(s, PermissionNode.UNDO, g)");
 
             assertThat(text)
-                .as("%s should use a bounded command-worker queue, not Executors.newFixedThreadPool's unbounded LinkedBlockingQueue", cell)
+                .as("%s should use a bounded generation-aware command worker and preserve two-worker concurrency", cell)
                 .doesNotContain("Executors.newFixedThreadPool")
-                .contains("new ThreadPoolExecutor(")
-                .contains("new ArrayBlockingQueue<>(COMMAND_WORKER_QUEUE_CAPACITY)")
+                .contains("new BoundedGenerationExecutor(\"VonixGuardian-Cmd\", COMMAND_WORKER_QUEUE_CAPACITY, 2)")
+                .contains("WORKER.execute(task)")
+                .contains("public static boolean reset(Runnable afterWorkerTermination)")
                 .contains("private static boolean submitAsync(CommandSourceStack src, Guardian g, Runnable task)");
 
             assertThat(text)

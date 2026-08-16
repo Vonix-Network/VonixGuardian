@@ -234,4 +234,27 @@ class EventGateTest {
         EventGate g = new EventGate(c);
         assertThat(g.shouldLog(action(ActionType.BLOCK_BREAK, "w", "minecraft:stone", null))).isTrue();
     }
+
+    @Test
+    void fluid_toggles_apply_to_the_actual_fluid_kind() {
+        EventGate waterOff = new EventGate(fluidCfg(false, true));
+        assertThat(waterOff.shouldLog(action(ActionType.FLUID_FLOW, "w", "minecraft:water", "#fluid:water")))
+                .isFalse();
+        assertThat(waterOff.shouldLog(action(ActionType.FLUID_FLOW, "w", "minecraft:lava", "#fluid:lava")))
+                .isTrue();
+
+        EventGate lavaOff = new EventGate(fluidCfg(true, false));
+        assertThat(lavaOff.shouldLog(action(ActionType.FLUID_FLOW, "w", "minecraft:water", "#fluid:water")))
+                .isTrue();
+        assertThat(lavaOff.shouldLog(action(ActionType.FLUID_FLOW, "w", "minecraft:lava", "#fluid:lava")))
+                .isFalse();
+    }
+
+    private static GuardianConfig.Actions fluidCfg(boolean water, boolean lava) {
+        return new GuardianConfig.Actions(
+                true, true, true, true, true, true, true, true, true, true, true,
+                List.of(), List.of(), List.of(), 60_000L, 512, List.of(), false,
+                true, true, true, true, true, true, water, lava,
+                true, true, false, true, false, true);
+    }
 }

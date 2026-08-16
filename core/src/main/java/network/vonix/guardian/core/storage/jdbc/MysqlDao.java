@@ -70,6 +70,24 @@ public final class MysqlDao extends AbstractJdbcDao {
     }
 
     @Override
+    protected void releaseChecked(Connection c) throws SQLException {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable failure) {
+            try {
+                ds.evictConnection(c);
+            } catch (Throwable evictFailure) {
+                failure.addSuppressed(evictFailure);
+            }
+            if (failure instanceof SQLException ex) throw ex;
+            if (failure instanceof RuntimeException ex) throw ex;
+            if (failure instanceof Error ex) throw ex;
+            throw new SQLException("MySQL connection release failed", failure);
+        }
+    }
+
+    @Override
     protected Schema.Dialect dialect() {
         return Schema.Dialect.MYSQL;
     }

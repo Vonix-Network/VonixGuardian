@@ -125,4 +125,18 @@ class PerWorldEventHookTest {
         Action a = action(ActionType.BLOCK_BREAK, "minecraft:overworld", "minecraft:stone", null);
         assertThat(hook.test(a)).isEqualTo(EventHook.Decision.PASS);
     }
+
+    @Test
+    void fluid_toggles_are_rechecked_for_the_overridden_world(@TempDir Path tmp) throws Exception {
+        Files.writeString(tmp.resolve("minecraft__the_nether.json"),
+            "{ \"logWaterFlow\": false, \"logLavaFlow\": true }");
+        PerWorldConfigStore store = new PerWorldConfigStore(root());
+        store.reload(tmp);
+        PerWorldEventHook hook = new PerWorldEventHook(store, root());
+
+        assertThat(hook.test(action(ActionType.FLUID_FLOW, "minecraft:the_nether",
+                "minecraft:water", "#fluid:water"))).isEqualTo(EventHook.Decision.DENY);
+        assertThat(hook.test(action(ActionType.FLUID_FLOW, "minecraft:the_nether",
+                "minecraft:lava", "#fluid:lava"))).isEqualTo(EventHook.Decision.PASS);
+    }
 }

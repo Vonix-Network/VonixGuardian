@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Shared JDBC implementation. Subclasses supply a {@link Connection} per call and the
@@ -39,6 +40,9 @@ import java.util.concurrent.Semaphore;
  * disables the cap.
  */
 public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
+
+    /** Keep the flag bind plus IDs safely below SQLite and common JDBC bind limits. */
+    static final int MARK_ROLLED_BACK_CHUNK_SIZE = 500;
 
     private static final String INSERT_ACTION_SQL =
         "INSERT INTO vg_actions("
@@ -65,6 +69,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     /** Optional read-side rate limit. May be {@code null} (no limit). */
     private final Semaphore lookupSemaphore;
 
+    /** Maximum time an operator lookup may wait for a saturated read permit. */
+    static final long LOOKUP_PERMIT_WAIT_MS = 250L;
+
     /** Maximum rows materialised per {@link #query}. {@code 0} disables the cap. */
     private final int maxResultRows;
 
@@ -86,8 +93,16 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     /** Acquire a connection. Implementations decide pooling semantics. */
     protected abstract Connection borrow() throws SQLException;
 
-    /** Release a connection (no-op for pooled, no-op for the single-connection case). */
+    /** Release a connection (legacy best-effort path used by non-critical operations). */
     protected abstract void release(Connection c);
+
+    /**
+     * Release a connection while preserving close failures for critical mutation paths.
+     * Pooled backends override this to invalidate a connection whose close operation fails.
+     */
+    protected void releaseChecked(Connection c) throws SQLException {
+        release(c);
+    }
 
     /** Dialect identifier. */
     protected abstract Schema.Dialect dialect();
@@ -291,10 +306,14 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     private void acquireLookupPermit() {
         if (lookupSemaphore == null) return;
         try {
-            lookupSemaphore.acquire();
+            if (!lookupSemaphore.tryAcquire(LOOKUP_PERMIT_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                throw new LookupBusyException(
+                        "lookup capacity is busy; retry after current lookups complete");
+            }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while waiting for lookup permit", ex);
+            throw new LookupBusyException(
+                    "lookup capacity wait interrupted; retry the lookup", ex);
         }
     }
 
@@ -347,22 +366,85 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     @Override
     public int markRolledBack(List<Long> ids, boolean rolledBack) throws SQLException {
         if (ids == null || ids.isEmpty()) return 0;
-        StringBuilder sb = new StringBuilder("UPDATE vg_actions SET rolled_back = ? WHERE id IN (");
-        for (int i = 0; i < ids.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append('?');
-        }
-        sb.append(')');
         Connection c = borrow();
-        try (PreparedStatement ps = c.prepareStatement(sb.toString())) {
-            ps.setInt(1, rolledBack ? 1 : 0);
-            for (int i = 0; i < ids.size(); i++) {
-                ps.setLong(i + 2, ids.get(i));
+        boolean previousAutoCommit = true;
+        boolean autoCommitKnown = false;
+        Throwable primaryFailure = null;
+        Throwable cleanupFailure = null;
+        int updated = 0;
+        try {
+            previousAutoCommit = c.getAutoCommit();
+            autoCommitKnown = true;
+            // Chunking is paired with one transaction so a parameter-limit
+            // workaround cannot create a partially marked rollback batch.
+            c.setAutoCommit(false);
+            for (int start = 0; start < ids.size(); start += MARK_ROLLED_BACK_CHUNK_SIZE) {
+                int end = Math.min(start + MARK_ROLLED_BACK_CHUNK_SIZE, ids.size());
+                StringBuilder sb = new StringBuilder("UPDATE vg_actions SET rolled_back = ? WHERE id IN (");
+                for (int i = start; i < end; i++) {
+                    if (i > start) sb.append(',');
+                    sb.append('?');
+                }
+                sb.append(')');
+                try (PreparedStatement ps = c.prepareStatement(sb.toString())) {
+                    ps.setInt(1, rolledBack ? 1 : 0);
+                    for (int i = start; i < end; i++) {
+                        ps.setLong(i - start + 2, ids.get(i));
+                    }
+                    updated += ps.executeUpdate();
+                }
             }
-            return ps.executeUpdate();
+            c.commit();
+        } catch (Throwable ex) {
+            primaryFailure = ex;
+            try {
+                c.rollback();
+            } catch (Throwable rollbackFailure) {
+                ex.addSuppressed(rollbackFailure);
+            }
         } finally {
-            release(c);
+            if (autoCommitKnown) {
+                try {
+                    c.setAutoCommit(previousAutoCommit);
+                } catch (Throwable restoreFailure) {
+                    cleanupFailure = restoreFailure;
+                    // A connection with unknown transaction state must not
+                    // return to a pool or remain the live SQLite connection.
+                    try {
+                        c.close();
+                    } catch (Throwable closeFailure) {
+                        restoreFailure.addSuppressed(closeFailure);
+                    }
+                }
+            }
+            try {
+                releaseChecked(c);
+            } catch (Throwable releaseFailure) {
+                if (cleanupFailure == null) {
+                    cleanupFailure = releaseFailure;
+                } else {
+                    cleanupFailure.addSuppressed(releaseFailure);
+                }
+            }
+            if (cleanupFailure != null) {
+                if (primaryFailure == null) {
+                    primaryFailure = cleanupFailure;
+                } else {
+                    primaryFailure.addSuppressed(cleanupFailure);
+                }
+            }
         }
+        if (primaryFailure != null) {
+            rethrowJdbcFailure(primaryFailure);
+        }
+        return updated;
+    }
+
+    private static void rethrowJdbcFailure(Throwable failure) throws SQLException {
+        if (failure instanceof SQLException ex) throw ex;
+        if (failure instanceof RuntimeException ex) throw ex;
+        if (failure instanceof Error ex) throw ex;
+        throw new SQLException("JDBC rollback update failed", failure);
     }
 
     @Override

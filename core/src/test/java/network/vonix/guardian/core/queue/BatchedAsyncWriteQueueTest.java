@@ -13,6 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -472,6 +473,110 @@ class BatchedAsyncWriteQueueTest {
         assertThat(spawned.get(0).isAlive())
                 .as("worker thread must exit after close()")
                 .isFalse();
+    }
+
+    @Test
+    void terminationListenerWaitsForBlockedSinkBeforeDependentResourcesMayClose() throws Exception {
+        BlockingSink sink = new BlockingSink();
+        AtomicBoolean terminated = new AtomicBoolean();
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                8, 25L, 1, sink, DAEMON, (Path) null, () -> terminated.set(true));
+        try {
+            q.submit(action(123));
+            assertThat(sink.entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+            q.drainAndFlush(25L);
+            assertThat(terminated).as("dependent resources must stay open while sink owns a batch")
+                    .isFalse();
+
+            sink.release.countDown();
+            assertThat(q.awaitWorkerTermination(2_000L)).isTrue();
+            assertThat(terminated).isTrue();
+        } finally {
+            sink.release.countDown();
+            if (!q.isWorkerTerminated()) {
+                q.drainAndFlush(2_000L);
+            }
+        }
+    }
+
+    @Test
+    void admissionBoundaryOrdersLateProducerBeforeResourceClosure() throws Exception {
+        CountDownLatch probeEntered = new CountDownLatch(1);
+        CountDownLatch releaseProbe = new CountDownLatch(1);
+        AtomicBoolean terminated = new AtomicBoolean();
+        List<Action> seen = new CopyOnWriteArrayList<>();
+        BatchSink sink = batch -> seen.addAll(batch);
+        Runnable probe = () -> {
+            probeEntered.countDown();
+            try {
+                assertThat(releaseProbe.await(2, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(ex);
+            }
+        };
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                8, 25L, 1, sink, DAEMON, (QuarantineStore) null,
+                () -> terminated.set(true), probe);
+        AtomicBoolean accepted = new AtomicBoolean();
+        Thread producer = new Thread(() -> accepted.set(q.submit(action(321))), "vg-late-producer-test");
+        Thread stopper = new Thread(() -> q.drainAndFlush(2_000L), "vg-stop-test");
+        try {
+            producer.start();
+            assertThat(probeEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            stopper.start();
+            Thread.sleep(50L);
+            assertThat(stopper.isAlive()).as("shutdown must wait for in-flight admission").isTrue();
+            releaseProbe.countDown();
+            producer.join(2_000L);
+            stopper.join(2_000L);
+
+            assertThat(accepted).isTrue();
+            assertThat(seen).extracting(Action::x).containsExactly(321);
+            assertThat(terminated).isTrue();
+        } finally {
+            releaseProbe.countDown();
+            producer.join(2_000L);
+            if (stopper.isAlive()) {
+                q.drainAndFlush(2_000L);
+                stopper.join(2_000L);
+            }
+            if (!q.isWorkerTerminated()) {
+                q.close();
+            }
+        }
+    }
+
+    @Test
+    void unexpectedWorkerExitPublishesAdmissionClosureBeforeFinalDrain() throws Exception {
+        CountDownLatch finalSinkEntered = new CountDownLatch(1);
+        CountDownLatch releaseFinalSink = new CountDownLatch(1);
+        AtomicInteger sinkCalls = new AtomicInteger();
+        AtomicBoolean terminated = new AtomicBoolean();
+        BatchSink sink = batch -> {
+            if (sinkCalls.incrementAndGet() == 1) {
+                throw new AssertionError("simulated worker exit");
+            }
+            finalSinkEntered.countDown();
+            releaseFinalSink.await(5, TimeUnit.SECONDS);
+            throw new AssertionError("simulated final-drain failure");
+        };
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                8, 25L, 1, sink, DAEMON, (Path) null, () -> terminated.set(true));
+        try {
+            assertThat(q.submit(action(321))).isTrue();
+            assertThat(finalSinkEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(q.submit(action(322))).isFalse();
+            releaseFinalSink.countDown();
+            assertThat(q.awaitWorkerTermination(5_000L)).isTrue();
+            assertThat(terminated).isTrue();
+        } finally {
+            releaseFinalSink.countDown();
+            if (!q.isWorkerTerminated()) {
+                q.close();
+            }
+        }
     }
 
     @Test

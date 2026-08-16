@@ -23,6 +23,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.concurrent.BoundedGenerationExecutor;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.action.Action;
@@ -41,11 +42,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -78,15 +75,8 @@ public final class GuardianCommands {
      * failing closed under command storms.</p>
      */
     private static final int COMMAND_WORKER_QUEUE_CAPACITY = 64;
-    private static final ExecutorService WORKER = new ThreadPoolExecutor(
-            2, 2, 0L, TimeUnit.MILLISECONDS,
-            new ArrayBlockingQueue<>(COMMAND_WORKER_QUEUE_CAPACITY),
-            r -> {
-                Thread t = new Thread(r, "VonixGuardian-Cmd");
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.AbortPolicy());
+    private static final BoundedGenerationExecutor WORKER =
+            new BoundedGenerationExecutor("VonixGuardian-Cmd", COMMAND_WORKER_QUEUE_CAPACITY, 2);
 
     private GuardianCommands() {
         // utility
@@ -251,9 +241,14 @@ public final class GuardianCommands {
         }
     }
 
+    /** Stops command admission and defers the callback until all command work terminates. */
+    public static boolean reset(Runnable afterWorkerTermination) {
+        return WORKER.reset(afterWorkerTermination);
+    }
+
     private static boolean submitAsync(CommandSourceStack src, Guardian g, Runnable task) {
         try {
-            WORKER.submit(task);
+            WORKER.execute(task);
             return true;
         } catch (RejectedExecutionException rex) {
             LOG.warn(Guardian.MARKER, "Command worker queue saturated; rejecting async command task", rex);
