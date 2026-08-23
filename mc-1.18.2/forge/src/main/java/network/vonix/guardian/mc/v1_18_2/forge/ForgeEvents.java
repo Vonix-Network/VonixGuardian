@@ -1169,14 +1169,9 @@ public final class ForgeEvents {
     //   dirt -> grass/mycelium  => SPREAD
     //   leaves -> air           => LEAVES_DECAY
     //
-    // ACKNOWLEDGED COVERAGE GAPS (see docs/PERF-NOTES-1.3.3.md § Z2):
-    //   * DISPENSE cannot be caught via the Forge event bus. DispenserBlock
-    //     #dispenseFrom is a private static funnel with no companion event on
-    //     any of 1.18.2 / 1.19.2 / 1.20.1. NeighborNotifyEvent fires on the
-    //     redstone-pulse neighbor update but does not carry the ejected
-    //     ItemStack or origin BlockPos context. Z2 documents the gap explicitly
-    //     rather than fake coverage; Fabric+NeoForge already log DISPENSE via
-    //     their wired mixins.
+    //   * DISPENSE is not an event-bus transition. It is captured by
+    //     DispenserBlockMixin (dispenseFrom HEAD) registered in vg.mixins.json,
+    //     matching the Fabric/NeoForge submitDispense contract.
     //   * BURN/IGNITE via LightningBoltEntity#spawnFire deep call chain is
     //     already covered by the Y2 onEntityStruckByLightning handler above
     //     (1-tick deferred 3x3 scan). Z2 adds coverage for player-lit,
@@ -1457,14 +1452,8 @@ public final class ForgeEvents {
         Z2_WARN_LIMIT.clear();
     }
 
-    // ACKNOWLEDGED GAP: DISPENSE is not covered by the Forge event bus on any
-    // of 1.18.2 / 1.19.2 / 1.20.1. DispenserBlock#dispenseFrom is a private
-    // funnel with no companion event carrying the ejected ItemStack + origin
-    // BlockPos. NeighborNotifyEvent fires on the redstone-pulse neighbor update
-    // but does not preserve the ejection context. The dormant DispenserBlockMixin
-    // is deleted in this wave; a future wave that adds forge-side vg.mixins.json
-    // wiring could restore mixin-based DISPENSE logging on Forge, but Z2's
-    // scope is event-bus fallback only. See docs/PERF-NOTES-1.3.3.md § Z2.
+    // DISPENSE is covered by DispenserBlockMixin + vg.mixins.json (HEAD inject
+    // on dispenseFrom). The Z2 event-bus classifier does not emit DISPENSE.
 
 
 

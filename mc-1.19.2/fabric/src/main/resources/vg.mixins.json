@@ -3,7 +3,7 @@
   "minVersion": "0.8",
   "package": "network.vonix.guardian.mc.v1_19_2.fabric.mixin",
   "compatibilityLevel": "JAVA_17",
-  "refmap": "vg.refmap.json",
+  "refmap": "vonixguardian-fabric-1.19.2-refmap.json",
   "mixins": [
     "BaseContainerBlockEntityMixin",
     "BlockPlaceMixin",

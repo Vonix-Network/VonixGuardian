@@ -71,6 +71,29 @@ public final class LookupFormatter {
     }
 
     /**
+     * Render a page without a preliminary COUNT query. The page-plus-one
+     * probe supplies the next-page hint while keeping normal lookup latency
+     * proportional to the requested window.
+     */
+    public static List<Component> page(Theme theme, List<Action> rows,
+                                       int page, int pageSize, long now,
+                                       String filter, boolean hasNext) {
+        int curr = Math.max(1, page);
+        List<Component> out = new ArrayList<>(rows.size() + 2);
+        MutableComponent header = ChatRenderer.primary(theme, "[VonixGuardian] ");
+        header.append(ChatRenderer.secondary(theme,
+                "Lookup: page " + curr + (hasNext ? " (more results)" : "")));
+        out.add(header);
+        for (Action a : rows) {
+            out.add(line(theme, a, now));
+        }
+        if (hasNext) {
+            out.add(footer(theme, curr + 1, pageSize, filter));
+        }
+        return out;
+    }
+
+    /**
      * Render the "next page" footer hint shown when more results remain.
      *
      * @param theme    active theme (nullable)

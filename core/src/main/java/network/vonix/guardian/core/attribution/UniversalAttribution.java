@@ -34,7 +34,27 @@ import java.util.Objects;
  */
 public final class UniversalAttribution {
 
+    /**
+     * Last consumed allowlisted fire pair id on this thread. Loaders call
+     * {@link #resolveFireCauser} then {@code submitIgnite}/{@code submitBurn};
+     * {@link network.vonix.guardian.core.Guardian} stamps the pending id onto
+     * those submits so pairing survives persistence without every cell
+     * changing its EventSubmitter call.
+     */
+    private static final ThreadLocal<Long> PENDING_FIRE_PAIR_ID = new ThreadLocal<>();
+
     private UniversalAttribution() {}
+
+    /**
+     * Consume and clear the pair id left by the most recent
+     * {@link #resolveFireCauser} on this thread. Returns {@code null} when
+     * nothing is pending.
+     */
+    public static Long takePendingFirePairId() {
+        Long id = PENDING_FIRE_PAIR_ID.get();
+        PENDING_FIRE_PAIR_ID.remove();
+        return (id == null || id == 0L) ? null : id;
+    }
 
     /**
      * Consult {@link TntPrimeMemory} for a recorded prime at the entity's
@@ -141,22 +161,25 @@ public final class UniversalAttribution {
         public final java.util.UUID actorUuid;
         public final String actorName;
         public final String sourceTag;
+        /** Durable pairing token; {@code 0} when this verdict is not {@link FireVerdict#PAIR}. */
+        public final long pairId;
 
         private FireCauser(FireVerdict verdict, java.util.UUID actorUuid,
-                           String actorName, String sourceTag) {
+                           String actorName, String sourceTag, long pairId) {
             this.verdict = verdict;
             this.actorUuid = actorUuid;
             this.actorName = actorName;
             this.sourceTag = sourceTag;
+            this.pairId = pairId;
         }
 
         static final FireCauser PASSTHROUGH =
-                new FireCauser(FireVerdict.PASSTHROUGH, null, null, null);
+                new FireCauser(FireVerdict.PASSTHROUGH, null, null, null, 0L);
         static final FireCauser SUPPRESS =
-                new FireCauser(FireVerdict.SUPPRESS, null, null, null);
+                new FireCauser(FireVerdict.SUPPRESS, null, null, null, 0L);
 
-        static FireCauser pair(java.util.UUID uuid, String name, String tag) {
-            return new FireCauser(FireVerdict.PAIR, uuid, name, tag);
+        static FireCauser pair(java.util.UUID uuid, String name, String tag, long pairId) {
+            return new FireCauser(FireVerdict.PAIR, uuid, name, tag, pairId);
         }
     }
 
@@ -186,9 +209,13 @@ public final class UniversalAttribution {
                                                String worldId,
                                                int x, int y, int z) {
         Objects.requireNonNull(memory, "memory");
+        PENDING_FIRE_PAIR_ID.remove();
         FireCauserMemory.CauserRecord rec = memory.consume(worldId, x, y, z);
         if (rec == null) return FireCauser.PASSTHROUGH;
         if (!rec.allowlisted) return FireCauser.SUPPRESS;
-        return FireCauser.pair(rec.actorUuid, rec.actorName, rec.sourceTagHint);
+        if (rec.pairId != 0L) {
+            PENDING_FIRE_PAIR_ID.set(rec.pairId);
+        }
+        return FireCauser.pair(rec.actorUuid, rec.actorName, rec.sourceTagHint, rec.pairId);
     }
 }

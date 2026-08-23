@@ -11,7 +11,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 
-## Feature surface (v1.3.12)
+## Feature surface (v1.4.0)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -40,7 +40,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
   - Includes / excludes: `i:stone,dirt`, `e:minecraft:tnt`.
   - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, `#optimize`.
 
-- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. `/vg migrate-db` copies between backends under an explicit maintenance write-block so the async queue drains before the source snapshot is copied.
+- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent (current `vg_actions` includes nullable `pair_id` for durable fire/break pairing). `/vg migrate-db` copies between backends under an explicit maintenance write-block so the async queue drains before the source snapshot is copied.
 
 - **Log file**: rolling JSON-Lines at `logs/vonixguardian/audit-YYYY-MM-DD.log` (gzipped after rotation, configurable retention).
 
@@ -95,9 +95,10 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1192 :mc-1.19.2:fabric:build :mc-1.19.2:forge:build
 ./gradlew -PbuildProfile=mc1201 :mc-1.20.1:fabric:build :mc-1.20.1:forge:build
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
+./gradlew -PbuildProfile=mc261  :mc-26.1:neoforge:build
 ```
 
-Produces 8 jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
+Produces 9 jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
 through Loom JarInJar under `META-INF/jars/`; Forge-family cells use their loader-supported
 packaging. The root `build` task configures every loader cell and is intentionally avoided in
 CI/release flows because multiple Fabric Loom versions can conflict when configured in one

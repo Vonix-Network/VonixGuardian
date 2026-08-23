@@ -22,12 +22,13 @@ import java.util.List;
  * pure-Java module (no Minecraft types). Each loader wraps the strings in its
  * own {@code Component} type before sending them to the player.
  *
- * <p>Line format (CoreProtect-style):
+ * <p>Line format (CoreProtect-style, with explicit fields so raw registry IDs
+ * are not mistaken for an unformatted debug dump):
  * <pre>
- *   &lt;ago&gt; - &lt;actor&gt; &lt;verb&gt; &lt;target&gt; (x,y,z)[ [rolled back]]
+ *   &lt;ago&gt; | &lt;actor&gt; | &lt;verb&gt; | &lt;kind&gt;=&lt;target&gt; | at (x, y, z)[ | rolled back]
  * </pre>
- * The header line is prefixed with {@code ----- VonixGuardian -----} so the
- * loader can colour/format it if desired.
+ * The header identifies the world and exact position so copied chat output
+ * remains useful outside the game window.
  */
 public final class InspectorLookup {
 
@@ -72,9 +73,10 @@ public final class InspectorLookup {
         List<Action> rows = dao.query(filter, 0, effectiveLimit);
 
         List<String> out = new ArrayList<>(rows.size() + 1);
-        out.add("----- VonixGuardian: lookup at (" + x + "," + y + "," + z + ") -----");
+        out.add("----- VonixGuardian | Block history | world="
+                + safeWorld(worldId) + " | pos=(" + x + ", " + y + ", " + z + ") -----");
         if (rows.isEmpty()) {
-            out.add("No block history at this location.");
+            out.add("No history found for this block.");
             return out;
         }
         for (Action a : rows) {
@@ -92,27 +94,50 @@ public final class InspectorLookup {
      * @return one chat line
      */
     public static String compactLine(Action a, long now) {
-        StringBuilder sb = new StringBuilder(64);
+        StringBuilder sb = new StringBuilder(96);
         sb.append(ago(now - a.timestamp()))
-          .append(" - ")
+          .append(" | ")
           .append(safeName(a.actorName()))
-          .append(' ')
+          .append(" | ")
           .append(verb(a))
-          .append(' ')
+          .append(" | ")
+          .append(kind(a))
+          .append('=')
           .append(safe(a.targetId()))
-          .append(" (")
-          .append(a.x()).append(',').append(a.y()).append(',').append(a.z())
+          .append(" | at (")
+          .append(a.x()).append(", ").append(a.y()).append(", ").append(a.z())
           .append(')');
         if (a.rolledBack()) {
-            sb.append(" [rolled back]");
+            sb.append(" | rolled back");
         }
         return sb.toString();
     }
 
     // -----------------------------------------------------------------------
 
-    private static String safe(String s)     { return s == null ? "?" : s; }
-    private static String safeName(String s) { return s == null ? "#unknown" : s; }
+    private static String safe(String s)     { return s == null || s.isBlank() ? "?" : s; }
+    private static String safeName(String s) { return s == null || s.isBlank() ? "#unknown" : s; }
+    private static String safeWorld(String s) { return s == null || s.isBlank() ? "#unknown" : s; }
+
+    private static String kind(Action a) {
+        return switch (a.type()) {
+            case BLOCK_BREAK, BLOCK_PLACE, BURN, FADE, FORM, SPREAD, IGNITE,
+                 BUCKET_EMPTY, BUCKET_FILL, LEAVES_DECAY, PISTON_EXTEND,
+                 PISTON_RETRACT, FLUID_FLOW, DISPENSE, STRUCTURE_GROW,
+                 PORTAL_CREATE, CHUNK_POPULATE -> "block";
+            case CONTAINER_DEPOSIT, CONTAINER_WITHDRAW, INVENTORY_DEPOSIT,
+                 INVENTORY_WITHDRAW, HOPPER_PUSH, HOPPER_PULL,
+                 ITEM_DROP, ITEM_PICKUP, ITEM_CRAFT -> "item";
+            case EXPLOSION -> "world";
+            case ENTITY_KILL, ENTITY_SPAWN, ENTITY_INTERACT, ENTITY_CHANGE_BLOCK -> "entity";
+            case CHAT -> "message";
+            case COMMAND -> "command";
+            case SIGN -> "sign";
+            case SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE -> "player";
+            case CLICK -> "target";
+            case HANGING_BREAK, HANGING_PLACE -> "hanging";
+        };
+    }
 
     private static String verb(Action a) {
         return switch (a.type()) {

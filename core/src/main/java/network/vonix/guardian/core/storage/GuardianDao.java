@@ -57,6 +57,15 @@ public interface GuardianDao extends AutoCloseable {
     /** Mark a set of action IDs as rolled-back (used by RollbackEngine). */
     int markRolledBack(List<Long> ids, boolean rolledBack) throws Exception;
 
+    /**
+     * Load every action sharing one of {@code pairIds}. Used by rollback to
+     * pull the sibling of a paired fire/break after persistence or restart.
+     * Implementations MUST ignore {@code null}/zero ids. Default is empty.
+     */
+    default List<Action> findByPairIds(java.util.Collection<Long> pairIds) throws Exception {
+        return List.of();
+    }
+
     /** Delete records matching filter (purge). Returns rows deleted. */
     long purge(QueryFilter filter) throws Exception;
 

@@ -131,6 +131,18 @@ public final class ForgeMixinBridge {
         }
     }
 
+    /** DispenserBlock#dispenseFrom → DISPENSE. Matches Fabric/NeoForge contract. */
+    public static void dispense(Level level, BlockPos pos) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || level == null || pos == null) return;
+            s.submitDispense(null, "#dispenser", worldKey(level),
+                    pos.getX(), pos.getY(), pos.getZ(), "minecraft:dispenser", "world:dispense");
+        } catch (Throwable t) {
+            warn("dispense", t);
+        }
+    }
+
     private static void warn(String label, Throwable t) {
         LOG.warn(Guardian.MARKER, "ForgeMixinBridge {} failed", label, t);
     }

@@ -58,7 +58,7 @@ class V5NbtFidelityMigrationTest {
             MigrationRunner.defaults().migrateToCurrent(c, Schema.Dialect.SQLITE);
 
             assertThat(MigrationRunner.readVersion(c)).isEqualTo(Schema.CURRENT_VERSION);
-            assertThat(Schema.CURRENT_VERSION).as("v1.3.1 X1 targets schema v5").isEqualTo(5);
+            assertThat(Schema.CURRENT_VERSION).as("v5 NBT columns remain in the current schema").isGreaterThanOrEqualTo(5);
 
             Set<String> cols = columnsOf(c);
             assertThat(cols).contains(

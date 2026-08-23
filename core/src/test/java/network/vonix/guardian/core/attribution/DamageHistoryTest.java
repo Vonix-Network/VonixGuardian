@@ -107,4 +107,61 @@ class DamageHistoryTest {
         assertThatThrownBy(() -> new DamageHistory(1_000L, 15))
             .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void overwrittenVictimSurvivesFifoCapSweep() {
+        DamageHistory dh = new DamageHistory(60_000L, 16);
+        for (int i = 0; i < 16; i++) {
+            UUID v = UUID.nameUUIDFromBytes(("victim-" + i).getBytes());
+            dh.record(v, PLAYER_1, 1_000L + i);
+        }
+        UUID kept = UUID.nameUUIDFromBytes("victim-0".getBytes());
+        // STRIDE-1 over-cap inserts leave the amortized sweep one shy of firing.
+        for (int i = 16; i < 16 + DamageHistory.EVICT_STRIDE - 1; i++) {
+            UUID v = UUID.nameUUIDFromBytes(("victim-" + i).getBytes());
+            dh.record(v, PLAYER_1, 20_000L + i);
+        }
+        // Overwrite enqueues a fresh identity at the tail, then trips the sweep.
+        dh.record(kept, PLAYER_2, 30_000L);
+
+        assertThat(dh.size()).isLessThanOrEqualTo(16 + DamageHistory.EVICT_STRIDE);
+        assertThat(dh.evictions()).isGreaterThan(0L);
+        assertThat(dh.lastPlayerToHit(kept, 30_000L)).isEqualTo(PLAYER_2);
+        UUID evictedEarly = UUID.nameUUIDFromBytes("victim-1".getBytes());
+        assertThat(dh.lastPlayerToHit(evictedEarly, 30_000L)).isNull();
+    }
+
+    @Test
+    void outOfOrderTimestampsEvictLowestNotInsertionOldest() {
+        DamageHistory dh = new DamageHistory(60_000L, 16);
+        UUID newest = UUID.nameUUIDFromBytes("newest".getBytes());
+        UUID oldest = UUID.nameUUIDFromBytes("oldest".getBytes());
+        dh.record(newest, PLAYER_1, 10_000L);
+        dh.record(oldest, PLAYER_1, 0L);
+        for (int i = 0; i < 16 + DamageHistory.EVICT_STRIDE - 2; i++) {
+            UUID v = UUID.nameUUIDFromBytes(("low-" + i).getBytes());
+            dh.record(v, PLAYER_1, 1L + i);
+        }
+
+        assertThat(dh.size()).isLessThanOrEqualTo(16 + DamageHistory.EVICT_STRIDE);
+        assertThat(dh.evictions()).isGreaterThan(0L);
+        assertThat(dh.lastPlayerToHit(newest, 30_000L)).isEqualTo(PLAYER_1);
+        assertThat(dh.lastPlayerToHit(oldest, 30_000L)).isNull();
+    }
+
+    @Test
+    void clearResetsAmortizedEvictCounter() {
+        DamageHistory dh = new DamageHistory(60_000L, 16);
+        int inserts = 16 + DamageHistory.EVICT_STRIDE - 1;
+        for (int i = 0; i < inserts; i++) {
+            dh.record(UUID.nameUUIDFromBytes(("a-" + i).getBytes()), PLAYER_1, 1_000L + i);
+        }
+        assertThat(dh.evictions()).isZero();
+        dh.clear();
+        assertThat(dh.size()).isZero();
+        for (int i = 0; i < inserts; i++) {
+            dh.record(UUID.nameUUIDFromBytes(("b-" + i).getBytes()), PLAYER_1, 2_000L + i);
+        }
+        assertThat(dh.evictions()).isZero();
+    }
 }

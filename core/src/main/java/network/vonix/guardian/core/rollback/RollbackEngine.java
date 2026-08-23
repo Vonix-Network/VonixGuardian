@@ -580,7 +580,43 @@ public final class RollbackEngine {
         // CoreProtect: loop through the affected-list at rollback time and admit
         // the row if ANY block in it falls within the caller's radius.
         supplementExplosions(filter, builder, options, pages, scanned);
+        supplementPairedActions(builder, options, pages, scanned);
         return builder.build();
+    }
+
+    /**
+     * After the primary (and explosion-supplement) scan, pull every other
+     * action that shares a durable {@code pair_id} with a planned row. This
+     * is what makes fire/break pairing survive persistence and restart: the
+     * sibling may sit two blocks outside the caller's radius.
+     */
+    private void supplementPairedActions(RollbackPlan.StreamingBuilder builder,
+                                         RollbackOptions options,
+                                         int pages,
+                                         int scanned) throws Exception {
+        java.util.Set<Long> pairIds = builder.pairIds();
+        if (pairIds == null || pairIds.isEmpty()) {
+            return;
+        }
+        List<Action> siblings = dao.findByPairIds(pairIds);
+        if (siblings == null || siblings.isEmpty()) {
+            return;
+        }
+        for (Action action : siblings) {
+            if (options.isCancelRequested()) {
+                RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
+                options.publish(progress);
+                throw new RollbackCancelledException(progress);
+            }
+            builder.add(action);
+            if (builder.plannedSteps() > options.maxPlannedSteps()) {
+                RollbackProgress progress = progress(pages, scanned, builder, false, true, false);
+                options.publish(progress);
+                throw new RollbackLimitExceededException(
+                    "Rollback planning exceeded mutation cap of " + options.maxPlannedSteps() + " step(s)",
+                    progress);
+            }
+        }
     }
 
     /**

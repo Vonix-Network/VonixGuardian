@@ -325,6 +325,24 @@ class LookupPermissionFilterTest {
     }
 
     @Test
+    void visiblePageCanPrefetchOneExtraRowWithoutCounting() throws Exception {
+        PermissionResolver resolver = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0), any(Integer.class)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(a(60, ActionType.BLOCK_PLACE), a(61, ActionType.BLOCK_BREAK)), false));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 1, true);
+
+        assertThat(page.rows()).extracting(Action::id).containsExactly(60L);
+        assertThat(page.hasNext()).isTrue();
+        assertThat(page.complete()).isTrue();
+        verify(dao).queryPageForDisplay(
+                any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0), org.mockito.ArgumentMatchers.eq(2));
+        verify(dao, never()).count(any(QueryFilter.class));
+    }
+
+    @Test
     void visiblePageSkipsDeniedRowsBeforeFillingVisiblePage() throws Exception {
         PermissionResolver resolver = fakeResolver(2);
         GuardianDao dao = mock(GuardianDao.class);

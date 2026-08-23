@@ -1,0 +1,1428 @@
+/*
+ * Copyright (c) 2026 Vonix Network
+ * Licensed under the MIT License.
+ */
+package network.vonix.guardian.mc.v26_1.common;
+
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.context.CommandContext;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.Permission;
+import net.minecraft.server.permissions.PermissionLevel;
+import net.minecraft.world.entity.Relative;
+import java.util.Set;
+import net.minecraft.world.phys.Vec3;
+import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.concurrent.BoundedGenerationExecutor;
+import network.vonix.guardian.core.config.ConfigLoader;
+import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.filter.EntityLogAllowlistEditor;
+import network.vonix.guardian.core.action.Action;
+import network.vonix.guardian.core.perms.LookupPermissionFilter;
+import network.vonix.guardian.core.perms.PermissionNode;
+import network.vonix.guardian.core.query.QueryFilter;
+import network.vonix.guardian.core.query.QueryParseException;
+import network.vonix.guardian.core.query.QueryParser;
+import network.vonix.guardian.core.rollback.RollbackOptions;
+import network.vonix.guardian.core.rollback.RollbackProgress;
+import network.vonix.guardian.core.rollback.RollbackResult;
+import network.vonix.guardian.core.storage.dbmigrate.MigrateDbCommand;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Brigadier command tree for {@code /vg ...} (primary), with aliases
+ * {@code /vg} and {@code /guardian}.
+ *
+ * <p>Implements the CoreProtect 1:1 command surface (rooted at {@code /vg}
+ * for Vonix branding; {@code /vg} provided as a CoreProtect-muscle-memory
+ * alias for operators migrating from CoreProtect) — see
+ * <a href="https://docs.coreprotect.net/commands/">CoreProtect command docs</a>
+ * — including the short subcommand aliases ({@code i}, {@code l}, {@code rb},
+ * {@code rs}), {@code consumer pause|resume|toggle}, and {@code near}.
+ */
+public final class GuardianCommands {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GuardianCommands.class);
+    private static final QueryParser PARSER = new QueryParser();
+    private static final int DEFAULT_ROLLBACK_RADIUS = 10;
+
+    /** Matches a pure page token, optionally with {@code :perPage}. */
+    private static final Pattern PAGE_TOKEN = Pattern.compile("^(\\d+)(?::(\\d+))?$");
+
+    /**
+     * Shared bounded worker pool for command-driven DB queries and file IO.
+     *
+     * <p>Never use the fixed-thread-pool factory: its unbounded
+     * LinkedBlockingQueue lets spammed lookups/rollbacks grow memory without
+     * backpressure. A small bounded queue keeps the server thread async while
+     * failing closed under command storms.</p>
+     */
+    private static final int COMMAND_WORKER_QUEUE_CAPACITY = 64;
+    private static final BoundedGenerationExecutor WORKER =
+            new BoundedGenerationExecutor("VonixGuardian-Cmd", COMMAND_WORKER_QUEUE_CAPACITY, 2);
+
+    private GuardianCommands() {
+        // utility
+    }
+
+    /**
+     * Register the {@code /vg} command tree (and aliases {@code /vg} /
+     * {@code /guardian}).
+     *
+     * @param dispatcher brigadier dispatcher
+     * @param g          the live Guardian facade
+     */
+    public static void register(CommandDispatcher<CommandSourceStack> dispatcher, Guardian g) {
+        LiteralArgumentBuilder<CommandSourceStack> root = Commands.literal("vg")
+                .requires(s -> hasPerm(s, PermissionNode.BASE, g))
+                .executes(ctx -> Help.usage(ctx, g, "root"))
+                // inspect (long + short)
+                .then(Commands.literal("inspect")
+                        .requires(s -> hasPerm(s, PermissionNode.INSPECT, g))
+                        .executes(ctx -> Inspect.toggle(ctx, g)))
+                .then(Commands.literal("i")
+                        .requires(s -> hasPerm(s, PermissionNode.INSPECT, g))
+                        .executes(ctx -> Inspect.toggle(ctx, g)))
+                // lookup (long + short)
+                .then(Commands.literal("lookup")
+                        .requires(s -> hasPerm(s, PermissionNode.LOOKUP, g))
+                        .executes(ctx -> Help.usage(ctx, g, "lookup"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Lookup.run(ctx, g))))
+                .then(Commands.literal("l")
+                        .requires(s -> hasPerm(s, PermissionNode.LOOKUP, g))
+                        .executes(ctx -> Help.usage(ctx, g, "lookup"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Lookup.run(ctx, g))))
+                // rollback (long + short)
+                .then(Commands.literal("rollback")
+                        .requires(s -> hasPerm(s, PermissionNode.ROLLBACK, g))
+                        .executes(ctx -> Help.usage(ctx, g, "rollback"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Rollback.run(ctx, g, false))))
+                .then(Commands.literal("rb")
+                        .requires(s -> hasPerm(s, PermissionNode.ROLLBACK, g))
+                        .executes(ctx -> Help.usage(ctx, g, "rollback"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Rollback.run(ctx, g, false))))
+                // restore (long + short)
+                .then(Commands.literal("restore")
+                        .requires(s -> hasPerm(s, PermissionNode.RESTORE, g))
+                        .executes(ctx -> Help.usage(ctx, g, "restore"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Restore.run(ctx, g))))
+                .then(Commands.literal("rs")
+                        .requires(s -> hasPerm(s, PermissionNode.RESTORE, g))
+                        .executes(ctx -> Help.usage(ctx, g, "restore"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Restore.run(ctx, g))))
+                // purge
+                .then(Commands.literal("purge")
+                        .requires(s -> hasPerm(s, PermissionNode.PURGE, g))
+                        .executes(ctx -> Help.usage(ctx, g, "purge"))
+                        .then(Commands.argument("filter", StringArgumentType.greedyString())
+                                .suggests(GuardianSuggestions.filterTokens())
+                                .executes(ctx -> Purge.run(ctx, g))))
+                // undo
+                .then(Commands.literal("undo")
+                        .requires(s -> hasPerm(s, PermissionNode.UNDO, g))
+                        .executes(ctx -> Undo.run(ctx, g)))
+                // near (CP parity: radius=5 t:1h, current player only)
+                .then(Commands.literal("near")
+                        .requires(s -> hasPerm(s, PermissionNode.NEAR, g))
+                        .executes(ctx -> Near.run(ctx, g)))
+                // consumer pause/resume/toggle
+                .then(Commands.literal("consumer")
+                        .requires(s -> hasPerm(s, PermissionNode.CONSUMER, g))
+                        .executes(ctx -> Consumer.status(ctx, g))
+                        .then(Commands.literal("pause").executes(ctx -> Consumer.pause(ctx, g)))
+                        .then(Commands.literal("resume").executes(ctx -> Consumer.resume(ctx, g)))
+                        .then(Commands.literal("toggle").executes(ctx -> Consumer.toggle(ctx, g))))
+                // status
+                .then(Commands.literal("status")
+                        .requires(s -> hasPerm(s, PermissionNode.STATUS, g))
+                        .executes(ctx -> Status.run(ctx, g)))
+                // reload
+                .then(Commands.literal("reload")
+                        .requires(s -> hasPerm(s, PermissionNode.RELOAD, g))
+                        .executes(ctx -> Reload.run(ctx, g)))
+                // config get/set (hot-swap-safe keys only)
+                .then(Commands.literal("config")
+                        .requires(s -> hasPerm(s, PermissionNode.CONFIG, g))
+                        .then(Commands.literal("get")
+                                .then(Commands.argument("key", StringArgumentType.word())
+                                        .executes(ctx -> Config.get(ctx, g))))
+                        .then(Commands.literal("set")
+                                .then(Commands.argument("key", StringArgumentType.word())
+                                        .then(Commands.argument("value", StringArgumentType.greedyString())
+                                                .executes(ctx -> Config.set(ctx, g))))))
+                // entitylog add|remove|list — manage the modded-entity griefing allowlist
+                .then(Commands.literal("entitylog")
+                        .requires(s -> hasPerm(s, PermissionNode.CONFIG, g))
+                        .executes(ctx -> EntityLog.list(ctx, g))
+                        .then(Commands.literal("list").executes(ctx -> EntityLog.list(ctx, g)))
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("entity", StringArgumentType.greedyString())
+                                        .executes(ctx -> EntityLog.add(ctx, g))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("entity", StringArgumentType.greedyString())
+                                        .executes(ctx -> EntityLog.remove(ctx, g)))))
+                // teleport <world> <x> [y] <z>  (CP parity /co teleport)
+                .then(Commands.literal("teleport")
+                        .requires(s -> hasPerm(s, PermissionNode.TELEPORT, g))
+                        .then(Commands.argument("world", StringArgumentType.word())
+                                .then(Commands.argument("coords", StringArgumentType.greedyString())
+                                        .executes(ctx -> Teleport.run(ctx, g)))))
+                .then(Commands.literal("tp")
+                        .requires(s -> hasPerm(s, PermissionNode.TELEPORT, g))
+                        .then(Commands.argument("world", StringArgumentType.word())
+                                .then(Commands.argument("coords", StringArgumentType.greedyString())
+                                        .executes(ctx -> Teleport.run(ctx, g)))))
+                // give <itemId> [amount]  (CP parity /co give)
+                .then(Commands.literal("give")
+                        .requires(s -> hasPerm(s, PermissionNode.GIVE, g))
+                        .then(Commands.argument("itemId", StringArgumentType.word())
+                                .executes(ctx -> Give.run(ctx, g, 1))
+                                .then(Commands.argument("amount", StringArgumentType.word())
+                                        .executes(ctx -> Give.runWithAmount(ctx, g)))))
+                // migrate-db <target-type> [CONFIRM] (console-only)
+                .then(Commands.literal("migrate-db")
+                        .requires(s -> hasPerm(s, PermissionNode.MIGRATE_DB, g))
+                        .then(Commands.argument("target", StringArgumentType.word())
+                                .executes(ctx -> MigrateDb.run(ctx, g, false))
+                                .then(Commands.argument("confirm", StringArgumentType.word())
+                                        .executes(ctx -> MigrateDb.run(ctx, g, true)))))
+                // help
+                .then(Commands.literal("help").executes(ctx -> Help.run(ctx, g)));
+
+        dispatcher.register(root);
+        // Aliases: /vg (CoreProtect muscle memory) and /guardian both redirect to the /vg tree.
+        dispatcher.register(Commands.literal("co").redirect(dispatcher.getRoot().getChild("vg")));
+        dispatcher.register(Commands.literal("guardian").redirect(dispatcher.getRoot().getChild("vg")));
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    private static boolean hasPerm(CommandSourceStack s, PermissionNode node, Guardian g) {
+        if (!(s.getEntity() instanceof ServerPlayer p)) {
+            int level = g.perms().perNodeOpLevel(node);
+            PermissionLevel pl = PermissionLevel.byId(Math.max(0, Math.min(4, level)));
+            return s.permissions().hasPermission(new Permission.HasCommandLevel(pl));
+        }
+        return g.perms().has(p.getUUID(), node);
+    }
+
+    private static void send(CommandSourceStack src, Component msg) {
+        try {
+            src.sendSuccess(() -> msg, false);
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "Failed to send chat", t);
+        }
+    }
+
+    /** Stops command admission and defers the callback until all command work terminates. */
+    public static boolean reset(Runnable afterWorkerTermination) {
+        return WORKER.reset(afterWorkerTermination);
+    }
+
+    private static boolean submitAsync(CommandSourceStack src, Guardian g, Runnable task) {
+        try {
+            WORKER.execute(task);
+            return true;
+        } catch (RejectedExecutionException rex) {
+            LOG.warn(Guardian.MARKER, "Command worker queue saturated; rejecting async command task", rex);
+            send(src, ChatRenderer.error(g.theme(),
+                    "[VonixGuardian] Command worker is saturated; retry shortly or reduce concurrent heavy commands."));
+            return false;
+        }
+    }
+
+    /**
+     * Deliver {@code msg} to the calling player if still online (looked up
+     * fresh by {@code actor} UUID inside {@code server.execute}); otherwise
+     * fall back to the (possibly stale) {@link CommandSourceStack} success
+     * channel. Introduced in v1.2.7 to fix async output landing on the server
+     * console instead of the player's chat — the {@link CommandSourceStack}
+     * captured at dispatch time can lose its entity binding by the time an
+     * async worker's {@code server.execute(...)} callback fires.
+     */
+    private static void sendToPlayerOrSrc(MinecraftServer server, CommandSourceStack src, UUID actor, Component msg) {
+        try {
+            ServerPlayer sp = actor == null || server == null
+                    ? null
+                    : server.getPlayerList().getPlayer(actor);
+            if (sp != null) {
+                sp.sendSystemMessage(msg);
+                return;
+            }
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "Failed to route to player", t);
+        }
+        send(src, msg);
+    }
+
+    private static QueryParser.QueryParseContext ctxOf(CommandSourceStack src) {
+        Vec3 v = src.getPosition();
+        if (v == null) return null;
+        return new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z, actorUuid(src));
+    }
+
+    private static String playerWorldOf(CommandSourceStack src) {
+        return src.getEntity() instanceof ServerPlayer p ? WorldKey.of(p.level()) : null;
+    }
+
+    private static int lookupDefaultPageSize(Guardian g) {
+        return Math.max(1, Math.min(50, g.config().lookup().defaultPageSize()));
+    }
+
+    private static UUID actorUuid(CommandSourceStack src) {
+        return src.getEntity() instanceof ServerPlayer p ? p.getUUID() : null;
+    }
+
+    private static RollbackOptions rollbackOptions(MinecraftServer server, CommandSourceStack src) {
+        return new RollbackOptions(
+                RollbackOptions.DEFAULT_PAGE_SIZE,
+                RollbackOptions.DEFAULT_MAX_SCANNED_ACTIONS,
+                RollbackOptions.DEFAULT_MAX_PLANNED_STEPS,
+                () -> Thread.currentThread().isInterrupted(),
+                progress -> {
+                    if (!shouldReportRollbackProgress(progress)) return;
+                    UUID progressActor = actorUuid(src);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, progressActor, ChatRenderer.muted(null,
+                            "[VonixGuardian] Rollback planning: scanned=" + progress.scannedActions()
+                                    + " planned=" + progress.plannedSteps()
+                                    + " skipped=" + progress.skippedActions())));
+                }
+        );
+    }
+
+    private static boolean shouldReportRollbackProgress(RollbackProgress progress) {
+        return progress.scanLimitReached() || progress.plannedLimitReached() || progress.cancelled()
+                || progress.pagesFetched() == 1 || progress.pagesFetched() % 10 == 0;
+    }
+
+    /**
+     * Returns a copy of {@code qf} with a default radius of {@code 10} centered
+     * on the caller, if the caller did not supply a numeric radius and did not
+     * supply an explicit world selector ({@code r:#world_*}/{@code #nether}/
+     * {@code #overworld}/{@code #end}) or WorldEdit selector ({@code r:#we}/
+     * {@code r:#worldedit}). Preserves {@code r:#global} (radius -1) and any
+     * numeric radius. Mirrors CoreProtect's {@code /vg rollback} /
+     * {@code /vg restore} defaults. No-op when the source has no position
+     * (console).
+     */
+    private static QueryFilter withDefaultRollbackRadius(QueryFilter qf, CommandSourceStack src) {
+        // Default r:10 only when the caller supplied neither a numeric radius
+        // (including r:#global => -1) nor an explicit world / WorldEdit selector.
+        // QueryParser leaves radius null for r:#world_*, #nether, #overworld,
+        // #end and for r:#we/#worldedit — those must not be narrowed to r:10.
+        if (qf.radius() != null || qf.worldSel() != null || qf.worldEditPlayer() != null) {
+            return qf;
+        }
+        Vec3 v = src.getPosition();
+        if (v == null) {
+            return qf;
+        }
+        return new QueryFilter(
+                qf.users(), qf.sinceMillis(), qf.untilMillis(),
+                DEFAULT_ROLLBACK_RADIUS,
+                qf.worldSel(),
+                qf.centerX() != null ? qf.centerX() : (int) v.x,
+                qf.centerY() != null ? qf.centerY() : (int) v.y,
+                qf.centerZ() != null ? qf.centerZ() : (int) v.z,
+                qf.actions(), qf.include(), qf.exclude(),
+                qf.rolledBack(), qf.countOnly(), qf.preview(), qf.verbose(), qf.silent(), qf.optimize(),
+                qf.worldEditPlayer(), qf.actionIds()
+        );
+    }
+
+    // ====================================================================== Inspect
+
+    /** {@code /vg inspect} (alias {@code /vg i}) — toggle inspection mode. */
+    public static final class Inspect {
+        private Inspect() {}
+
+        public static int toggle(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer p)) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg inspect must be run by a player."));
+                return 0;
+            }
+            boolean now = Inspector.toggle(p.getUUID());
+            if (now) {
+                send(src, ChatRenderer.success(g.theme(),
+                        "[VonixGuardian] Inspect mode ENABLED. Left-click a block to look it up."));
+            } else {
+                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] Inspect mode disabled."));
+            }
+            return 1;
+        }
+    }
+
+    // ====================================================================== Lookup
+
+    /** {@code /vg lookup <filter>} — supports CoreProtect-style pagination. */
+    public static final class Lookup {
+        private Lookup() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            String raw = StringArgumentType.getString(ctx, "filter");
+
+            // CP pagination: if the FIRST whitespace token is `<n>` or `<n>:<m>`
+            // treat it as page (and optional per-page) and strip it from the filter.
+            int page = 1;
+            int perPage = lookupDefaultPageSize(g);
+            String filter = raw;
+            String trimmed = raw == null ? "" : raw.trim();
+            if (!trimmed.isEmpty()) {
+                int sp = trimmed.indexOf(' ');
+                String first = sp < 0 ? trimmed : trimmed.substring(0, sp);
+                Matcher m = PAGE_TOKEN.matcher(first);
+                if (m.matches()) {
+                    try {
+                        page = Math.max(1, Integer.parseInt(m.group(1)));
+                        if (m.group(2) != null) {
+                            perPage = Math.max(1, Math.min(50, Integer.parseInt(m.group(2))));
+                        }
+                    } catch (NumberFormatException ignore) {
+                        // fall through with defaults
+                    }
+                    filter = sp < 0 ? "" : trimmed.substring(sp + 1);
+                }
+            }
+            return runWithFilter(src, g, filter, page, perPage);
+        }
+
+        /** Run a lookup at a specific block position (used by the inspector). */
+        public static void atPos(Guardian g, int x, int y, int z, String worldId, CommandSourceStack src) {
+            // Position-anchored inspector lookup. `p:x,y,z` pins the search
+            // center to the clicked block regardless of caller position,
+            // `r:2` widens the window to a 5x5x5 around the clicked block, and
+            // `r:#world_<key>` scopes the query to the block's world so
+            // cross-world coord collisions don't leak in.
+            String f = "p:" + x + "," + y + "," + z + " r:2 t:30d r:#world_" + worldId;
+            runWithFilter(src, g, f, 1, lookupDefaultPageSize(g));
+        }
+
+        /** Back-compat overload — kept for existing callers (inspector). */
+        public static int runWithFilter(CommandSourceStack src, Guardian g, String raw) {
+            return runWithFilter(src, g, raw, 1, lookupDefaultPageSize(g));
+        }
+
+        public static int runWithFilter(CommandSourceStack src, Guardian g, String raw, int page, int perPage) {
+            QueryFilter qf;
+            try {
+                qf = PARSER.parse(raw == null ? "" : raw, ctxOf(src));
+                qf = qf.withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
+            } catch (QueryParseException e) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                return 0;
+            }
+            MinecraftServer server = src.getServer();
+            final QueryFilter filter = qf;
+            final int pageF = page;
+            final int perPageF = perPage;
+            final String rawF = raw == null ? "" : raw;
+            final UUID viewer = actorUuid(src);
+            submitAsync(src, g, () -> {
+                try {
+                    if (filter.countOnly()) {
+                        long total = LookupPermissionFilter.countVisible(
+                                g.dao(), g.perms(), viewer, PermissionNode.LOOKUP, filter);
+                        server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Count: " + total)));
+                        return;
+                    }
+                    int pageActual = Math.max(1, pageF);
+                    LookupPermissionFilter.VisiblePage visiblePage = LookupPermissionFilter.visiblePage(
+                            g.dao(), g.perms(), viewer, PermissionNode.LOOKUP,
+                            filter, pageActual, perPageF, true);
+                    if (!visiblePage.complete()) {
+                        server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Lookup aborted: the permission-filtered page exceeded the 100000-row scan limit. Narrow the time, radius, or action filter and try again.")));
+                        return;
+                    }
+                    List<Action> rows = visiblePage.rows();
+                    long now = System.currentTimeMillis();
+                    List<Component> pageOut = LookupFormatter.page(
+                            g.theme(), rows, pageActual, perPageF, now, rawF, visiblePage.hasNext());
+                    server.execute(() -> {
+                        if (rows.isEmpty()) {
+                            sendToPlayerOrSrc(server, src, viewer, ChatRenderer.muted(g.theme(),
+                                    "[VonixGuardian] No results found. Try a wider radius (r:20+) or longer time (t:24h+), or check filter tokens."));
+                            return;
+                        }
+                        for (Component c : pageOut) {
+                            sendToPlayerOrSrc(server, src, viewer, c);
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Lookup failed", t);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Lookup error: " + t.getMessage())));
+                }
+            });
+            return 1;
+        }
+    }
+
+    // ====================================================================== Near
+
+    /** {@code /vg near} — quick lookup r:5 t:1h centered on the caller. */
+    public static final class Near {
+        private Near() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer)) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg near must be run by a player."));
+                return 0;
+            }
+            return Lookup.runWithFilter(src, g, "r:5 t:1h", 1, lookupDefaultPageSize(g));
+        }
+    }
+
+    // ====================================================================== Rollback
+
+    /** {@code /vg rollback <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
+    public static final class Rollback {
+        private Rollback() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g, boolean previewForced) {
+            CommandSourceStack src = ctx.getSource();
+            String raw = StringArgumentType.getString(ctx, "filter");
+            QueryFilter qf;
+            try {
+                qf = PARSER.parse(raw, ctxOf(src));
+                qf = withDefaultRollbackRadius(qf, src);
+                qf = qf.withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
+            } catch (QueryParseException e) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                return 0;
+            }
+            MinecraftServer server = src.getServer();
+            UUID actor = actorUuid(src);
+            final QueryFilter filter = qf;
+            final boolean preview = previewForced || filter.preview();
+            submitAsync(src, g, () -> {
+                try {
+                    RollbackOptions options = rollbackOptions(server, src);
+                    RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor, options);
+                    if (!result.preview()) {
+                        g.undoStack().push(actor != null ? actor
+                                : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    }
+                    server.execute(() -> {
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Rollback " + (preview ? "(preview) " : "")
+                                        + "affected=" + result.affectedCount()
+                                        + " planned=" + result.plannedSteps()));
+                        if (result.affectedCount() == 0) {
+                            sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
+                                    "[VonixGuardian] Rollback found 0 matching actions. Explosions record their blast CENTER — try r:20+ or move to the source of the damage."));
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Rollback failed", t);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Rollback error: " + t.getMessage())));
+                }
+            });
+            return 1;
+        }
+    }
+
+    // ====================================================================== Restore
+
+    /** {@code /vg restore <filter>} — default radius is {@value #DEFAULT_ROLLBACK_RADIUS} blocks when omitted. */
+    public static final class Restore {
+        private Restore() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            String raw = StringArgumentType.getString(ctx, "filter");
+            QueryFilter qf;
+            try {
+                qf = PARSER.parse(raw, ctxOf(src));
+                qf = withDefaultRollbackRadius(qf, src);
+                qf = qf.withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
+            } catch (QueryParseException e) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                return 0;
+            }
+            MinecraftServer server = src.getServer();
+            UUID actor = actorUuid(src);
+            final QueryFilter filter = qf;
+            submitAsync(src, g, () -> {
+                try {
+                    RollbackOptions options = rollbackOptions(server, src);
+                    RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
+                    if (!result.preview()) {
+                        g.undoStack().push(actor != null ? actor
+                                : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    }
+                    server.execute(() -> {
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Restore affected=" + result.affectedCount()
+                                        + " planned=" + result.plannedSteps()));
+                        if (result.affectedCount() == 0) {
+                            sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
+                                    "[VonixGuardian] Restore found 0 matching actions. Explosions record their blast CENTER — try r:20+ or move to the source of the damage."));
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Restore failed", t);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Restore error: " + t.getMessage())));
+                }
+            });
+            return 1;
+        }
+    }
+
+    // ====================================================================== Purge
+
+    /** {@code /vg purge <filter>} */
+    public static final class Purge {
+        private Purge() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            String raw = StringArgumentType.getString(ctx, "filter");
+            QueryFilter qf;
+            try {
+                qf = PARSER.parse(raw, ctxOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius())
+                    .withDefaultWorld(playerWorldOf(src));
+            } catch (QueryParseException e) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                return 0;
+            }
+            // CP-1:1 safety floor: console = 24h, in-game = 30d.
+            final boolean isConsole = !(src.getEntity() instanceof ServerPlayer);
+            final long minAgeSeconds = isConsole
+                    ? g.config().purge().minAgeSecondsConsole()
+                    : g.config().purge().minAgeSecondsInGame();
+            MinecraftServer server = src.getServer();
+            final QueryFilter filter = qf;
+            submitAsync(src, g, () -> {
+                try {
+                    var result = g.purgeEngine().purge(filter, minAgeSeconds);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actorUuid(src), ChatRenderer.warning(g.theme(),
+                            "[VonixGuardian] Purge removed " + result.deletedCount()
+                                    + " rows (minAge=" + minAgeSeconds + "s).")));
+                } catch (IllegalArgumentException tooRecent) {
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actorUuid(src), ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Purge refused: " + tooRecent.getMessage()
+                                    + " (CP-1:1 safety floor; use a larger t: window)")));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Purge failed", t);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actorUuid(src), ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Purge error: " + t.getMessage())));
+                }
+            });
+            return 1;
+        }
+    }
+
+    // ====================================================================== Undo
+
+    /** {@code /vg undo} — reverse the last rollback/restore by executing its inverse. */
+    public static final class Undo {
+        private Undo() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            UUID actor = actorUuid(src);
+            UUID key = actor != null ? actor
+                    : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY;
+            var popped = g.undoStack().pop(key);
+            if (popped.isEmpty()) {
+                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] Nothing to undo."));
+                return 0;
+            }
+            RollbackResult prev = popped.get();
+            if (prev.originalFilter() == null || prev.affectedIds().isEmpty()) {
+                // Legacy pre-v1.1.6 undo entry — no filter/id set captured, cannot revert world state.
+                LOG.info(Guardian.MARKER,
+                        "Undo: popped legacy/empty entry; {} affected id(s) dropped from history",
+                        prev.affectedCount());
+                send(src, ChatRenderer.warning(g.theme(),
+                        "[VonixGuardian] Undo: dropped " + prev.affectedCount()
+                                + " entries from history (legacy/empty entry — world state not reverted)."));
+                return 1;
+            }
+            MinecraftServer server = src.getServer();
+            final RollbackResult.Mode inverse = prev.inverseMode();
+            final QueryFilter exactFilter = idFilter(prev.originalFilter(), prev.affectedIds());
+            // Undo replays the inverse against the exact action ids from the popped
+            // operation. Reusing the broad original filter would catch later rows
+            // that match the same criteria but were not part of the operation.
+            submitAsync(src, g, () -> {
+                try {
+                    var plan = g.rollbackEngine().plan(exactFilter, inverse, actor);
+                    RollbackResult result = g.rollbackEngine().execute(plan, false);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Undo (" + inverse + ") affected="
+                                    + result.affectedCount()
+                                    + " planned=" + result.plannedSteps())));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Undo failed", t);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Undo error: " + t.getMessage())));
+                }
+            });
+            return 1;
+        }
+    }
+
+    private static QueryFilter idFilter(QueryFilter base, List<Long> ids) {
+        return new QueryFilter(
+                base.users(), base.sinceMillis(), base.untilMillis(),
+                base.radius(), base.worldSel(),
+                base.centerX(), base.centerY(), base.centerZ(),
+                base.actions(), base.include(), base.exclude(),
+                base.rolledBack(), base.countOnly(), base.preview(), base.verbose(), base.silent(), base.optimize(),
+                base.worldEditPlayer(), new java.util.LinkedHashSet<>(ids)
+        );
+    }
+
+    // ====================================================================== Consumer
+
+    /** {@code /vg consumer [pause|resume|toggle]} — manage the writer queue. */
+    public static final class Consumer {
+        private Consumer() {}
+
+        public static int status(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            send(ctx.getSource(), ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] Consumer is currently "
+                            + (g.queue().isPaused() ? "PAUSED" : "RUNNING")
+                            + " (queue.depth=" + g.queue().depth() + ")"));
+            return 1;
+        }
+
+        public static int pause(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            g.queue().setPaused(true);
+            send(ctx.getSource(), ChatRenderer.warning(g.theme(),
+                    "[VonixGuardian] Consumer PAUSED — incoming events are buffered, not written."));
+            return 1;
+        }
+
+        public static int resume(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            g.queue().setPaused(false);
+            send(ctx.getSource(), ChatRenderer.success(g.theme(),
+                    "[VonixGuardian] Consumer RESUMED — draining buffered events."));
+            return 1;
+        }
+
+        public static int toggle(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            boolean now = !g.queue().isPaused();
+            g.queue().setPaused(now);
+            if (now) {
+                send(ctx.getSource(), ChatRenderer.warning(g.theme(),
+                        "[VonixGuardian] Consumer PAUSED."));
+            } else {
+                send(ctx.getSource(), ChatRenderer.success(g.theme(),
+                        "[VonixGuardian] Consumer RESUMED."));
+            }
+            return 1;
+        }
+    }
+
+    // ====================================================================== Status
+
+    /** {@code /vg status} — queue + submission counters. */
+    public static final class Status {
+        private Status() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            MinecraftServer server = src.getServer();
+            UUID actor = actorUuid(src);
+            // v1.1.7: full CoreProtect-parity /vg status — multi-line, on-demand.
+            // Section headers begin with "§ " and render as bold+aqua; body lines as primary.
+            // v1.2.7: force per-player delivery — src.sendSuccess() logs to server
+            // console when the CommandSourceStack's entity binding is stale.
+            for (String line : network.vonix.guardian.core.diagnostics.GuardianStatus.render(g)) {
+                if (line.startsWith("§ ")) {
+                    sendToPlayerOrSrc(server, src, actor,
+                            ChatRenderer.section(g.theme(), "[VonixGuardian] " + line.substring(2)));
+                } else {
+                    sendToPlayerOrSrc(server, src, actor,
+                            ChatRenderer.primary(g.theme(), line));
+                }
+            }
+            return 1;
+        }
+    }
+
+    // ====================================================================== Reload
+
+    /** {@code /vg reload} — placeholder. */
+    public static final class Reload {
+        private Reload() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            // v1.3.7 EE1 (round-8 P1): route the actual reload off the server thread.
+            // reloadConfig now enters CONFIG_MUTATION_LOCK; a WORKER-thread /vg config
+            // set already holding the monitor across ConfigLoader.save (unbounded disk
+            // IO on slow/NFS storage) would otherwise stall the server tick. Result
+            // reporting hops back to the server thread so chat rendering (which
+            // touches Level/theme state) stays single-threaded.
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            send(src, ChatRenderer.muted(g.theme(),
+                    "[VonixGuardian] Reloading configuration..."));
+            submitAsync(src, g, () -> {
+                try {
+                    Guardian.ReloadResult r = g.reloadConfig(g.configPath());
+                    if (server == null) return;
+                    server.execute(() -> {
+                        String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
+                        String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
+                        String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
+                        send(src, ChatRenderer.primary(g.theme(),
+                                "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
+                        send(src, ChatRenderer.warning(g.theme(),
+                                "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
+                        if (r.errors().isEmpty()) {
+                            send(src, ChatRenderer.muted(g.theme(),
+                                    "[VonixGuardian] Errors: 0 (none)"));
+                        } else {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Errors: " + r.errors().size() + " " + err));
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "/vg reload failed off-thread", t);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Reload failed: " + t.getMessage())));
+                    }
+                }
+            });
+            return 1;
+        }
+    }
+
+
+    // ====================================================================== Config
+
+    /** {@code /vg config get|set} — hot-swap-safe config keys. */
+    public static final class Config {
+        private Config() {}
+
+        public static int get(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            String key = StringArgumentType.getString(ctx, "key");
+            String value = readValue(g.config(), key);
+            if (value == null) {
+                send(ctx.getSource(), ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown or read-only config key: " + key));
+                return 0;
+            }
+            send(ctx.getSource(), ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] " + key + " = " + value));
+            return 1;
+        }
+
+        public static int set(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            String key = StringArgumentType.getString(ctx, "key");
+            String value = StringArgumentType.getString(ctx, "value").trim();
+            java.nio.file.Path path = g.configPath();
+            if (path == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Cannot persist config: no config path is known."));
+                return 0;
+            }
+            final GuardianConfig next;
+            try {
+                next = withValue(g.config(), key, value);
+            } catch (IllegalArgumentException e) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] " + e.getMessage()));
+                return 0;
+            }
+            if (next == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown or read-only config key: " + key));
+                return 0;
+            }
+            // v1.3.6 CC2 (P1-6): route the blocking IO (ConfigLoader.save writes
+            // the on-disk YAML; reloadConfig re-parses it and rebuilds config-
+            // derived state) onto the shared WORKER pool. Pre-1.3.6 this ran on
+            // the server tick — a slow disk (spinning rust, NFS, encrypted-swap
+            // host, or another mod holding a filesystem lock) would freeze the
+            // tick until the write returned. All result reporting hops back to
+            // the server thread via server.execute so the theme/chat pipeline
+            // stays single-threaded (theme resolution touches Level state).
+            final java.nio.file.Path finalPath = path;
+            final String finalKey = key;
+            final String finalValue = value;
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            submitAsync(src, g, () -> {
+                try {
+                    // v1.3.7 DD1 (round-7 P1): serialize the whole read-build-save-reload
+                    // sequence under Guardian.CONFIG_MUTATION_LOCK so concurrent /vg config
+                    // set calls on the WORKER pool (size 2) can't clobber each other's
+                    // full-file save with a stale finalNext computed from an older snapshot.
+                    // We must ALSO re-read + re-build under the lock, so recompute merged
+                    // from the current live config rather than trusting the captured next.
+                    Guardian.ReloadResult r;
+                    synchronized (Guardian.CONFIG_MUTATION_LOCK) {
+                        GuardianConfig freshNext = withValue(g.config(), finalKey, finalValue);
+                        if (freshNext == null) {
+                            if (server != null) {
+                                server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                        "[VonixGuardian] Config key vanished under concurrent update: " + finalKey)));
+                            }
+                            return;
+                        }
+                        freshNext.validate();
+                        ConfigLoader.save(finalPath, freshNext);
+                        r = g.reloadConfigUnlocked(finalPath);
+                    }
+                    if (server == null) return;
+                    server.execute(() -> {
+                        if (!r.errors().isEmpty()) {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Config saved but reload failed: " + String.join(", ", r.errors())));
+                            return;
+                        }
+                        send(src, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] Updated " + finalKey + " = " + readValue(g.config(), finalKey)
+                                        + " (hot-swapped: " + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
+                    });
+                } catch (Exception e) {
+                    LOG.warn(Guardian.MARKER, "Config set failed", e);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Config update failed: " + e.getMessage())));
+                    }
+                }
+            });
+            return 1;
+        }
+
+        private static String readValue(GuardianConfig c, String key) {
+            return switch (key) {
+                case "theme" -> c.theme();
+                case "logFile.enabled" -> Boolean.toString(c.logFile().enabled());
+                case "lookup.defaultPageSize" -> Integer.toString(c.lookup().defaultPageSize());
+                case "lookup.maxRadius" -> Integer.toString(c.lookup().maxRadius());
+                case "lookup.maxResultRows" -> Integer.toString(c.lookup().maxResultRows());
+                case "privacy.hashIps" -> Boolean.toString(c.privacy().hashIps());
+                case "purge.minAgeSecondsConsole" -> Long.toString(c.purge().minAgeSecondsConsole());
+                case "purge.minAgeSecondsInGame" -> Long.toString(c.purge().minAgeSecondsInGame());
+                case "purge.autoPurgeSeconds" -> Long.toString(c.purge().autoPurgeSeconds());
+                case "purge.autoPurgeTime" -> c.purge().autoPurgeTime();
+                case "actions.logBlocks" -> Boolean.toString(c.actions().logBlocks());
+                case "actions.logContainers" -> Boolean.toString(c.actions().logContainers());
+                case "actions.logItems" -> Boolean.toString(c.actions().logItems());
+                case "actions.logEntities" -> Boolean.toString(c.actions().logEntities());
+                case "actions.logExplosions" -> Boolean.toString(c.actions().logExplosions());
+                case "actions.logChat" -> Boolean.toString(c.actions().logChat());
+                case "actions.logCommands" -> Boolean.toString(c.actions().logCommands());
+                case "actions.logSessions" -> Boolean.toString(c.actions().logSessions());
+                case "actions.logSigns" -> Boolean.toString(c.actions().logSigns());
+                case "actions.logInteractions" -> Boolean.toString(c.actions().logInteractions());
+                case "actions.logWorldEvents" -> Boolean.toString(c.actions().logWorldEvents());
+                case "actions.entityBlockChangeCoalesceWindowMs" -> Long.toString(c.actions().entityBlockChangeCoalesceWindowMs());
+                case "actions.entityBlockChangeMaxTracked" -> Integer.toString(c.actions().entityBlockChangeMaxTracked());
+                case "actions.entityChangeLogAllEntities" -> Boolean.toString(c.actions().entityChangeLogAllEntities());
+                case "actions.mixinHotEvents" -> Boolean.toString(c.actions().mixinHotEvents());
+                case "storage.persistNbt" -> Boolean.toString(c.storage().persistNbt());
+                case "rollback.explosionSupplementalReach" -> Integer.toString(c.rollback().explosionSupplementalReach());
+                case "language" -> c.language();
+                default -> null;
+            };
+        }
+
+        private static GuardianConfig withValue(GuardianConfig c, String key, String value) {
+            GuardianConfig.Actions a = c.actions();
+            GuardianConfig.LogFile lf = c.logFile();
+            GuardianConfig.Lookup l = c.lookup();
+            GuardianConfig.Privacy pr = c.privacy();
+            GuardianConfig.Purge pu = c.purge();
+            return switch (key) {
+                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), value, c.language());
+                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays(), lf.forceSyncOnFlush()), a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
+                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.storage(), c.rollback(), c.theme(), c.language());
+                case "actions.logBlocks" -> withActions(c, new GuardianConfig.Actions(parseBool(value, key), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logContainers" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), parseBool(value, key), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logItems" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), parseBool(value, key), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), parseBool(value, key), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logExplosions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), parseBool(value, key), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logChat" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), parseBool(value, key), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logCommands" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), parseBool(value, key), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logSessions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), parseBool(value, key), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logSigns" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), parseBool(value, key), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logInteractions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), parseBool(value, key), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.logWorldEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), parseBool(value, key), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.entityBlockChangeCoalesceWindowMs" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), parseLong(value, key), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
+                case "actions.mixinHotEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), parseBool(value, key)));
+                case "storage.persistNbt" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, new GuardianConfig.Storage(parseBool(value, key)), c.rollback(), c.theme(), c.language());
+                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key)), c.theme(), c.language());
+                case "language" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), value);
+                default -> null;
+            };
+        }
+
+        private static GuardianConfig withActions(GuardianConfig c, GuardianConfig.Actions a) {
+            return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.storage(), c.rollback(), c.theme(), c.language());
+        }
+
+        private static boolean parseBool(String value, String key) {
+            if ("true".equalsIgnoreCase(value)) return true;
+            if ("false".equalsIgnoreCase(value)) return false;
+            throw new IllegalArgumentException(key + " must be true or false");
+        }
+
+        private static int parseInt(String value, String key) {
+            try { return Integer.parseInt(value); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
+        }
+
+        private static long parseLong(String value, String key) {
+            try { return Long.parseLong(value); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
+        }
+    }
+
+    // ====================================================================== EntityLog
+
+    /**
+     * {@code /vg entitylog add|remove|list} — manage the modded-entity griefing
+     * allowlist ({@code actions.entityChangeAllowlist}).
+     *
+     * <p>On Forge/NeoForge, {@code LivingDestroyBlockEvent} is only a prospective
+     * permission check that fires at extreme rates on modded packs, so
+     * {@link network.vonix.guardian.core.filter.VanillaGrieferSet} fails closed by
+     * default. This command is how an operator opts a modded creature (or a whole
+     * mod namespace via {@code isleofberk:*}) back into audit + rollback without
+     * globally flipping {@code entityChangeLogAllEntities} (which re-opens the
+     * flood). The prospective-event storm is absorbed downstream by the
+     * {@code EntityBlockChangeCoalescer}.</p>
+     *
+     * <p>Mutations reuse the same serialised save+reload path as {@code /vg config
+     * set}: recompute from the live config under {@link Guardian#CONFIG_MUTATION_LOCK}
+     * on the shared bounded WORKER pool, {@link ConfigLoader#save}, then
+     * {@link Guardian#reloadConfigUnlocked}. Result reporting hops back to the
+     * server thread so chat rendering stays single-threaded.</p>
+     */
+    public static final class EntityLog {
+        private EntityLog() {}
+
+        public static int list(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            List<String> allow = EntityLogAllowlistEditor.currentOrEmpty(
+                    g.config().actions().entityChangeAllowlist());
+            boolean all = g.config().actions().entityChangeLogAllEntities();
+            if (all) {
+                send(src, ChatRenderer.primary(g.theme(),
+                        "[VonixGuardian] entityChangeLogAllEntities=true — ALL entities are logged "
+                                + "(allowlist ignored). This can flood on modded packs."));
+            }
+            if (allow.isEmpty()) {
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] Entity allowlist is empty. "
+                                + "Use /vg entitylog add <ns:path|ns:*|ns> to whitelist modded griefers."));
+                return 1;
+            }
+            send(src, ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] Entity allowlist (" + allow.size() + "):"));
+            for (String e : allow) {
+                send(src, ChatRenderer.muted(g.theme(), "  - " + e));
+            }
+            return 1;
+        }
+
+        public static int add(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            return mutate(ctx, g, true);
+        }
+
+        public static int remove(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            return mutate(ctx, g, false);
+        }
+
+        private static int mutate(CommandContext<CommandSourceStack> ctx, Guardian g, boolean adding) {
+            CommandSourceStack src = ctx.getSource();
+            String raw = StringArgumentType.getString(ctx, "entity").trim();
+            java.nio.file.Path path = g.configPath();
+            if (path == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Cannot persist config: no config path is known."));
+                return 0;
+            }
+            // Fail fast on malformed input before touching the WORKER pool / disk.
+            EntityLogAllowlistEditor.Result preview = adding
+                    ? EntityLogAllowlistEditor.add(g.config().actions().entityChangeAllowlist(), raw)
+                    : EntityLogAllowlistEditor.remove(g.config().actions().entityChangeAllowlist(), raw);
+            if (!preview.changed()) {
+                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] " + preview.message()));
+                return 1;
+            }
+            final java.nio.file.Path finalPath = path;
+            final String finalRaw = raw;
+            final boolean finalAdding = adding;
+            final net.minecraft.server.MinecraftServer server = src.getServer();
+            submitAsync(src, g, () -> {
+                try {
+                    // Recompute under the lock from the CURRENT live config so two
+                    // concurrent entitylog/config-set edits can't clobber each other.
+                    Guardian.ReloadResult r;
+                    String msg;
+                    synchronized (Guardian.CONFIG_MUTATION_LOCK) {
+                        GuardianConfig live = g.config();
+                        EntityLogAllowlistEditor.Result res = finalAdding
+                                ? EntityLogAllowlistEditor.add(live.actions().entityChangeAllowlist(), finalRaw)
+                                : EntityLogAllowlistEditor.remove(live.actions().entityChangeAllowlist(), finalRaw);
+                        msg = res.message();
+                        if (!res.changed()) {
+                            if (server != null) {
+                                server.execute(() -> send(src, ChatRenderer.muted(g.theme(),
+                                        "[VonixGuardian] " + res.message())));
+                            }
+                            return;
+                        }
+                        GuardianConfig next = withAllowlist(live, res.allowlist());
+                        next.validate();
+                        ConfigLoader.save(finalPath, next);
+                        r = g.reloadConfigUnlocked(finalPath);
+                    }
+                    if (server == null) return;
+                    final String finalMsg = msg;
+                    server.execute(() -> {
+                        if (!r.errors().isEmpty()) {
+                            send(src, ChatRenderer.error(g.theme(),
+                                    "[VonixGuardian] Allowlist saved but reload failed: "
+                                            + String.join(", ", r.errors())));
+                            return;
+                        }
+                        send(src, ChatRenderer.success(g.theme(),
+                                "[VonixGuardian] " + finalMsg + " (hot-swapped: "
+                                        + (r.hotSwapped().isEmpty() ? "none" : String.join(", ", r.hotSwapped())) + ")"));
+                    });
+                } catch (Exception e) {
+                    LOG.warn(Guardian.MARKER, "entitylog mutate failed", e);
+                    if (server != null) {
+                        server.execute(() -> send(src, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] entitylog update failed: " + e.getMessage())));
+                    }
+                }
+            });
+            return 1;
+        }
+
+        private static GuardianConfig withAllowlist(GuardianConfig c, List<String> allow) {
+            return new GuardianConfig(c.database(), c.queue(), c.logFile(),
+                    c.actions().withEntityChangeAllowlist(allow),
+                    c.permissions(), c.lookup(), c.privacy(), c.purge(),
+                    c.storage(), c.rollback(), c.theme(), c.language());
+        }
+    }
+
+    // ====================================================================== Teleport
+
+    /** {@code /vg teleport <world> <x> [y] <z>} (alias {@code /vg tp}) — CoreProtect-parity admin teleport. */
+    public static final class Teleport {
+        private Teleport() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer p)) {
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] /vg teleport must be run by a player."));
+                return 0;
+            }
+            String worldArg = StringArgumentType.getString(ctx, "world");
+            String coords = StringArgumentType.getString(ctx, "coords").trim();
+            String[] parts = coords.split("\\s+");
+            if (parts.length < 2 || parts.length > 3) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Usage: /vg teleport <world> <x> [y] <z>"));
+                return 0;
+            }
+            ServerLevel level = resolveLevel(src.getServer(), worldArg);
+            if (level == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown world: " + worldArg));
+                return 0;
+            }
+            Double x, y, z;
+            try {
+                x = Double.parseDouble(parts[0].replaceAll("[^0-9.\\-]", ""));
+                if (parts.length == 3) {
+                    y = Double.parseDouble(parts[1].replaceAll("[^0-9.\\-]", ""));
+                    z = Double.parseDouble(parts[2].replaceAll("[^0-9.\\-]", ""));
+                } else {
+                    z = Double.parseDouble(parts[1].replaceAll("[^0-9.\\-]", ""));
+                    double curY = p.getY();
+                    if (curY > 63) curY = 63;
+                    y = curY;
+                }
+            } catch (NumberFormatException e) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Invalid coordinates: " + coords));
+                return 0;
+            }
+            final double fx = x, fy = y, fz = z;
+            final ServerLevel fl = level;
+            src.getServer().execute(() -> {
+                try {
+                    p.teleportTo(fl, fx, fy, fz, java.util.Collections.emptySet(), p.getYRot(), p.getXRot(), false);
+                    send(src, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Teleported to " + worldArg + " " + fx + " " + fy + " " + fz));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Teleport failed", t);
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Teleport failed: " + t.getMessage()));
+                }
+            });
+            return 1;
+        }
+
+        private static ServerLevel resolveLevel(MinecraftServer server, String arg) {
+            if (server == null || arg == null) return null;
+            String key = arg;
+            if (!key.contains(":")) {
+                // Accept plain "nether"/"overworld"/"end" shortcuts.
+                switch (key) {
+                    case "overworld": key = "minecraft:overworld"; break;
+                    case "nether":    key = "minecraft:the_nether"; break;
+                    case "end":       key = "minecraft:the_end"; break;
+                    default:          key = "minecraft:" + key;
+                }
+            }
+            Identifier rl = Identifier.tryParse(key);
+            if (rl == null) return null;
+            ResourceKey<Level> key0 = ResourceKey.create(Registries.DIMENSION, rl);
+            return server.getLevel(key0);
+        }
+    }
+
+    // ====================================================================== Give
+
+    /** {@code /vg give <itemId> [amount]} — CoreProtect-parity give command. */
+    public static final class Give {
+        private Give() {}
+
+        public static int runWithAmount(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            int amount = 1;
+            try { amount = Math.max(1, Integer.parseInt(StringArgumentType.getString(ctx, "amount"))); }
+            catch (Exception ignore) {}
+            return run(ctx, g, amount);
+        }
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g, int amount) {
+            CommandSourceStack src = ctx.getSource();
+            if (!(src.getEntity() instanceof ServerPlayer p)) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] /vg give must be run by a player."));
+                return 0;
+            }
+            String itemArg = StringArgumentType.getString(ctx, "itemId");
+            String id = itemArg.contains(":") ? itemArg : "minecraft:" + itemArg;
+            Identifier rl = Identifier.tryParse(id);
+            if (rl == null) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Invalid item id: " + itemArg));
+                return 0;
+            }
+            Item item = BuiltInRegistries.ITEM.getValue(rl);
+            if (item == null || item == net.minecraft.world.item.Items.AIR) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] Unknown item: " + id));
+                return 0;
+            }
+            final int qty = Math.max(1, amount);
+            src.getServer().execute(() -> {
+                try {
+                    ItemStack stack = new ItemStack(item, qty);
+                    boolean ok = p.getInventory().add(stack);
+                    if (!ok || !stack.isEmpty()) {
+                        p.drop(stack, false);
+                    }
+                    send(src, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Gave " + qty + "x " + id));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Give failed", t);
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Give failed: " + t.getMessage()));
+                }
+            });
+            return 1;
+        }
+    }
+
+    // ====================================================================== MigrateDb
+
+    /** {@code /vg migrate-db <target-type> [CONFIRM]} — console-only backend copy. */
+    public static final class MigrateDb {
+        private MigrateDb() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g, boolean withConfirmArg) {
+            CommandSourceStack src = ctx.getSource();
+            // Console-only, matching CoreProtect Patreon's /co migrate-db.
+            if (src.getEntity() instanceof ServerPlayer) {
+                send(src, ChatRenderer.error(g.theme(),
+                        "[VonixGuardian] migrate-db is console-only."));
+                return 0;
+            }
+            String target = StringArgumentType.getString(ctx, "target");
+            final boolean confirmed;
+            if (withConfirmArg) {
+                String confirm = StringArgumentType.getString(ctx, "confirm");
+                confirmed = MigrateDbCommand.CONFIRM_TOKEN.equals(confirm);
+                if (!confirmed) {
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] migrate-db: second argument must be '"
+                                    + MigrateDbCommand.CONFIRM_TOKEN + "' to proceed."));
+                    return 0;
+                }
+            } else {
+                confirmed = false;
+            }
+            MinecraftServer server = src.getServer();
+            final UUID actor = actorUuid(src);
+            submitAsync(src, g, () -> MigrateDbCommand.run(g, target, confirmed, line ->
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(), line)))));
+            return 1;
+        }
+    }
+
+    // ====================================================================== Help
+
+    /** {@code /vg help} — CoreProtect-style command summary. */
+    public static final class Help {
+        private Help() {}
+
+        /**
+         * Compact 3-4 line usage hint for a specific subcommand. Called from
+         * bare-literal {@code .executes(...)} handlers so we never render
+         * Brigadier's cryptic {@code Unknown or incomplete command ...
+         * <--[HERE]}. Matches CoreProtect UX.
+         *
+         * @param name usage key: "root", "lookup", "rollback", "restore", "purge"
+         * @since 1.2.7
+         */
+        public static int usage(CommandContext<CommandSourceStack> ctx, Guardian g, String name) {
+            CommandSourceStack src = ctx.getSource();
+            switch (name) {
+                case "lookup":
+                    send(src, ChatRenderer.primary(g.theme(),
+                            "[VonixGuardian] /vg lookup [page[:perPage]] <filter>"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Examples:  /vg lookup r:10 t:2h  |  /vg lookup u:Pargon a:-block  |  /vg lookup #count r:20"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Tokens:    u: user  t: time  r: radius  a: action  i: include  e: exclude   #preview #count"));
+                    break;
+                case "rollback":
+                    send(src, ChatRenderer.primary(g.theme(),
+                            "[VonixGuardian] /vg rollback <filter>   (alias: /vg rb)"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Examples:  /vg rollback r:10 t:2m  |  /vg rollback u:Griefer t:1h  |  /vg rollback #preview r:20 t:5m"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Tip: default radius is 10 if r: omitted. Explosions record their blast CENTER — widen r: to cover splash."));
+                    break;
+                case "restore":
+                    send(src, ChatRenderer.primary(g.theme(),
+                            "[VonixGuardian] /vg restore <filter>    (alias: /vg rs)"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Examples:  /vg restore r:10 t:2m  |  /vg restore u:Pargon t:1h"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Tip: default radius is 10 if r: omitted. Redoes rows previously rolled back."));
+                    break;
+                case "purge":
+                    send(src, ChatRenderer.primary(g.theme(),
+                            "[VonixGuardian] /vg purge <filter>"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Examples:  /vg purge t:30d  |  /vg purge t:60d a:block"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  Note: t: means retention — rows OLDER than t: are deleted. Console safety floor: 24h; in-game: 30d."));
+                    break;
+                case "root":
+                default:
+                    send(src, ChatRenderer.primary(g.theme(),
+                            "[VonixGuardian] Available commands (see /vg help for full list):"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  /vg lookup <filter>   /vg rollback <filter>   /vg restore <filter>   /vg purge <filter>"));
+                    send(src, ChatRenderer.muted(g.theme(),
+                            "  /vg inspect   /vg near   /vg status   /vg undo   /vg consumer pause|resume   /vg help"));
+                    break;
+            }
+            return 1;
+        }
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            send(src, ChatRenderer.primary(g.theme(),
+                    "[VonixGuardian] CoreProtect-style commands (aliases: /co, /guardian):"));
+            String[] lines = {
+                    "/vg inspect            (alias: /vg i)  — toggle inspect mode",
+                    "/vg lookup <filter>    (alias: /vg l)  — search audit log; <page>[:<perPage>] before filter",
+                    "/vg rollback <filter>  (alias: /vg rb) — undo logged actions (default radius 10)",
+                    "/vg restore <filter>   (alias: /vg rs) — redo rolled-back actions (default radius 10)",
+                    "/vg purge <filter>                       — delete log rows",
+                    "/vg near                                — quick lookup r:5 t:1h around you",
+                    "/vg undo                                — drop last rollback from history",
+                    "/vg consumer pause|resume|toggle        — pause the writer queue",
+                    "/vg status                              — queue / submission counters",
+                    "/vg reload                              — re-read config.json + hot-swap safe knobs",
+                    "/vg config get <key>                 — show a hot-swap-safe config value",
+                    "/vg config set <key> <value>         — persist + hot-swap a safe config value",
+                    "/vg migrate-db <sqlite|mysql|postgresql> CONFIRM  — console-only backend copy",
+                    "",
+                    "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
+                    "               a:[+/-]<action>       i:<id>    e:<id>",
+                    "Hash flags:    #preview  #count  #verbose  #silent  #optimize",
+                    "User sentinels: #fire #tnt #creeper #explosion #water #lava #mob",
+                    "Actions: block container inventory item kill session login chat command click sign username",
+            };
+            for (String l : lines) {
+                send(src, ChatRenderer.muted(g.theme(), "  " + l));
+            }
+            return 1;
+        }
+    }
+}

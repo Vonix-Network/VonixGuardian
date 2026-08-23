@@ -43,7 +43,11 @@ class QuarantineStore {
 
     static final int MAX_ENTRIES = 100_000;
     static final long MAX_JOURNAL_BYTES = 256L * 1024L * 1024L;
-    private static final int MAGIC = 0x56475131;
+    /** Pre-v6 journal frames (no pairId). */
+    private static final int MAGIC_V1 = 0x56475131;
+    /** Current journal frames: trailing optional pairId long after NBT bytes. */
+    private static final int MAGIC_V2 = 0x56475132;
+    private static final int MAGIC = MAGIC_V2;
     private static final byte ADD = 1;
     private static final byte ACK = 2;
     /** Durable marker: recovery sink flush succeeded; only journal ACK remains. */
@@ -191,11 +195,11 @@ class QuarantineStore {
             while (raw.available() > 0) {
                 long before = raw.available();
                 int magic = in.readInt();
-                if (magic != MAGIC) break;
+                if (magic != MAGIC_V1 && magic != MAGIC_V2) break;
                 byte operation = in.readByte();
                 long sequence = in.readLong();
                 if (operation == ADD) {
-                    Action action = readAction(in);
+                    Action action = readAction(in, magic == MAGIC_V2);
                     active.put(sequence, new Entry(sequence, action, false));
                     if (active.size() > maxEntries) {
                         throw new IOException("quarantine entry cap exceeded");
@@ -383,9 +387,10 @@ class QuarantineStore {
         writeBytes(out, a.blockEntityNbt());
         writeBytes(out, a.itemNbt());
         writeBytes(out, a.entityNbt());
+        out.writeLong(a.pairId() == null ? 0L : a.pairId());
     }
 
-    private static Action readAction(DataInputStream in) throws IOException {
+    private static Action readAction(DataInputStream in, boolean withPairId) throws IOException {
         long id = in.readLong();
         long timestamp = in.readLong();
         ActionType type = ActionType.byId(in.readInt());
@@ -406,10 +411,15 @@ class QuarantineStore {
         byte[] blockEntityNbt = readBytes(in);
         byte[] itemNbt = readBytes(in);
         byte[] entityNbt = readBytes(in);
+        Long pairId = null;
+        if (withPairId) {
+            long raw = in.readLong();
+            pairId = raw == 0L ? null : raw;
+        }
         return new Action(id, timestamp, type, actorUuid, actorName, worldId,
                 x, y, z, targetId, targetMeta, amount, rolledBack, sourceTag,
                 signSide, signDyeColor, signWaxed, oldBlockState, newBlockState,
-                blockEntityNbt, itemNbt, entityNbt);
+                blockEntityNbt, itemNbt, entityNbt, pairId);
     }
 
     private static void writeUuid(DataOutputStream out, UUID value) throws IOException {

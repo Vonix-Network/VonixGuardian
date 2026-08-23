@@ -450,18 +450,17 @@ public final class GuardianCommands {
             final UUID viewer = actorUuid(src);
             submitAsync(src, g, () -> {
                 try {
-                    long total = LookupPermissionFilter.countVisible(
-                            g.dao(), g.perms(), viewer, PermissionNode.LOOKUP, filter);
                     if (filter.countOnly()) {
+                        long total = LookupPermissionFilter.countVisible(
+                                g.dao(), g.perms(), viewer, PermissionNode.LOOKUP, filter);
                         server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.success(g.theme(),
                                 "[VonixGuardian] Count: " + total)));
                         return;
                     }
-                    int pages = (int) Math.max(1L, (total + perPageF - 1) / Math.max(1, perPageF));
-                    int pageActual = Math.min(Math.max(1, pageF), pages);
+                    int pageActual = Math.max(1, pageF);
                     LookupPermissionFilter.VisiblePage visiblePage = LookupPermissionFilter.visiblePage(
                             g.dao(), g.perms(), viewer, PermissionNode.LOOKUP,
-                            filter, pageActual, perPageF);
+                            filter, pageActual, perPageF, true);
                     if (!visiblePage.complete()) {
                         server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.error(g.theme(),
                                 "[VonixGuardian] Lookup aborted: the permission-filtered page exceeded the 100000-row scan limit. Narrow the time, radius, or action filter and try again.")));
@@ -469,10 +468,10 @@ public final class GuardianCommands {
                     }
                     List<Action> rows = visiblePage.rows();
                     long now = System.currentTimeMillis();
-                    List<Component> pageOut = LookupFormatter.page(g.theme(), rows, total, pageActual, perPageF, now, rawF);
-                    final long totalF = total;
+                    List<Component> pageOut = LookupFormatter.page(
+                            g.theme(), rows, pageActual, perPageF, now, rawF, visiblePage.hasNext());
                     server.execute(() -> {
-                        if (totalF == 0) {
+                        if (rows.isEmpty()) {
                             sendToPlayerOrSrc(server, src, viewer, ChatRenderer.muted(g.theme(),
                                     "[VonixGuardian] No results found. Try a wider radius (r:20+) or longer time (t:24h+), or check filter tokens."));
                             return;

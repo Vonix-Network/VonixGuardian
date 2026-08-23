@@ -52,12 +52,19 @@ import java.util.List;
  *       upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V5NbtFidelity}.
  *       Added v1.3.1 X1.</li>
+ *   <li><b>v6</b> — additive nullable {@code pair_id BIGINT} on
+ *       {@code vg_actions} plus {@code vg_actions_pair} index. Carries the
+ *       fire/break pairing token previously held only in ephemeral
+ *       {@code FireCauserMemory} so paired rollback survives persistence
+ *       and process restart. {@code NULL} means unpaired. Existing v5
+ *       databases are upgraded in place by
+ *       {@link network.vonix.guardian.core.storage.migration.V6PairId}.</li>
  * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 5;
+    public static final int CURRENT_VERSION = 6;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -169,6 +176,7 @@ public final class Schema {
         out.add(prefix + "vg_actions_user_t ON vg_actions(user_id, ts)");
         out.add(prefix + "vg_actions_type_t ON vg_actions(type, ts)");
         out.add(prefix + "vg_actions_ts     ON vg_actions(ts)");
+        out.add(prefix + "vg_actions_pair   ON vg_actions(pair_id)");
         out.add(prefix + "vg_rollback_batches_ts ON vg_rollback_batches(ts)");
         return List.copyOf(out);
     }
@@ -189,10 +197,24 @@ public final class Schema {
                         // Index already exists — idempotent no-op on MySQL.
                         continue;
                     }
+                    // Pre-v6 installs still lack pair_id when createTables runs
+                    // CREATE TABLE IF NOT EXISTS against the old fact table.
+                    // V6PairId adds the column and index on migrate.
+                    if (ddl.contains("vg_actions_pair") && isMissingPairIdColumn(e)) {
+                        continue;
+                    }
                     throw e;
                 }
             }
         }
+    }
+
+    private static boolean isMissingPairIdColumn(SQLException e) {
+        String m = e.getMessage();
+        if (m == null) return false;
+        String lower = m.toLowerCase();
+        return lower.contains("no such column") && lower.contains("pair_id")
+            || lower.contains("unknown column") && lower.contains("pair_id");
     }
 
     private static String pk(Dialect d) {
@@ -269,7 +291,8 @@ public final class Schema {
             + "new_block_state " + textType(d) + " NULL, "
             + "block_entity_nbt " + blob + " NULL, "
             + "item_nbt " + blob + " NULL, "
-            + "entity_nbt " + blob + " NULL"
+            + "entity_nbt " + blob + " NULL, "
+            + "pair_id BIGINT NULL"
             + ")";
     }
 

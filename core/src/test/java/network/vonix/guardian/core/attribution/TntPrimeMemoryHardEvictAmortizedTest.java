@@ -150,4 +150,85 @@ class TntPrimeMemoryHardEvictAmortizedTest {
         }
         assertThat(mem.hardEvictInvocations()).isZero();
     }
+
+    @Test
+    void overwriteSkipsStaleFifoCandidateAndKeepsReplacement() {
+        int cap = 1;
+        AtomicLong now = new AtomicLong(1_000L);
+        TntPrimeMemory mem = new TntPrimeMemory(TTL, cap, now::get);
+        TntPrimeMemory.PrimeRecord old = TntPrimeMemory.PrimeRecord.player(
+                UUID.randomUUID(), "Old", now.get());
+        TntPrimeMemory.PrimeRecord replacement = TntPrimeMemory.PrimeRecord.player(
+                UUID.randomUUID(), "New", now.get());
+
+        mem.record(WORLD, 0, 64, 0, old);
+        for (int i = 0; i < TntPrimeMemory.HARD_EVICT_STRIDE - 1; i++) {
+            mem.record(WORLD, i + 1, 64, 0, TntPrimeMemory.PrimeRecord.player(
+                    UUID.randomUUID(), "P" + i, now.get()));
+        }
+        mem.record(WORLD, 0, 64, 0, replacement);
+
+        assertThat(mem.hardEvictInvocations()).isEqualTo(1L);
+        TntPrimeMemory.PrimeRecord kept = mem.consume(WORLD, 0, 64, 0);
+        assertThat(kept).isNotNull();
+        assertThat(kept.actorName).isEqualTo("New");
+    }
+
+    @Test
+    void youngRecordsSurviveHalfTtlPassWhenUnderCapAfterStaleDrop() {
+        int cap = 64;
+        AtomicLong now = new AtomicLong(1_000L);
+        TntPrimeMemory mem = new TntPrimeMemory(TTL, cap, now::get);
+        UUID young = UUID.randomUUID();
+        mem.record(WORLD, 0, 64, 0, TntPrimeMemory.PrimeRecord.player(young, "Young", now.get()));
+        now.set(now.get() + 1L);
+        for (int i = 1; i < cap * 2; i++) {
+            mem.record(WORLD, i, 64, 0, TntPrimeMemory.PrimeRecord.player(
+                    UUID.randomUUID(), "S" + i, now.get()));
+        }
+        now.set(now.get() + TTL);
+        for (int i = 0; i < TntPrimeMemory.HARD_EVICT_STRIDE; i++) {
+            mem.record(WORLD, 100_000 + i, 0, 0, TntPrimeMemory.PrimeRecord.player(
+                    UUID.randomUUID(), "F" + i, now.get()));
+        }
+        assertThat(mem.hardEvictInvocations()).isGreaterThan(0L);
+        assertThat(mem.size()).isLessThanOrEqualTo(cap);
+        assertThat(mem.peek(WORLD, 100_000, 0, 0)).isNotNull();
+    }
+
+    @Test
+    void overwriteChurnKeepsSizeWithinDocumentedHeadroom() {
+        int cap = 64;
+        AtomicLong now = new AtomicLong(1_000L);
+        TntPrimeMemory mem = new TntPrimeMemory(TTL, cap, now::get);
+        int churnKeys = 4;
+        int rounds = cap * 20;
+        UUID actor = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        for (int i = 0; i < rounds; i++) {
+            mem.record(WORLD, 10_000 + i, 64, 0, TntPrimeMemory.PrimeRecord.player(
+                    UUID.randomUUID(), "Distinct" + i, now.incrementAndGet()));
+            for (int w = 0; w < TntPrimeMemory.HARD_EVICT_ARBITRARY_CAP; w++) {
+                mem.record(WORLD, w % churnKeys, 64, 0, TntPrimeMemory.PrimeRecord.player(
+                        actor, "Overwrite", now.incrementAndGet()));
+            }
+        }
+        int upperBound = cap + TntPrimeMemory.HARD_EVICT_STRIDE
+                + TntPrimeMemory.HARD_EVICT_ARBITRARY_CAP;
+        assertThat(mem.hardEvictInvocations()).isGreaterThan(0L);
+        assertThat(mem.size())
+                .as("overwrite-churn must stay within documented cap+headroom")
+                .isLessThanOrEqualTo(upperBound);
+        assertThat(mem.peek(WORLD, 0, 64, 0)).isNotNull();
+    }
+
+    @Test
+    void sameTimestampReusesPrimeRecordIdentity() {
+        AtomicLong now = new AtomicLong(5_000L);
+        TntPrimeMemory mem = new TntPrimeMemory(TTL, 32, now::get);
+        TntPrimeMemory.PrimeRecord rec = TntPrimeMemory.PrimeRecord.player(
+                UUID.randomUUID(), "Alex", now.get());
+        mem.record(WORLD, 9, 64, 9, rec);
+        assertThat(mem.peek(WORLD, 9, 64, 9)).isSameAs(rec);
+        assertThat(mem.consume(WORLD, 9, 64, 9)).isSameAs(rec);
+    }
 }

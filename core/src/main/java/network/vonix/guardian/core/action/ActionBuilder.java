@@ -48,6 +48,7 @@ public final class ActionBuilder {
     private byte[] blockEntityNbt;
     private byte[] itemNbt;
     private byte[] entityNbt;
+    private Long pairId;
 
     /** Creates a new empty builder. */
     public ActionBuilder() {
@@ -99,6 +100,7 @@ public final class ActionBuilder {
         this.blockEntityNbt = null;
         this.itemNbt = null;
         this.entityNbt = null;
+        this.pairId = null;
         return this;
     }
 
@@ -391,6 +393,19 @@ public final class ActionBuilder {
     }
 
     /**
+     * Sets the durable fire/break pairing token. {@code null} or {@code 0}
+     * means unpaired. Survives persistence so rollback can join the pair
+     * after restart.
+     *
+     * @param pairId correlation id; may be {@code null}
+     * @return this builder
+     */
+    public ActionBuilder pairId(Long pairId) {
+        this.pairId = (pairId != null && pairId == 0L) ? null : pairId;
+        return this;
+    }
+
+    /**
      * Builds the immutable {@link Action} from the current builder state, applying
      * defaults as described in the class Javadoc.
      *
@@ -434,7 +449,8 @@ public final class ActionBuilder {
             newBlockState,
             blockEntityNbt,
             itemNbt,
-            entityNbt
+            entityNbt,
+            pairId
         );
     }
 }

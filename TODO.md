@@ -9,7 +9,7 @@
 - `docs/COREPROTECT-COMPARISON.md` — the full snapshot comparison
 - `docs/COREPROTECT-GAP-INVENTORY.md` — source-scanned gap inventory
 - `docs/COMMAND-AUDIT-1.2.0.md` — per-command registration audit
-- CoreProtect reference source: `/root/staging/coreprotect-ref/CoreProtect`
+- CoreProtect reference source (pinned): `https://github.com/PlayPro/CoreProtect` tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`; tag archive SHA-256 `54decf8412da3037fe97b09a5ec1052d257a696d940092affb5b96f098cea5b0` retrieved `2026-08-22T08:09:58Z`. The local path `/root/staging/coreprotect-ref/CoreProtect` is not an immutable pin.
 
 Whenever this TODO conflicts with those docs, THOSE are canonical — this file is a summary.
 

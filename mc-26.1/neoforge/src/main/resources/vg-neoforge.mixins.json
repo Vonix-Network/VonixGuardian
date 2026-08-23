@@ -1,0 +1,34 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "network.vonix.guardian.mc.v26_1.neoforge.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "refmap": "vg-neoforge.refmap.json",
+  "mixins": [
+    "BucketItemMixin",
+    "DispenserBlockMixin",
+    "EnderDragonMixin",
+    "FallingBlockEntityMixin",
+    "FillCommandMixin",
+    "FireBlockMixin",
+    "HopperBlockEntityMixin",
+    "IceBlockMixin",
+    "LeavesBlockMixin",
+    "LightningBoltMixin",
+    "LiquidBlockMixin",
+    "MilkBucketItemMixin",
+    "PortalShapeMixin",
+    "PrimedTntEntityMixin",
+    "RavagerMixin",
+    "SetBlockCommandMixin",
+    "SilverfishMixin",
+    "SnowGolemMixin",
+    "SpreadingSnowyDirtBlockMixin",
+    "TntBlockMixin"
+  ],
+  "server": [],
+  "client": [],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

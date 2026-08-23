@@ -54,9 +54,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * ticks, occasionally a handful when a chain of neighbours catches. A
  * {@value #DEFAULT_TTL_MS} ms window is generous while still bounding memory.
  *
- * <p><strong>Concurrency / eviction.</strong> Lock-free {@link ConcurrentHashMap}
- * storage with the same amortised-sweep + gated hard-evict discipline proven in
- * {@link TntPrimeMemory} (v1.3.2 Y5 / v1.3.6 CC2). {@link #record} and
+ * <p><strong>Concurrency / eviction.</strong> {@link ConcurrentHashMap} storage
+ * with the same amortised-sweep + gated hard-evict discipline proven in
+ * {@link TntPrimeMemory} (v1.3.2 Y5 / v1.3.6 CC2). Map admission, FIFO candidate
+ * enqueue, and {@link #clear} of the map/FIFO/counter share {@code evictionLock};
+ * the amortised TTL walk uses a separate {@code sweepLock}. Callers never take
+ * {@code sweepLock} while holding {@code evictionLock} except {@code hardEvict},
+ * which always acquires {@code evictionLock} first. {@link #record} and
  * {@link #consume} are both called from the server thread; the CHM tolerates the
  * occasional off-thread Fabric mixin injection.
  *
@@ -100,6 +104,8 @@ public final class FireCauserMemory {
     private final int evictionCandidateLimit;
     private int evictionHead;
     private int evictionSize;
+    /** Live-map fallback cursor; touched only while holding {@link #evictionLock}. */
+    private java.util.Iterator<java.util.Map.Entry<Key, CauserRecord>> fallbackCursor;
 
     private java.util.Iterator<java.util.Map.Entry<Key, CauserRecord>> sweepCursor;
     private final Object sweepLock = new Object();
@@ -107,6 +113,29 @@ public final class FireCauserMemory {
     private final java.util.concurrent.atomic.AtomicLong hardEvictCounter =
             new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong hardEvictInvocations =
+            new java.util.concurrent.atomic.AtomicLong();
+    /**
+     * Restart-durable pairing-token state. A published {@code AtomicLong}
+     * starting at zero reissues {@code 1, 2, 3…} after process restart, and
+     * {@code findByPairIds} would then join unrelated historical siblings.
+     * Each instance therefore mixes a 64-bit construction nonce with a
+     * monotonic sequence through a bijective SplitMix64 avalanche.
+     *
+     * <p>Assumptions (not cryptographic uniqueness, not absolute uniqueness):
+     * <ul>
+     *   <li>A generated token is never {@code 0} (the unpaired sentinel).</li>
+     *   <li>Within one instance, distinct sequence values produce distinct
+     *       tokens because {@link #mix64(long)} is a bijection, until the
+     *       sequence wraps at {@code 2^64}.</li>
+     *   <li>Two independently constructed instances collide only if their
+     *       {@code (nonce + seq)} values collide. The nonce is a nonzero
+     *       64-bit {@code ThreadLocalRandom} value; collision probability
+     *       is birthday-bound on that nonce, not a timestamp and not a
+     *       resettable published counter.</li>
+     * </ul>
+     */
+    private final long pairNonce = newPairNonce();
+    private final java.util.concurrent.atomic.AtomicLong pairSeq =
             new java.util.concurrent.atomic.AtomicLong();
 
     public FireCauserMemory() {
@@ -147,14 +176,84 @@ public final class FireCauserMemory {
         if (worldId == null || rec == null) return;
         long now = clock.getAsLong();
         Key key = new Key(worldId, x, y, z);
-        CauserRecord stamped = rec.withTimestamp(now);
-        entries.put(key, stamped);
-        enqueueEvictionCandidate(key, stamped);
+        // Callers already stamp with the same clock in production; reuse the
+        // immutable record when the timestamp matches to avoid a per-event copy.
+        CauserRecord stamped = stampForRecord(rec, now);
+        boolean runHardEvict;
+        synchronized (evictionLock) {
+            entries.put(key, stamped);
+            enqueueEvictionCandidate(key, stamped);
+            runHardEvict = entries.size() > maxEntries
+                    && (hardEvictCounter.incrementAndGet() % HARD_EVICT_STRIDE) == 0L;
+        }
         maybeEvict(now);
-        if (entries.size() > maxEntries
-                && (hardEvictCounter.incrementAndGet() % HARD_EVICT_STRIDE) == 0L) {
+        if (runHardEvict) {
             hardEvict(now);
         }
+    }
+
+    /**
+     * Exact-position lookup of a stored pairing token. Used by
+     * {@code Guardian.submitEntityChangeBlock} so the break row carries the
+     * same {@code pairId} the later fire event will persist.
+     *
+     * @return the allowlisted pair id at this exact block, or {@code null}
+     */
+    public Long pairIdAt(String worldId, int x, int y, int z) {
+        if (worldId == null) return null;
+        CauserRecord r = entries.get(new Key(worldId, x, y, z));
+        if (r == null || !r.allowlisted || r.pairId == 0L) return null;
+        return r.pairId;
+    }
+
+    private CauserRecord stampForRecord(CauserRecord rec, long now) {
+        if (!rec.allowlisted) {
+            return rec.causedAtMillis == now ? rec : rec.withTimestamp(now);
+        }
+        long pairId = rec.pairId;
+        // Production loaders pass the event timestamp as a provisional pairId
+        // (or 0). Allocate a restart-durable token so durable siblings cannot
+        // collide across two breaks in the same millisecond *or* across
+        // process restart. Explicit nonzero non-timestamp pair ids (42, 77,
+        // 99, 100, 200, …) are preserved unchanged.
+        if (pairId == 0L || pairId == rec.causedAtMillis) {
+            pairId = nextPairId();
+        }
+        if (pairId == rec.pairId && rec.causedAtMillis == now) {
+            return rec;
+        }
+        return new CauserRecord(rec.actorUuid, rec.actorName, rec.entityKey,
+                rec.allowlisted, rec.sourceTagHint, pairId, now);
+    }
+
+    /**
+     * Cheap, thread-safe generated token. Hot path is an {@code incrementAndGet}
+     * plus a handful of arithmetic; no scans, I/O, or shared mutable persistence.
+     */
+    private long nextPairId() {
+        long seq = pairSeq.incrementAndGet();
+        long mixed = mix64(pairNonce + seq);
+        if (mixed != 0L) {
+            return mixed;
+        }
+        // mix64 is bijective and mix64(0)==0, so pairNonce+seq overflowed to 0.
+        mixed = mix64(pairNonce ^ seq);
+        return mixed != 0L ? mixed : seq;
+    }
+
+    private static long newPairNonce() {
+        long n;
+        do {
+            n = java.util.concurrent.ThreadLocalRandom.current().nextLong();
+        } while (n == 0L);
+        return n;
+    }
+
+    /** SplitMix64 finalizer; bijective on 64-bit values. */
+    private static long mix64(long z) {
+        z = (z ^ (z >>> 30)) * 0xbf58476d1ce4e5b9L;
+        z = (z ^ (z >>> 27)) * 0x94d049bb133111ebL;
+        return z ^ (z >>> 31);
     }
 
     /**
@@ -170,29 +269,37 @@ public final class FireCauserMemory {
     public CauserRecord consume(String worldId, int x, int y, int z) {
         if (worldId == null) return null;
         long now = clock.getAsLong();
-        Key best = null;
+        int bestX = 0;
+        int bestY = 0;
+        int bestZ = 0;
         CauserRecord bestRec = null;
-        // Small cube scan. radius is tiny (default 2 → 125 keys worst case) and
+        // One probe key for the whole cube. ConcurrentHashMap.get/remove compare
+        // by equals/hashCode and do not retain the argument, so this local is
+        // never inserted and never races with a stored key.
+        Key probe = new Key(worldId, x, y, z);
+        // Small cube scan. radius is tiny (default 2 → 125 probes worst case) and
         // most positions miss, so this stays cheap on the server tick.
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dy = -radius; dy <= radius; dy++) {
                 for (int dz = -radius; dz <= radius; dz++) {
-                    Key k = new Key(worldId, x + dx, y + dy, z + dz);
-                    CauserRecord r = entries.get(k);
+                    probe.set(worldId, x + dx, y + dy, z + dz);
+                    CauserRecord r = entries.get(probe);
                     if (r == null) continue;
                     if (now - r.causedAtMillis > ttlMs) {
-                        entries.remove(k, r);
+                        entries.remove(probe, r);
                         continue;
                     }
                     if (bestRec == null || r.causedAtMillis > bestRec.causedAtMillis) {
-                        best = k;
+                        bestX = x + dx;
+                        bestY = y + dy;
+                        bestZ = z + dz;
                         bestRec = r;
                     }
                 }
             }
         }
-        if (best != null) {
-            entries.remove(best, bestRec);
+        if (bestRec != null) {
+            entries.remove(probe.set(worldId, bestX, bestY, bestZ), bestRec);
         } else {
             maybeEvict(now);
         }
@@ -207,10 +314,11 @@ public final class FireCauserMemory {
         if (worldId == null) return null;
         long now = clock.getAsLong();
         CauserRecord bestRec = null;
+        Key probe = new Key(worldId, x, y, z);
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dy = -radius; dy <= radius; dy++) {
                 for (int dz = -radius; dz <= radius; dz++) {
-                    CauserRecord r = entries.get(new Key(worldId, x + dx, y + dy, z + dz));
+                    CauserRecord r = entries.get(probe.set(worldId, x + dx, y + dy, z + dz));
                     if (r == null || now - r.causedAtMillis > ttlMs) continue;
                     if (bestRec == null || r.causedAtMillis > bestRec.causedAtMillis) {
                         bestRec = r;
@@ -226,17 +334,18 @@ public final class FireCauserMemory {
     }
 
     public void clear() {
-        entries.clear();
-        synchronized (sweepLock) {
-            sweepCursor = null;
-        }
         synchronized (evictionLock) {
+            entries.clear();
             java.util.Arrays.fill(evictionKeys, null);
             java.util.Arrays.fill(evictionRecords, null);
             evictionHead = 0;
             evictionSize = 0;
+            fallbackCursor = null;
+            hardEvictCounter.set(0L);
         }
-        hardEvictCounter.set(0L);
+        synchronized (sweepLock) {
+            sweepCursor = null;
+        }
     }
 
     long hardEvictInvocations() {
@@ -273,10 +382,12 @@ public final class FireCauserMemory {
     }
 
     /**
-     * Remove expired/over-cap entries using only a bounded candidate deque.
-     * This deliberately does not call {@code entrySet().removeIf}: that
-     * operation is an unbounded O(n) server-thread sweep and was the direct
-     * cause of the watchdog stalls reported against Forge 1.3.10.
+     * Remove expired/over-cap entries using a bounded candidate deque, then a
+     * bounded live-map fallback if the deque made no progress or is empty
+     * while still over cap. This deliberately does not call
+     * {@code entrySet().removeIf}: that operation is an unbounded O(n)
+     * server-thread sweep and was the direct cause of the watchdog stalls
+     * reported against Forge 1.3.10.
      */
     private void hardEvict(long now) {
         hardEvictInvocations.incrementAndGet();
@@ -304,30 +415,109 @@ public final class FireCauserMemory {
                     entries.remove(candidateKey, current);
                 }
             }
+            if (entries.size() > maxEntries) {
+                evictLiveFallback(now, halfTtlBoundary);
+            }
         }
         synchronized (sweepLock) {
             sweepCursor = null;
         }
     }
 
-    /** Add one candidate and trim the candidate structure in O(1) amortized time. */
-    private void enqueueEvictionCandidate(Key key, CauserRecord record) {
-        synchronized (evictionLock) {
-            int tail = (evictionHead + evictionSize) % evictionCandidateLimit;
-            if (evictionSize == evictionCandidateLimit) {
-                evictionKeys[evictionHead] = null;
-                evictionRecords[evictionHead] = null;
-                evictionHead = (evictionHead + 1) % evictionCandidateLimit;
-                evictionSize--;
+    /**
+     * Bounded live-map fallback. Caller holds {@link #evictionLock}.
+     * Prefers expired/half-TTL-stale entries, then drops any live identity
+     * match while over cap. Budget is {@link #HARD_EVICT_ARBITRARY_CAP}.
+     */
+    private void evictLiveFallback(long now, long halfTtlBoundary) {
+        int inspected = 0;
+        while (entries.size() > maxEntries && inspected < HARD_EVICT_ARBITRARY_CAP) {
+            java.util.Iterator<java.util.Map.Entry<Key, CauserRecord>> it = fallbackCursor;
+            if (it == null || !it.hasNext()) {
+                it = entries.entrySet().iterator();
+                fallbackCursor = it;
+                if (!it.hasNext()) {
+                    return;
+                }
             }
-            evictionKeys[tail] = key;
-            evictionRecords[tail] = record;
-            evictionSize++;
+            java.util.Map.Entry<Key, CauserRecord> e;
+            try {
+                e = it.next();
+            } catch (java.util.ConcurrentModificationException cme) {
+                fallbackCursor = null;
+                inspected++;
+                continue;
+            }
+            inspected++;
+            Key key = e.getKey();
+            CauserRecord candidate = e.getValue();
+            CauserRecord current = entries.get(key);
+            if (current != candidate) {
+                continue;
+            }
+            if (now - current.causedAtMillis > ttlMs
+                    || current.causedAtMillis < halfTtlBoundary
+                    || entries.size() > maxEntries) {
+                entries.remove(key, current);
+            }
         }
     }
 
-    /** Composite key: world id + BlockPos. */
-    private record Key(String worldId, int x, int y, int z) { }
+    /** Caller must hold {@link #evictionLock}. */
+    private void enqueueEvictionCandidate(Key key, CauserRecord record) {
+        int tail = (evictionHead + evictionSize) % evictionCandidateLimit;
+        if (evictionSize == evictionCandidateLimit) {
+            evictionKeys[evictionHead] = null;
+            evictionRecords[evictionHead] = null;
+            evictionHead = (evictionHead + 1) % evictionCandidateLimit;
+            evictionSize--;
+        }
+        evictionKeys[tail] = key;
+        evictionRecords[tail] = record;
+        evictionSize++;
+    }
+
+    /**
+     * Composite key: world id + BlockPos. Stored instances are never mutated
+     * after {@link #record}; consume/peek reuse a stack-local probe that is
+     * never inserted into {@link #entries}.
+     */
+    private static final class Key {
+        private String worldId;
+        private int x;
+        private int y;
+        private int z;
+        private int hash;
+
+        private Key(String worldId, int x, int y, int z) {
+            set(worldId, x, y, z);
+        }
+
+        private Key set(String worldId, int x, int y, int z) {
+            this.worldId = worldId;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            int h = worldId.hashCode();
+            h = 31 * h + x;
+            h = 31 * h + y;
+            h = 31 * h + z;
+            this.hash = h;
+            return this;
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Key k)) return false;
+            return x == k.x && y == k.y && z == k.z && worldId.equals(k.worldId);
+        }
+    }
 
     /**
      * Immutable record of the entity that changed a block — carries the actor
@@ -346,7 +536,11 @@ public final class FireCauserMemory {
         public final boolean allowlisted;
         /** Source-tag hint carried onto the paired fire event (e.g. {@code #entity}). */
         public final String sourceTagHint;
-        /** Correlation id shared by the break and its paired fire event. */
+        /**
+         * Correlation id shared by the break and its paired fire event.
+         * {@code 0} is unpaired. Generated tokens are restart-durable (not a
+         * process-local sequence published as the persisted value).
+         */
         public final long pairId;
         public final long causedAtMillis;
 

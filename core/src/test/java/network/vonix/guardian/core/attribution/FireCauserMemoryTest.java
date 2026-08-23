@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * v1.3.11 C2 regression tests — {@link FireCauserMemory}.
+ * v1.3.13 C2 regression tests — {@link FireCauserMemory}.
  *
  * <p>Covers the orphan-fire pairing/suppression contract: an allowlisted
  * entity's break is paired with nearby fire (attributed + shared pairId); a
@@ -185,6 +185,34 @@ class FireCauserMemoryTest {
     }
 
     @Test
+    void overwriteChurnKeepsSizeWithinDocumentedHeadroom() {
+        int cap = 64;
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = new FireCauserMemory(60_000L, cap, 0, clock::get);
+        int churnKeys = 4;
+        int rounds = cap * 20;
+        UUID actor = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        for (int i = 0; i < rounds; i++) {
+            long now = clock.incrementAndGet();
+            mem.record(WORLD, 10_000 + i, 64, 0,
+                    FireCauserMemory.CauserRecord.suppressed("mod:entity", now));
+            for (int w = 0; w < FireCauserMemory.HARD_EVICT_ARBITRARY_CAP; w++) {
+                now = clock.incrementAndGet();
+                mem.record(WORLD, w % churnKeys, 64, 0,
+                        FireCauserMemory.CauserRecord.allowlisted(
+                                actor, "Overwrite", "mod:dragon", "#entity", now, now));
+            }
+        }
+        int upperBound = cap + FireCauserMemory.HARD_EVICT_STRIDE
+                + FireCauserMemory.HARD_EVICT_ARBITRARY_CAP;
+        assertThat(mem.hardEvictInvocations()).isGreaterThan(0L);
+        assertThat(mem.size())
+                .as("overwrite-churn must stay within documented cap+headroom")
+                .isLessThanOrEqualTo(upperBound);
+        assertThat(mem.peek(WORLD, 0, 64, 0)).isNotNull();
+    }
+
+    @Test
     void hardEvictionSkipsStaleOverwrittenCandidate() {
         AtomicLong clock = new AtomicLong(1_000L);
         int maxEntries = 1;
@@ -242,6 +270,37 @@ class FireCauserMemoryTest {
         assertThat(v.actorUuid).isEqualTo(actor);
         assertThat(v.actorName).isEqualTo("Toothless");
         assertThat(v.sourceTag).isEqualTo("#entity");
+        assertThat(v.pairId).isEqualTo(42L);
+        assertThat(UniversalAttribution.takePendingFirePairId()).isEqualTo(42L);
+        assertThat(UniversalAttribution.takePendingFirePairId()).isNull();
+    }
+
+    @Test
+    void pairIdAt_returnsExactAllowlistedToken() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = mem(clock);
+        mem.record(WORLD, 10, 64, 20,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "Toothless",
+                        "isleofberk:nightfury", "#entity", 42L, 1_000L));
+        assertThat(mem.pairIdAt(WORLD, 10, 64, 20)).isEqualTo(42L);
+        assertThat(mem.pairIdAt(WORLD, 11, 64, 20)).isNull();
+    }
+
+    @Test
+    void timestampPassedAsPairId_isReplacedWithUniqueToken() {
+        AtomicLong clock = new AtomicLong(5_000L);
+        FireCauserMemory mem = mem(clock);
+        mem.record(WORLD, 1, 64, 1,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "A",
+                        "mod:dragon", "#entity", 5_000L, 5_000L));
+        mem.record(WORLD, 2, 64, 2,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "B",
+                        "mod:dragon", "#entity", 5_000L, 5_000L));
+        Long a = mem.pairIdAt(WORLD, 1, 64, 1);
+        Long b = mem.pairIdAt(WORLD, 2, 64, 2);
+        assertThat(a).isNotNull().isNotEqualTo(5_000L).isNotEqualTo(0L);
+        assertThat(b).isNotNull().isNotEqualTo(5_000L).isNotEqualTo(0L);
+        assertThat(a).isNotEqualTo(b);
     }
 
     @Test
@@ -267,5 +326,114 @@ class FireCauserMemoryTest {
                 UniversalAttribution.resolveFireCauser(mem, WORLD, 5, 64, 5);
 
         assertThat(v.verdict).isEqualTo(UniversalAttribution.FireVerdict.PASSTHROUGH);
+    }
+
+    @Test
+    void sameTimestampReusesCallerRecordIdentity() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = mem(clock);
+        FireCauserMemory.CauserRecord rec = FireCauserMemory.CauserRecord.allowlisted(
+                UUID.randomUUID(), "Toothless", "isleofberk:nightfury", "#entity", 42L, clock.get());
+
+        mem.record(WORLD, 4, 64, 4, rec);
+
+        assertThat(mem.peek(WORLD, 4, 64, 4)).isSameAs(rec);
+        assertThat(mem.consume(WORLD, 4, 64, 4)).isSameAs(rec);
+    }
+
+    @Test
+    void mismatchedTimestampCopiesTheRecord() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = mem(clock);
+        FireCauserMemory.CauserRecord rec = FireCauserMemory.CauserRecord.allowlisted(
+                UUID.randomUUID(), "Toothless", "isleofberk:nightfury", "#entity", 42L, 1L);
+
+        mem.record(WORLD, 4, 64, 4, rec);
+
+        FireCauserMemory.CauserRecord stored = mem.consume(WORLD, 4, 64, 4);
+        assertThat(stored).isNotSameAs(rec);
+        assertThat(stored.causedAtMillis).isEqualTo(1_000L);
+        assertThat(stored.pairId).isEqualTo(42L);
+    }
+
+    @Test
+    void peekDoesNotConsumeAndStillSelectsFreshestWithinRadius() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = mem(clock);
+        mem.record(WORLD, 0, 64, 0,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "Old",
+                        "isleofberk:a", "#entity", 100L, 1_000L));
+        clock.set(1_500L);
+        mem.record(WORLD, 1, 64, 0,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "New",
+                        "isleofberk:b", "#entity", 200L, 1_500L));
+        clock.set(1_600L);
+
+        FireCauserMemory.CauserRecord peeked = mem.peek(WORLD, 0, 64, 0);
+        assertThat(peeked).isNotNull();
+        assertThat(peeked.pairId).isEqualTo(200L);
+        assertThat(mem.size()).isEqualTo(2);
+        FireCauserMemory.CauserRecord consumed = mem.consume(WORLD, 0, 64, 0);
+        assertThat(consumed).isSameAs(peeked);
+        assertThat(mem.size()).isEqualTo(1);
+        assertThat(mem.consume(WORLD, 0, 64, 0)).isNotNull()
+                .extracting(r -> r.pairId).isEqualTo(100L);
+    }
+
+    @Test
+    void equalTimestampTieKeepsFirstScanHit() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = new FireCauserMemory(2_000L, 16, 1, clock::get);
+        mem.record(WORLD, 1, 64, 0,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "PosX",
+                        "isleofberk:a", "#entity", 2L, 1_000L));
+        mem.record(WORLD, 0, 64, 0,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "Origin",
+                        "isleofberk:b", "#entity", 1L, 1_000L));
+
+        // Scan starts at dx=-1, so ( -1,0,0) misses, then (0,0,0) is first equal-ts hit.
+        FireCauserMemory.CauserRecord r = mem.consume(WORLD, 0, 64, 0);
+        assertThat(r).isNotNull();
+        assertThat(r.pairId).isEqualTo(1L);
+        assertThat(mem.consume(WORLD, 1, 64, 0)).isNotNull()
+                .extracting(rec -> rec.pairId).isEqualTo(2L);
+    }
+
+    @Test
+    void overwriteSamePositionReplacesRecord() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        FireCauserMemory mem = mem(clock);
+        mem.record(WORLD, 2, 64, 2,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "Old",
+                        "old:entity", "#entity", 1L, 1_000L));
+        clock.set(1_100L);
+        mem.record(WORLD, 2, 64, 2,
+                FireCauserMemory.CauserRecord.allowlisted(UUID.randomUUID(), "New",
+                        "new:entity", "#entity", 2L, 1_100L));
+
+        assertThat(mem.size()).isEqualTo(1);
+        assertThat(mem.consume(WORLD, 2, 64, 2))
+                .extracting(r -> r.pairId).isEqualTo(2L);
+        assertThat(mem.consume(WORLD, 2, 64, 2)).isNull();
+    }
+
+    @Test
+    void clearResetsHardEvictCounter() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        int maxEntries = 4;
+        FireCauserMemory mem = new FireCauserMemory(2_000L, maxEntries, 0, clock::get);
+        int inserts = FireCauserMemory.HARD_EVICT_STRIDE + maxEntries - 1;
+        for (int i = 0; i < inserts; i++) {
+            mem.record(WORLD, i, 64, 0,
+                    FireCauserMemory.CauserRecord.suppressed("mod:entity", clock.get()));
+        }
+        assertThat(mem.hardEvictInvocations()).isZero();
+        mem.clear();
+        for (int i = 0; i < inserts; i++) {
+            mem.record(WORLD, 10_000 + i, 64, 0,
+                    FireCauserMemory.CauserRecord.suppressed("mod:entity", clock.get()));
+        }
+        assertThat(mem.hardEvictInvocations()).isZero();
+        assertThat(mem.size()).isGreaterThan(0);
     }
 }

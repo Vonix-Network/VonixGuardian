@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Durable fire/break pairing.** `Action.pairId` is persisted as nullable
+  `vg_actions.pair_id` (schema v6, additive `V6PairId` migration). An
+  allowlisted entity block-change and the fire it causes share the token
+  through `FireCauserMemory` → `Action` → DAO → rollback, so paired rollback
+  survives persistence and process restart. Existing unpaired rows stay
+  `NULL`.
+- **Official 26.1.2 NeoForge lane.** The `mc-26.1/neoforge` cell is included
+  in the repository build/release matrices and README alongside the existing
+  eight cells, with its required Java 25 toolchain and `mc261` build profile.
+- **Operator-labeled inspector output.** Block inspection lines now use
+  explicit `ago | actor | verb | kind=target | at (x, y, z)` fields and identify
+  the world in the header, so registry IDs remain readable when copied from
+  chat.
+- **Forge DISPENSE capture.** `mc-1.18.2/forge`, `mc-1.19.2/forge`, and
+  `mc-1.20.1/forge` log dispenser activations via `DispenserBlockMixin` on
+  `dispenseFrom(ServerLevel, BlockPos)` (verified against each cell's official
+  mapped jar; runtime SRG `m_5824_`), `vg.mixins.json`, and `MixinConfigs`
+  manifest wiring. The submit contract matches Fabric/NeoForge
+  (`#dispenser` / `world:dispense`).
+
+### Fixed
+
+- **NeoForge 26.1 mixin refmap packaging.** `vg-neoforge.mixins.json` declared
+  `vg-neoforge.refmap.json`; the release archive now includes the named:named
+  identity refmap required on Mojmap runtime.
+
+### Changed
+
+- CoreProtect comparison/gap docs now pin the public `PlayPro/CoreProtect`
+  `v24.0` tag (`b5f534fd2c735c6f094cda8ca50a66324e81b048`) with retrieved
+  archive SHA-256 values instead of a mutable local checkout path.
+
+## [1.4.0] - 2026-08-23
+
+### Changed
+
+- **COUNT-free normal lookup.** Ordinary `/vg lookup` pages no longer execute a
+  preliminary `COUNT(*)`. They fetch the requested visible page plus one extra
+  visible row and use that row to render a next-page hint. `#count` remains the
+  explicit count path.
+- **Bounded visible-page probing.** The page-plus-one probe stays on the
+  generation-aware command workers, preserves SQL-side permission-type
+  restriction and the 100,000 raw-row fail-closed scan bound, and never exposes
+  the probe row to chat.
+- **All supported cells aligned.** The lookup behavior is shared across Fabric,
+  Forge, and NeoForge for 1.18.2, 1.19.2, 1.20.1, 1.21.1, and 26.1.2 NeoForge.
+
+### Verification
+
+- Core regression coverage includes a page-plus-one/no-count test and mirrored
+  command-contract assertions for all nine cells.
+- Quantitative MySQL speedup remains unclaimed until matched live-database
+  workload and query-plan evidence is collected.
+
+## [1.3.13] - 2026-08-22
+
+### Changed
+
+- **Attribution/queue bookkeeping.** `DamageHistory` cap-pressure eviction
+  keeps a bounded timestamp-ordered live index so the lowest `Hit.timestamp`
+  is removed under overflow, including when callers supply out-of-order times.
+  `TntPrimeMemory` and `FireCauserMemory` hard eviction use bounded FIFO
+  insertion candidates with identity checks instead of a full-map `removeIf`.
+  When overwrite churn fills that ring with stale identities, a bounded
+  live-map iterator fallback still removes identity-checked entries so size
+  stays within the documented cap plus stride/arbitrary-cap headroom.
+  Map mutation, candidate admission, and `clear` of the map/FIFO/counter are
+  taken under one lock so a concurrent `record` cannot be left live without
+  an eviction candidate.
+  `FireCauserMemory` consume/peek reuse one stack-local probe key for the
+  radius cube and keep the caller record when its timestamp already matches
+  the injected clock. `EntityBlockChangeCoalescer` accepts an injected
+  nanosecond clock for deterministic tests; duplicate suppression, identity,
+  zero-sweep backoff, and cap-drop metrics are unchanged. Server-thread
+  ownership of world APIs and single-sink queue ordering are unchanged.
+
 ## [1.3.12] - 2026-08-16
 
 ### Changed

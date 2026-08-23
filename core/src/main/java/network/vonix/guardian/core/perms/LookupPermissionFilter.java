@@ -118,6 +118,26 @@ public final class LookupPermissionFilter {
             QueryFilter filter,
             int page,
             int pageSize) throws Exception {
+        return visiblePage(dao, resolver, uuid, family, filter, page, pageSize, false);
+    }
+
+    /**
+     * Fetches a visible page and, when requested, one extra visible row.
+     *
+     * <p>The extra row is a page-plus-one probe: it tells the caller whether a
+     * next page exists without running a full-table COUNT first. The probe is
+     * performed in the same bounded worker/DAO path as the page itself, and the
+     * extra row is never exposed to the formatter.</p>
+     */
+    public static VisiblePage visiblePage(
+            GuardianDao dao,
+            PermissionResolver resolver,
+            UUID uuid,
+            PermissionNode family,
+            QueryFilter filter,
+            int page,
+            int pageSize,
+            boolean prefetchNext) throws Exception {
         if (dao == null || resolver == null || family == null || filter == null) {
             throw new IllegalArgumentException("dao, resolver, family, and filter are required");
         }
@@ -130,17 +150,19 @@ public final class LookupPermissionFilter {
         if (uuid != null) {
             visibleTypes = visibleActionTypes(resolver, uuid, family, filter);
             if (visibleTypes.isEmpty()) {
-                return new VisiblePage(List.of(), true, 0);
+                return new VisiblePage(List.of(), true, 0, false);
             }
             pageFilter = restrictToVisibleTypes(filter, visibleTypes);
         }
 
         long visibleSkip = (long) (page - 1) * pageSize;
+        long targetLong = (long) pageSize + (prefetchNext ? 1L : 0L);
+        int targetRows = targetLong >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) targetLong;
         int rawOffset = 0;
         int scanned = 0;
-        List<Action> out = new ArrayList<>(pageSize);
-        while (scanned < MAX_RAW_ROWS_SCANNED && out.size() < pageSize) {
-            int stillNeed = pageSize - out.size();
+        List<Action> out = new ArrayList<>(Math.min(targetRows, RAW_PAGE_SIZE));
+        while (scanned < MAX_RAW_ROWS_SCANNED && out.size() < targetRows) {
+            int stillNeed = targetRows - out.size();
             long wantLong = stillNeed + visibleSkip;
             int want = wantLong >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) wantLong;
             int fetchLimit = Math.min(RAW_PAGE_SIZE, Math.min(want, MAX_RAW_ROWS_SCANNED - scanned));
@@ -152,17 +174,18 @@ public final class LookupPermissionFilter {
             GuardianDao.QueryPage rawPage = dao.queryPageForDisplay(pageFilter, rawOffset, fetchLimit);
             List<Action> raw = rawPage.rows();
             if (raw.isEmpty()) {
-                return new VisiblePage(out, true, scanned);
+                return pageResult(out, pageSize, true, scanned);
             }
-            // DAO result-cap truncation is not EOF. Fail closed so a permission
-            // filter cannot present a partial visible page as complete.
-            if (rawPage.truncated()) {
+            // A DAO cap is ambiguous when the caller did not request a
+            // page-plus-one probe. Preserve the old fail-closed behavior. With
+            // the probe enabled, a filled target is enough to prove hasNext.
+            if (rawPage.truncated() && !prefetchNext) {
                 scanned += raw.size();
-                return new VisiblePage(out, false, scanned);
+                return pageResult(out, pageSize, false, scanned);
             }
             scanned += raw.size();
             if (rawOffset > Integer.MAX_VALUE - raw.size()) {
-                return new VisiblePage(out, false, scanned);
+                return pageResult(out, pageSize, false, scanned);
             }
             rawOffset += raw.size();
 
@@ -174,17 +197,32 @@ public final class LookupPermissionFilter {
                     visibleSkip--;
                 } else {
                     out.add(action);
-                    if (out.size() == pageSize) {
-                        return new VisiblePage(out, true, scanned);
+                    if (out.size() == targetRows) {
+                        return pageResult(out, pageSize, true, scanned);
                     }
                 }
             }
+            if (rawPage.truncated()) {
+                // The capped response did not supply enough visible rows to
+                // prove the requested page-plus-one result.
+                return pageResult(out, pageSize, false, scanned);
+            }
         }
-        return new VisiblePage(out, false, scanned);
+        return pageResult(out, pageSize, false, scanned);
+    }
+
+    private static VisiblePage pageResult(List<Action> rows, int pageSize, boolean complete, int scanned) {
+        int visibleCount = Math.min(pageSize, rows.size());
+        boolean hasNext = complete && rows.size() > pageSize;
+        return new VisiblePage(rows.subList(0, visibleCount), complete, scanned, hasNext);
     }
 
     /** Result of a bounded visible-row page scan. */
-    public record VisiblePage(List<Action> rows, boolean complete, int rawRowsScanned) {
+    public record VisiblePage(List<Action> rows, boolean complete, int rawRowsScanned, boolean hasNext) {
+        public VisiblePage(List<Action> rows, boolean complete, int rawRowsScanned) {
+            this(rows, complete, rawRowsScanned, false);
+        }
+
         public VisiblePage {
             rows = rows == null ? List.of() : List.copyOf(rows);
         }

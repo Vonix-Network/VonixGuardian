@@ -94,6 +94,9 @@ tasks.named('processResources') {
 shadowJar {
     archiveClassifier = ''
     configurations = [project.configurations.shaded]
+    manifest {
+        attributes 'MixinConfigs': 'vg.mixins.json'
+    }
     relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
     relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
     // Do NOT relocate org.sqlite — it's in the nested JarInJar (JNI symbol parity).
@@ -187,6 +190,9 @@ tasks.register('verifyProductionMappings') {
         File artifact = layout.buildDirectory.file("libs/${archivesBaseName}-${project.version}.jar").get().asFile
         String listing = ['jar', 'tf', artifact.absolutePath].execute().text
         if (!listing.contains('network/vonix/guardian/mc/')) throw new GradleException("Missing loader classes in ${artifact}")
+        if (!listing.contains('vg.mixins.json')) throw new GradleException("Missing vg.mixins.json in ${artifact}")
+        if (!listing.contains('vg.refmap.json')) throw new GradleException("Missing vg.refmap.json in ${artifact}")
+        if (!listing.contains('DispenserBlockMixin.class')) throw new GradleException("Missing DispenserBlockMixin in ${artifact}")
         String bytecode = ['javap', '-classpath', artifact.absolutePath, '-c', '-p', 'network.vonix.guardian.mc.v1_20_1.forge.ForgeWorldMutator'].execute().text
         if (!bytecode.contains('m_7731_') && !bytecode.contains('m_46473_')) throw new GradleException("Artifact is not SRG-mapped: ${artifact}")
     }

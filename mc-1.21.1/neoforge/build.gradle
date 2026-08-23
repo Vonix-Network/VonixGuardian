@@ -218,6 +218,8 @@ tasks.register('verifyProductionMappings') {
         if (!artifact.isFile()) throw new GradleException("Missing NeoForge production artifact: ${artifact}")
         String listing = ['jar', 'tf', artifact.absolutePath].execute().text
         if (!listing.contains('network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeWorldMutator.class')) throw new GradleException("Missing NeoForge mutator in ${artifact}")
+        if (!listing.contains('vg-neoforge.mixins.json')) throw new GradleException("Missing vg-neoforge.mixins.json in ${artifact}")
+        if (!listing.contains('vg-neoforge.refmap.json')) throw new GradleException("Missing vg-neoforge.refmap.json in ${artifact}")
     }
 }
 

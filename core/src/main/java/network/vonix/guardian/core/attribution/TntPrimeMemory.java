@@ -39,9 +39,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *       oldest-entry sweep before insert.</li>
  * </ul>
  *
- * <p>All operations are lock-free — {@link ConcurrentHashMap} is the storage,
- * and record timestamps are read via {@code entry.getValue().primedAtMillis}
- * without additional synchronisation because {@link PrimeRecord} is immutable.
+ * <p>Storage is a {@link ConcurrentHashMap}; {@link PrimeRecord} is immutable so
+ * timestamps can be read without extra synchronisation. Map admission, FIFO
+ * candidate enqueue, and {@link #clear} of the map/FIFO/counter are bounded by
+ * {@code evictionLock}. The amortised TTL walk uses a separate {@code sweepLock}.
+ * {@code hardEvict} always acquires {@code evictionLock} before {@code sweepLock};
+ * callers never reverse that order.
  *
  * <p>Thread-model: {@link #record} is called from the server thread (mixin on
  * {@code onCaughtFire} / {@code PrimedTnt.&lt;init&gt;}). {@link #consume} is
@@ -94,6 +97,21 @@ public final class TntPrimeMemory {
     private final java.util.function.LongSupplier clock;
 
     /**
+     * Bounded insertion candidates for hard eviction. Replaces the previous
+     * {@code entrySet().removeIf} full-map pass so over-cap storms stay
+     * O({@link #HARD_EVICT_ARBITRARY_CAP}) inspections, matching
+     * {@link FireCauserMemory}.
+     */
+    private final Key[] evictionKeys;
+    private final PrimeRecord[] evictionRecords;
+    private final Object evictionLock = new Object();
+    private final int evictionCandidateLimit;
+    private int evictionHead;
+    private int evictionSize;
+    /** Live-map fallback cursor; touched only while holding {@link #evictionLock}. */
+    private java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> fallbackCursor;
+
+    /**
      * For amortised eviction: cursor is guarded by {@link #sweepLock} to
      * avoid the pre-1.3.6 CME race where two concurrent {@link #record}
      * callers could share a single iterator and blow up on
@@ -132,6 +150,11 @@ public final class TntPrimeMemory {
         this.ttlMs = ttlMs;
         this.maxEntries = maxEntries;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.evictionCandidateLimit = maxEntries > Integer.MAX_VALUE - HARD_EVICT_ARBITRARY_CAP
+                ? Integer.MAX_VALUE
+                : maxEntries + HARD_EVICT_ARBITRARY_CAP;
+        this.evictionKeys = new Key[evictionCandidateLimit];
+        this.evictionRecords = new PrimeRecord[evictionCandidateLimit];
     }
 
     /**
@@ -149,18 +172,23 @@ public final class TntPrimeMemory {
         if (worldId == null || actor == null) return;
         long now = clock.getAsLong();
         Key k = new Key(worldId, x, y, z);
-        entries.put(k, actor.withTimestamp(now));
+        PrimeRecord stamped = actor.primedAtMillis == now ? actor : actor.withTimestamp(now);
+        boolean runHardEvict;
+        synchronized (evictionLock) {
+            entries.put(k, stamped);
+            enqueueEvictionCandidate(k, stamped);
+            runHardEvict = entries.size() > maxEntries
+                    && (hardEvictCounter.incrementAndGet() % HARD_EVICT_STRIDE) == 0L;
+        }
         maybeEvict(now);
-        if (entries.size() > maxEntries) {
+        if (runHardEvict) {
             // v1.3.2 Y5 (P1-3): amortize the O(n) hard-evict sweep. Under a
             // sustained over-cap prime storm (thousands of TNT/min on a modded
             // server), invoking hardEvict on every record() call put an O(n)
             // scan on the server tick. Only fire the real sweep every
             // HARD_EVICT_STRIDE-th over-cap insert; between sweeps the map
             // may transiently overshoot by up to STRIDE entries.
-            if ((hardEvictCounter.incrementAndGet() % HARD_EVICT_STRIDE) == 0L) {
-                hardEvict(now);
-            }
+            hardEvict(now);
         }
     }
 
@@ -221,11 +249,18 @@ public final class TntPrimeMemory {
 
     /** Fully clear the cache. Used on shutdown/reload. */
     public void clear() {
-        entries.clear();
+        synchronized (evictionLock) {
+            entries.clear();
+            java.util.Arrays.fill(evictionKeys, null);
+            java.util.Arrays.fill(evictionRecords, null);
+            evictionHead = 0;
+            evictionSize = 0;
+            fallbackCursor = null;
+            hardEvictCounter.set(0L);
+        }
         synchronized (sweepLock) {
             sweepCursor = null;
         }
-        hardEvictCounter.set(0L);
     }
 
     /** Test-visible: number of times the real hardEvict sweep actually ran (Y5). */
@@ -280,30 +315,95 @@ public final class TntPrimeMemory {
      * only runs on every 64th over-cap insert. The internal "drop arbitrary
      * entries" second-pass loop is now bounded by
      * {@link #HARD_EVICT_ARBITRARY_CAP} iterations to keep amortized cost
-     * per hardEvict call independent of {@code maxEntries}.
+     * per hardEvict call independent of {@code maxEntries}. When the FIFO
+     * ring is dominated by stale overwrite identities and makes no live
+     * progress (or is empty) while still over cap, a second bounded live-map
+     * iterator pass removes identity-checked entries; it never walks the
+     * full map in one call.
      */
     private void hardEvict(long now) {
         hardEvictInvocations.incrementAndGet();
-        // ConcurrentHashMap gives no ordering guarantees, so we just drop
-        // any entries older than half-TTL first, then fall back to arbitrary.
         long halfTtlBoundary = now - (ttlMs / 2);
-        entries.entrySet().removeIf(e -> e.getValue().primedAtMillis < halfTtlBoundary);
-        if (entries.size() <= maxEntries) return;
-        // Still over: drop arbitrary entries until under cap OR we hit the
-        // per-sweep cap. Bounding this loop keeps a single hardEvict call at
-        // O(min(overshoot, HARD_EVICT_ARBITRARY_CAP)) rather than O(overshoot).
-        // Combined with the STRIDE gate on the caller, worst-case amortized
-        // work per record() call is O(HARD_EVICT_ARBITRARY_CAP / HARD_EVICT_STRIDE).
-        java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> it = entries.entrySet().iterator();
-        int dropped = 0;
-        while (entries.size() > maxEntries && it.hasNext() && dropped < HARD_EVICT_ARBITRARY_CAP) {
-            it.next();
-            it.remove();
-            dropped++;
+        synchronized (evictionLock) {
+            int inspected = 0;
+            while (entries.size() > maxEntries
+                    && inspected < HARD_EVICT_ARBITRARY_CAP
+                    && evictionSize > 0) {
+                Key candidateKey = evictionKeys[evictionHead];
+                PrimeRecord candidateRecord = evictionRecords[evictionHead];
+                evictionKeys[evictionHead] = null;
+                evictionRecords[evictionHead] = null;
+                evictionHead = (evictionHead + 1) % evictionCandidateLimit;
+                evictionSize--;
+                inspected++;
+                PrimeRecord current = entries.get(candidateKey);
+                if (current != candidateRecord) {
+                    continue;
+                }
+                if (current.primedAtMillis < halfTtlBoundary || entries.size() > maxEntries) {
+                    entries.remove(candidateKey, current);
+                }
+            }
+            if (entries.size() > maxEntries) {
+                evictLiveFallback(now, halfTtlBoundary);
+            }
         }
         synchronized (sweepLock) {
             sweepCursor = null;
         }
+    }
+
+    /**
+     * Bounded live-map fallback. Caller holds {@link #evictionLock}.
+     * Prefers half-TTL-stale entries, then drops any live identity match
+     * while over cap. Budget is {@link #HARD_EVICT_ARBITRARY_CAP} inspections.
+     */
+    private void evictLiveFallback(long now, long halfTtlBoundary) {
+        int inspected = 0;
+        while (entries.size() > maxEntries && inspected < HARD_EVICT_ARBITRARY_CAP) {
+            java.util.Iterator<java.util.Map.Entry<Key, PrimeRecord>> it = fallbackCursor;
+            if (it == null || !it.hasNext()) {
+                it = entries.entrySet().iterator();
+                fallbackCursor = it;
+                if (!it.hasNext()) {
+                    return;
+                }
+            }
+            java.util.Map.Entry<Key, PrimeRecord> e;
+            try {
+                e = it.next();
+            } catch (java.util.ConcurrentModificationException cme) {
+                fallbackCursor = null;
+                inspected++;
+                continue;
+            }
+            inspected++;
+            Key key = e.getKey();
+            PrimeRecord candidate = e.getValue();
+            PrimeRecord current = entries.get(key);
+            if (current != candidate) {
+                continue;
+            }
+            if (now - current.primedAtMillis > ttlMs
+                    || current.primedAtMillis < halfTtlBoundary
+                    || entries.size() > maxEntries) {
+                entries.remove(key, current);
+            }
+        }
+    }
+
+    /** Caller must hold {@link #evictionLock}. */
+    private void enqueueEvictionCandidate(Key key, PrimeRecord record) {
+        int tail = (evictionHead + evictionSize) % evictionCandidateLimit;
+        if (evictionSize == evictionCandidateLimit) {
+            evictionKeys[evictionHead] = null;
+            evictionRecords[evictionHead] = null;
+            evictionHead = (evictionHead + 1) % evictionCandidateLimit;
+            evictionSize--;
+        }
+        evictionKeys[tail] = key;
+        evictionRecords[tail] = record;
+        evictionSize++;
     }
 
     /**

@@ -15,7 +15,8 @@ plugins {
 rootProject.name = 'VonixGuardian'
 
 // Build profile: 'coreonly' builds only :core (fast iteration on the engine);
-// 'mc1211' adds 1.21.1 NeoForge + Fabric; 'all' adds every MC version + loader
+// 'mc1211' adds 1.21.1 NeoForge + Fabric; 'mc261' adds 26.1.2 NeoForge;
+// 'all' adds every MC version + loader
 // (default when unset, except metadata-only root tasks like printVersion).
 // 'forgeonly' = every Forge + NeoForge module, skipping Fabric (avoids the
 // fabric-loom classloader conflict during cross-version builds).
@@ -37,6 +38,10 @@ include 'core'
 if (profile == 'mc1211' || profile == 'all' || profile == 'forgeonly') {
     include ':mc-1.21.1:neoforge'
 }
+if (profile == 'mc261' || profile == 'all' || profile == 'forgeonly') {
+    include ':mc-26.1:neoforge'
+}
+
 if (profile == 'mc1211' || profile == 'all') {
     include ':mc-1.21.1:fabric'
 }

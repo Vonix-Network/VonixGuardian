@@ -1,7 +1,7 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
 Snapshot: **VG @ `073a233`** on branch `integration/v1.2.0` (2026-07-02) — includes v1.1.6 through the first v1.2.0 integration wave.
-CP reference: `docs.coreprotect.net` v23.x stable + v24 Patreon (auto-purge, migrate-db, CP-Fabric-Edition Patreon preview MC 26.1.2).
+CP reference pin (public, immutable): GitHub `https://github.com/PlayPro/CoreProtect` tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`; tag archive SHA-256 `54decf8412da3037fe97b09a5ec1052d257a696d940092affb5b96f098cea5b0` retrieved `2026-08-22T08:09:58Z`. Docs site `docs.coreprotect.net` remains a narrative snapshot only and is not the pinned source.
 
 Legend: ✅ full parity · 🟡 partial · 🟥 stub / broken / dead / advertised-but-unwired · ❌ missing · ❓ unverifiable
 

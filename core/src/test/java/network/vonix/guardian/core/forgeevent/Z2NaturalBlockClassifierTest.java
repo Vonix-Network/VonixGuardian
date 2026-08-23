@@ -48,8 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@link ActionType#LEAVES_DECAY} — leaves → air</li>
  * </ul>
  *
- * <p>DISPENSE is explicitly not covered — see {@code ForgeEvents.java} § Z2
- * gap acknowledgement + {@code docs/PERF-NOTES-1.3.3.md} § Z2.</p>
+ * <p>DISPENSE is not part of the Z2 event-bus classifier. Forge cells log it
+ * via {@code DispenserBlockMixin} instead.</p>
  */
 class Z2NaturalBlockClassifierTest {
 

@@ -52,6 +52,10 @@ import java.util.UUID;
  * @param entityNbt    v1.3.1 X1: raw entity NBT bytes so {@code /vg restore}
  *                     can respawn a mob with its original attributes
  *                     (custom name, tame owner, potion effects, etc.)
+ * @param pairId       nullable correlation id shared by an entity block-change
+ *                     and the fire it caused so paired rollback survives
+ *                     persistence and restart. {@code null} (or {@code 0})
+ *                     means unpaired. Added schema v6.
  */
 public record Action(
     long id,
@@ -73,8 +77,16 @@ public record Action(
     String newBlockState,
     byte[] blockEntityNbt,
     byte[] itemNbt,
-    byte[] entityNbt
+    byte[] entityNbt,
+    Long pairId
 ) {
+
+    /** Treat {@code 0} as unpaired so producers can pass a primitive zero. */
+    public Action {
+        if (pairId != null && pairId == 0L) {
+            pairId = null;
+        }
+    }
 
     /**
      * Legacy 14-arg constructor (pre-schema-v4). Delegates to the canonical
@@ -86,7 +98,7 @@ public record Action(
                   String worldId, int x, int y, int z, String targetId, String targetMeta,
                   int amount, boolean rolledBack, String sourceTag) {
         this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
-             amount, rolledBack, sourceTag, null, null, null, null, null, null, null, null);
+             amount, rolledBack, sourceTag, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -101,7 +113,24 @@ public record Action(
                   String signSide, String signDyeColor, Boolean signWaxed) {
         this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
              amount, rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
-             null, null, null, null, null);
+             null, null, null, null, null, null);
+    }
+
+    /**
+     * v1.3.1-era 22-arg constructor including NBT fidelity columns but without
+     * the schema-v6 pairing column. Delegates to the canonical constructor
+     * with {@code pairId=null}. Retained so pre-v1.3.14 producers, tests, and
+     * third-party API callers keep compiling unchanged.
+     */
+    public Action(long id, long timestamp, ActionType type, UUID actorUuid, String actorName,
+                  String worldId, int x, int y, int z, String targetId, String targetMeta,
+                  int amount, boolean rolledBack, String sourceTag,
+                  String signSide, String signDyeColor, Boolean signWaxed,
+                  String oldBlockState, String newBlockState,
+                  byte[] blockEntityNbt, byte[] itemNbt, byte[] entityNbt) {
+        this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
+             amount, rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
+             oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt, null);
     }
 
     /**
@@ -132,5 +161,14 @@ public record Action(
     public boolean hasNbt() {
         return oldBlockState != null || newBlockState != null
             || blockEntityNbt != null || itemNbt != null || entityNbt != null;
+    }
+
+    /**
+     * True when this row carries a durable fire/break pairing token.
+     *
+     * @return {@code true} if {@link #pairId} is a non-zero correlation id
+     */
+    public boolean hasPairId() {
+        return pairId != null && pairId != 0L;
     }
 }

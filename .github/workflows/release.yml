@@ -16,6 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - { module: 'mc-26.1:neoforge',   profile: 'mc261',  jdk: '25' }
           - { module: 'mc-1.21.1:neoforge', profile: 'mc1211', jdk: '21' }
           - { module: 'mc-1.21.1:fabric',   profile: 'mc1211', jdk: '21' }
           - { module: 'mc-1.20.1:fabric',   profile: 'mc1201', jdk: '17' }
@@ -91,6 +92,7 @@ jobs:
             echo
             echo "| MC version | Fabric | Forge / NeoForge |"
             echo "|---|---|---|"
+            echo "| 26.1.2 | — | \`vonixguardian-neoforge-26.1.2-${VERSION}.jar\` |"
             echo "| 1.21.1 | \`vonixguardian-fabric-1.21.1-${VERSION}.jar\` | \`vonixguardian-neoforge-1.21.1-${VERSION}.jar\` |"
             echo "| 1.20.1 | \`vonixguardian-fabric-1.20.1-${VERSION}.jar\` | \`vonixguardian-forge-1.20.1-${VERSION}.jar\` |"
             echo "| 1.19.2 | \`vonixguardian-fabric-1.19.2-${VERSION}.jar\` | \`vonixguardian-forge-1.19.2-${VERSION}.jar\` |"

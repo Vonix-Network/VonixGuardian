@@ -47,6 +47,7 @@ public final class EntityBlockChangeCoalescer {
     private final long windowNs;
     private final int maxEntries;
     private final ConcurrentHashMap<Key, AtomicLong> lastSeen;
+    private final java.util.function.LongSupplier clock;
 
     // Metrics — read by the queue's histogram so we can see coalescer effectiveness.
     private final AtomicLong hits = new AtomicLong();
@@ -70,11 +71,18 @@ public final class EntityBlockChangeCoalescer {
     }
 
     public EntityBlockChangeCoalescer(long windowMs, int maxEntries) {
+        this(windowMs, maxEntries, System::nanoTime);
+    }
+
+    /** Test constructor with an injected nanosecond clock. */
+    EntityBlockChangeCoalescer(long windowMs, int maxEntries,
+                               java.util.function.LongSupplier clock) {
         if (windowMs <= 0) throw new IllegalArgumentException("windowMs must be > 0");
         if (maxEntries <= 0) throw new IllegalArgumentException("maxEntries must be > 0");
         this.windowNs = TimeUnit.MILLISECONDS.toNanos(windowMs);
         this.maxEntries = maxEntries;
         this.lastSeen = new ConcurrentHashMap<>(Math.min(maxEntries, 1024));
+        this.clock = java.util.Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -90,7 +98,7 @@ public final class EntityBlockChangeCoalescer {
      *         a matching event was seen within the coalesce window
      */
     public boolean shouldLog(String actorId, String worldId, int x, int y, int z) {
-        long now = System.nanoTime();
+        long now = clock.getAsLong();
         Key k = new Key(actorId == null ? "" : actorId,
                         worldId == null ? "" : worldId, x, y, z);
 

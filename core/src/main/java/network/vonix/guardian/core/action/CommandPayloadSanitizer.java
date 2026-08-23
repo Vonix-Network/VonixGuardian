@@ -57,7 +57,7 @@ public final class CommandPayloadSanitizer {
                 targetId, action.targetMeta(), action.amount(), action.rolledBack(),
                 action.sourceTag(), action.signSide(), action.signDyeColor(), action.signWaxed(),
                 action.oldBlockState(), action.newBlockState(), action.blockEntityNbt(),
-                action.itemNbt(), action.entityNbt());
+                action.itemNbt(), action.entityNbt(), action.pairId());
     }
 
     private static int firstWhitespace(String value) {

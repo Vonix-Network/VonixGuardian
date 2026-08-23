@@ -1,0 +1,234 @@
+/*
+ * VonixGuardian — mc-26.1 :neoforge
+ *
+ * NeoForge 26.1.2.x loader module for MC 26.1 / BMC6. Bundles `core` + shared common code + sqlite-jdbc
+ * (the default DB driver) via Shadow into a single drop-in jar.
+ *
+ * MySQL/Postgres drivers are NOT shaded — operators using those backends drop
+ * the driver jar alongside ours.
+ */
+
+plugins {
+    id 'net.neoforged.moddev' version '2.0.140'
+    id 'com.gradleup.shadow' version '8.3.9'
+    id 'java-library'
+}
+
+base { archivesName = 'vonixguardian-neoforge-26.1.2' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(25) }
+    withSourcesJar()
+}
+
+neoForge {
+    version = '26.1.2.93'
+
+    runs {
+        configureEach {
+            systemProperty('forge.logging.markers', 'REGISTRIES')
+            systemProperty('forge.logging.console.level', 'debug')
+        }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+    }
+
+    mods {
+        vonixguardian {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.parchmentmc.org/' }
+    maven { url 'https://repo.spongepowered.org/repository/maven-public/' }
+}
+
+configurations {
+    shaded
+    implementation.extendsFrom shaded
+}
+
+dependencies {
+    // Mixin API provided by the NeoForge loader at runtime; compileOnly is enough.
+    compileOnly 'org.spongepowered:mixin:0.8.5'
+
+    // Shade pure-Java libs (gson, hikaricp) — safe to relocate.
+    // sqlite-jdbc has JNI native code; relocating Java classes breaks JNI symbol lookup.
+    // Ship it as a JarInJar nested jar (NeoForge's official multi-mod-conflict resolution).
+    shaded project(':core')
+    // MDG 26.1 removed additionalRuntimeClasspath; core is on implementation via shaded extendsFrom
+    // ModDevGradle dev runs only load dependencies that are mods/libraries on
+    shaded(libs.hikaricp) {
+        // Hikari pulls slf4j-api transitively. We DO NOT want it in the outer jar
+        // because NeoForge already exports an org.slf4j module — leaking it here
+        // causes JPMS ResolutionException "Module vonixguardian contains package
+        // org.slf4j.spi, module org.slf4j exports package org.slf4j.spi to vonixguardian".
+        exclude group: 'org.slf4j'
+    }
+    shaded libs.gson
+
+    // sqlite-jdbc: nested jar via jarJar. Loader extracts at runtime and dedups
+    // by Maven coords across all mods. See LIBRARY-PACKAGING.md for the JNI rationale.
+    jarJar(libs.sqlite.jdbc) {
+        // Pin to exact version we tested with; loader's nested-jar resolver will
+        // dedup against any other mod shipping the same artifact.
+        version {
+            strictly libs.versions.sqlite.jdbc.get()
+        }
+    }
+    // mysql-connector-j is pure Java (no JNI). JIJ so operators don't have to
+    // manually drop the driver in /mods when config.database.type=mysql.
+    jarJar(libs.mysql.connector) {
+        version {
+            strictly libs.versions.mysql.connector.get()
+        }
+    }
+    // postgresql is pure Java. Same rationale — JIJ for db.type=postgresql.
+    jarJar(libs.postgresql) {
+        version {
+            strictly libs.versions.postgresql.get()
+        }
+    }
+
+    // MDG 26.1 no longer exposes additionalRuntimeClasspath. Keep the
+    // database drivers on the dev-server runtime classpath as well as in
+    // production Jar-in-Jar packaging, so the development and packaged
+    // server paths exercise the same JDBC bootstrap contract.
+    runtimeOnly libs.sqlite.jdbc
+    runtimeOnly libs.mysql.connector
+    runtimeOnly libs.postgresql
+
+    testImplementation platform(libs.junit.bom)
+    testImplementation libs.junit.jupiter
+    testImplementation libs.assertj.core
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+tasks.named('processResources') {
+    inputs.property 'mod_version', project.version
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand(
+            mod_id: 'vonixguardian',
+            mod_name: 'VonixGuardian',
+            mod_version: project.version,
+            mod_authors: 'Vonix Network',
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mod_license: 'MIT',
+            mod_issue_tracker: 'https://github.com/Vonix-Network/VonixGuardian/issues',
+            mod_homepage: 'https://github.com/Vonix-Network/VonixGuardian',
+            mc_version: '26.1.2',
+            neoforge_version: '26.1.2.93'
+        )
+    }
+}
+
+shadowJar {
+    archiveClassifier = ''
+    configurations = [project.configurations.shaded]
+
+    // Relocate pure-Java shaded libs only. sqlite-jdbc goes via jarJar (see deps block).
+    relocate 'com.google.gson', 'network.vonix.guardian.shadow.gson'
+    relocate 'com.zaxxer.hikari', 'network.vonix.guardian.shadow.hikari'
+
+    minimize {
+        exclude(dependency('com.zaxxer:HikariCP:.*'))
+    }
+
+    mergeServiceFiles()
+
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/maven/**'
+    // Exclude module-info at top level AND every multi-release variant
+    // (META-INF/versions/N/module-info.class). Gson 2.10.1 ships its module
+    // descriptor as a Java-9+ multi-release entry; without the wildcard exclude
+    // it survives shading and conflicts with NeoForge's own Gson module when
+    // any Fabric-on-Forge compatibility layer (e.g. Sinytra Connector) rewrites
+    // the module layer at boot. The conflict is silent — no crash report, JVM
+    // is killed during ModuleLayer construction. See VonixGuardian#1.0.1.
+    exclude 'module-info.class'
+    exclude 'META-INF/versions/*/module-info.class'
+}
+
+// NeoForge's jarJar plugin writes META-INF/jarjar/<artifact>.jar + metadata.json
+// into build/generated/jarJar/. Append both into the shadow output AFTER it builds,
+// because Shadow's `from()` pipeline strips nested .jar files (it treats them as
+// configurations to unpack). Using ant.zip in doLast gives us raw zip-append behaviour.
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+
+tasks.named('shadowJar') {
+    dependsOn 'jarJar'
+    doLast {
+        File shadow = archiveFile.get().asFile
+        File jarjarDir = layout.buildDirectory.dir('generated/jarJar/META-INF/jarjar').get().asFile
+        if (!jarjarDir.exists()) {
+            logger.warn 'jarJar output dir missing; skipping nest-merge'
+            return
+        }
+        File tmp = new File(shadow.parentFile, shadow.name + '.tmp')
+
+        new ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
+            // Copy existing entries from shadow output
+            new ZipFile(shadow).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    // Skip any existing META-INF/jarjar/ entries; we're going to rewrite them
+                    if (entry.name.startsWith('META-INF/jarjar/')) return
+                    out.putNextEntry(new ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(out) }
+                    out.closeEntry()
+                }
+            }
+            // Append all jarJar artifacts (both the .jar and metadata.json)
+            jarjarDir.eachFile { f ->
+                out.putNextEntry(new ZipEntry("META-INF/jarjar/${f.name}"))
+                f.withInputStream { it.transferTo(out) }
+                out.closeEntry()
+            }
+        }
+        java.nio.file.Files.move(
+            tmp.toPath(), shadow.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE
+        )
+        logger.lifecycle "Embedded ${jarjarDir.listFiles().length} jarJar entries into ${shadow.name}"
+    }
+}
+
+tasks.named('jar') {
+    archiveClassifier = 'slim'
+}
+
+tasks.named('build') {
+    dependsOn shadowJar
+}
+
+tasks.register('verifyProductionMappings') {
+    dependsOn 'shadowJar'
+    doLast {
+        File artifact = layout.buildDirectory.file("libs/${archivesBaseName}-${project.version}.jar").get().asFile
+        if (!artifact.isFile()) throw new GradleException("Missing NeoForge production artifact: ${artifact}")
+        String listing = ['jar', 'tf', artifact.absolutePath].execute().text
+        if (!listing.contains('network/vonix/guardian/mc/v26_1/neoforge/NeoForgeWorldMutator.class')) throw new GradleException("Missing NeoForge mutator in ${artifact}")
+        if (!listing.contains('vg-neoforge.mixins.json')) throw new GradleException("Missing vg-neoforge.mixins.json in ${artifact}")
+        if (!listing.contains('vg-neoforge.refmap.json')) throw new GradleException("Missing vg-neoforge.refmap.json in ${artifact}")
+    }
+}
+
+tasks.named('build') { dependsOn 'verifyProductionMappings' }

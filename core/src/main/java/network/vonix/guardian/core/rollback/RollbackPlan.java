@@ -156,6 +156,8 @@ public final class RollbackPlan {
         private final List<Action> ordered = new ArrayList<>();
         private final List<Action> skipped = new ArrayList<>();
         private final HashSet<PosKey> seen = new HashSet<>();
+        private final HashSet<Long> seenIds = new HashSet<>();
+        private final HashSet<Long> pairIds = new HashSet<>();
 
         private StreamingBuilder(QueryFilter originalFilter,
                                  RollbackResult.Mode mode,
@@ -167,6 +169,12 @@ public final class RollbackPlan {
 
         void add(Action a) {
             Objects.requireNonNull(a, "action");
+            if (a.id() >= 0L && !seenIds.add(a.id())) {
+                return;
+            }
+            if (a.hasPairId()) {
+                pairIds.add(a.pairId());
+            }
             if (!isRollbackable(a)) {
                 skipped.add(a);
                 return;
@@ -182,6 +190,7 @@ public final class RollbackPlan {
 
         int plannedSteps() { return ordered.size(); }
         int skippedActions() { return skipped.size(); }
+        java.util.Set<Long> pairIds() { return pairIds; }
 
         RollbackPlan build() {
             if (ordered.isEmpty() && skipped.isEmpty()) {

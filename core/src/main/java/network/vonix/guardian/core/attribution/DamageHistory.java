@@ -4,7 +4,9 @@
  */
 package network.vonix.guardian.core.attribution;
 
+import java.util.HashMap;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -18,9 +20,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@link #record(UUID, UUID, long)} on every damage event where the attacker is a
  * player. {@link #lastPlayerToHit(UUID, long, long)} answers the resolver chain.
  *
- * <p>Memory is bounded by a configured max entry count with LRU eviction of the
- * oldest victim entry on overflow. Each victim only stores the latest player + ts;
- * this is enough for the "recent damage window" attribution heuristic.
+ * <p>Memory is bounded by a configured max entry count with eviction of the
+ * oldest victim entry (lowest {@link Hit#timestamp}) on overflow. Each victim
+ * only stores the latest player + ts; this is enough for the "recent damage
+ * window" attribution heuristic.
  *
  * <p>Thread-safe. Designed to be called from the server tick thread (low contention).
  *
@@ -39,14 +42,26 @@ public final class DamageHistory {
     private final Map<UUID, Hit> hits = new ConcurrentHashMap<>();
     private final AtomicLong evictions = new AtomicLong();
     /**
+     * Timestamp-ordered live index. {@link #evictOldestLocked()} always
+     * removes the lowest {@link Hit#timestamp}, matching the prior
+      * PriorityQueue selection even when callers supply out-of-order times.
+     * Overwrite/forget/clear remove the previous node so the index cannot
+     * grow past the live map.
+     */
+    private final TreeSet<IndexNode> byTimestamp = new TreeSet<>();
+    private final HashMap<UUID, IndexNode> indexByVictim = new HashMap<>();
+    /** Guards hits mutations, the timestamp index, and {@link #clear()}. */
+    private final Object stateLock = new Object();
+    private long indexSeq;
+    /**
      * v1.3.1 X6 (P1-2): counter of insertions observed while {@code size > maxEntries}.
-     * We only invoke {@link #evictOldest()} every {@link #EVICT_STRIDE}th over-cap
-     * insert, amortizing the O(n) sweep across many events. Between sweeps the map
+     * We only invoke {@link #evictOldestLocked()} every {@link #EVICT_STRIDE}th over-cap
+     * insert, amortizing eviction across many events. Between sweeps the map
      * may transiently overshoot the cap by up to {@code EVICT_STRIDE} entries — a
-     * negligible heap price for taking the O(n) scan off the server tick.
+     * negligible heap price for taking a full oldest-entry selection off the server tick.
      */
     private final AtomicLong evictCounter = new AtomicLong();
-    /** Amortization stride: run the full oldest-entry sweep every 64th over-cap insert. */
+    /** Amortization stride: run the oldest-entry sweep every 64th over-cap insert. */
     static final int EVICT_STRIDE = 64;
 
     public DamageHistory() {
@@ -69,15 +84,24 @@ public final class DamageHistory {
         if (victim == null || attacker == null) {
             return;
         }
-        hits.put(victim, new Hit(attacker, timestampMs));
-        if (hits.size() > maxEntries) {
-            // v1.3.1 X6 (P1-2): amortized eviction. Under sustained combat the map sits
-            // at cap and every damage event would otherwise pay an O(n) sweep on the
-            // server tick. Only run the sweep every EVICT_STRIDE-th over-cap insert;
-            // between sweeps the map overshoots by up to EVICT_STRIDE entries (~1 KB
-            // heap), which is trivially cheaper than 63 wasted O(n) scans.
-            if ((evictCounter.incrementAndGet() % EVICT_STRIDE) == 0L) {
-                evictOldest();
+        Hit hit = new Hit(attacker, timestampMs);
+        synchronized (stateLock) {
+            Hit prev = hits.put(victim, hit);
+            if (prev != null) {
+                removeIndex(victim);
+            }
+            IndexNode node = new IndexNode(timestampMs, ++indexSeq, victim, hit);
+            byTimestamp.add(node);
+            indexByVictim.put(victim, node);
+            if (hits.size() > maxEntries) {
+                // v1.3.1 X6 (P1-2): amortized eviction. Under sustained combat the map sits
+                // at cap and every damage event would otherwise pay an O(n) sweep on the
+                // server tick. Only run the sweep every EVICT_STRIDE-th over-cap insert;
+                // between sweeps the map overshoots by up to EVICT_STRIDE entries (~1 KB
+                // heap), which is trivially cheaper than 63 wasted O(n) scans.
+                if ((evictCounter.incrementAndGet() % EVICT_STRIDE) == 0L) {
+                    evictOldestLocked();
+                }
             }
         }
     }
@@ -97,7 +121,11 @@ public final class DamageHistory {
             return null;
         }
         if (nowMillis - h.timestamp > windowMs) {
-            hits.remove(victim, h);
+            synchronized (stateLock) {
+                if (hits.remove(victim, h)) {
+                    removeIndex(victim);
+                }
+            }
             return null;
         }
         return h.attacker;
@@ -110,8 +138,12 @@ public final class DamageHistory {
 
     /** Drop the entry for {@code victim} (e.g. on entity death). */
     public void forget(UUID victim) {
-        if (victim != null) {
+        if (victim == null) {
+            return;
+        }
+        synchronized (stateLock) {
             hits.remove(victim);
+            removeIndex(victim);
         }
     }
 
@@ -122,50 +154,63 @@ public final class DamageHistory {
 
     /** Drop all entries — used on world unload / shutdown. */
     public void clear() {
-        hits.clear();
+        synchronized (stateLock) {
+            hits.clear();
+            byTimestamp.clear();
+            indexByVictim.clear();
+            evictCounter.set(0L);
+        }
     }
 
     // ------------------------------------------------------------------
 
-    private void evictOldest() {
-        // v1.3.1 X6 (P1-2): evict a batch equal to EVICT_STRIDE per amortized sweep.
-        // Under sustained cap pressure the record() gate fires the sweep every
-        // EVICT_STRIDE-th over-cap insert; each sweep needs to remove at least
-        // that many entries to keep the map from growing linearly. We do a
-        // single O(n) pass and remove the STRIDE oldest entries in one shot,
-        // trading one O(n log STRIDE) sweep every 64 events for O(1) per event
-        // amortized (was O(n) per event with only 1 eviction, before X6).
-        //
-        // v1.3.6 CC2 (P2-10): audit — the PriorityQueue allocation here is
-        // paid at most once per EVICT_STRIDE=64 events, so the amortized cost
-        // is (64 entries × ~40B / entry) / 64 events ≈ 40 bytes/event. That's
-        // trivially below GC noise; the PQ is left in place as-is. A future
-        // refactor could keep an intrusive linked-timestamp index to avoid
-        // the PQ entirely, but that adds a lot of state per Hit for no
-        // measurable win at 20 Hz tick.
-        int target = EVICT_STRIDE;
-        // Small ordered ring of "oldest-so-far" keys. Java has no fixed-size
-        // priority queue that keeps the MAX for easy replacement; use PQ with
-        // reverse ordering so peek() returns the largest of the current picks.
-        java.util.PriorityQueue<Map.Entry<UUID, Long>> topOldest =
-                new java.util.PriorityQueue<>((a, b) -> Long.compare(b.getValue(), a.getValue()));
-        for (Map.Entry<UUID, Hit> e : hits.entrySet()) {
-            long ts = e.getValue().timestamp;
-            if (topOldest.size() < target) {
-                topOldest.add(Map.entry(e.getKey(), ts));
-            } else if (ts < topOldest.peek().getValue()) {
-                topOldest.poll();
-                topOldest.add(Map.entry(e.getKey(), ts));
+    private void evictOldestLocked() {
+        int removed = 0;
+        while (hits.size() > maxEntries
+                && removed < EVICT_STRIDE
+                && !byTimestamp.isEmpty()) {
+            IndexNode oldest = byTimestamp.pollFirst();
+            if (indexByVictim.get(oldest.victim) != oldest) {
+                continue;
             }
-        }
-        long removed = 0L;
-        for (Map.Entry<UUID, Long> e : topOldest) {
-            if (hits.remove(e.getKey()) != null) {
+            indexByVictim.remove(oldest.victim);
+            if (hits.remove(oldest.victim, oldest.hit)) {
                 removed++;
             }
         }
-        if (removed > 0L) {
+        if (removed > 0) {
             evictions.addAndGet(removed);
+        }
+    }
+
+    private void removeIndex(UUID victim) {
+        IndexNode old = indexByVictim.remove(victim);
+        if (old != null) {
+            byTimestamp.remove(old);
+        }
+    }
+
+    /**
+     * Ordered by {@link Hit#timestamp} ascending, then a unique sequence so
+     * equal timestamps remain distinct TreeSet entries.
+     */
+    private static final class IndexNode implements Comparable<IndexNode> {
+        final long timestamp;
+        final long seq;
+        final UUID victim;
+        final Hit hit;
+
+        IndexNode(long timestamp, long seq, UUID victim, Hit hit) {
+            this.timestamp = timestamp;
+            this.seq = seq;
+            this.victim = victim;
+            this.hit = hit;
+        }
+
+        @Override
+        public int compareTo(IndexNode o) {
+            int byTime = Long.compare(timestamp, o.timestamp);
+            return byTime != 0 ? byTime : Long.compare(seq, o.seq);
         }
     }
 

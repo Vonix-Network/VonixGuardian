@@ -1,8 +1,19 @@
 # CoreProtect 1:1 Gap Inventory (v24.0)
 
-Source: `/root/staging/coreprotect-ref/CoreProtect` (v24.0).
+Pinned public reference (immutable):
+- Repository: `https://github.com/PlayPro/CoreProtect`
+- Tag: `v24.0`
+- Commit: `b5f534fd2c735c6f094cda8ca50a66324e81b048`
+- Tag archive: `https://github.com/PlayPro/CoreProtect/archive/refs/tags/v24.0.tar.gz`
+- Tag archive SHA-256: `54decf8412da3037fe97b09a5ec1052d257a696d940092affb5b96f098cea5b0` (365733 bytes)
+- Commit archive: `https://github.com/PlayPro/CoreProtect/archive/b5f534fd2c735c6f094cda8ca50a66324e81b048.tar.gz`
+- Commit archive SHA-256: `dec32e3f936daca282586d3b8ac2f2888b0d428b4c8beae53239fb7595756401` (365352 bytes)
+- Retrieved: `2026-08-22T08:09:58Z`
+
+The previous local path `/root/staging/coreprotect-ref/CoreProtect` is not an immutable pin and is not used as the reference for this inventory.
+
 Target: VonixGuardian on integration/v1.2.0 (commit b88118b).
-Method: exhaustive source scan, not docs.
+Method: exhaustive source scan, not docs. The pin above makes the v24.0 tree independently reproducible; it does not by itself re-prove every row of this historical inventory.
 
 ## Legend
 ✅ done · 🟡 partial · 🟥 unwired-but-declared · ❌ missing · ➖ intentionally-different (design)

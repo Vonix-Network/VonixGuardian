@@ -48,8 +48,8 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         "INSERT INTO vg_actions("
         + "ts, type, user_id, world_id, x, y, z, target, meta, amount, rolled_back, source_tag, "
         + "sign_side, sign_dye_color, sign_waxed, "
-        + "old_block_state, new_block_state, block_entity_nbt, item_nbt, entity_nbt"
-        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        + "old_block_state, new_block_state, block_entity_nbt, item_nbt, entity_nbt, pair_id"
+        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     /** uuid-string -> id, only populated for real (non-null UUID) users. */
     private final ConcurrentHashMap<String, Integer> userIdByUuid = new ConcurrentHashMap<>();
@@ -205,6 +205,11 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                     } else {
                         ps.setBytes(20, a.entityNbt());
                     }
+                    if (a.pairId() == null || a.pairId() == 0L) {
+                        ps.setNull(21, java.sql.Types.BIGINT);
+                    } else {
+                        ps.setLong(21, a.pairId());
+                    }
                     ps.addBatch();
                 }
                 int[] r = ps.executeBatch();
@@ -343,7 +348,8 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         Boolean signWaxed = rs.wasNull() ? null : waxedRaw;
         if (!includePayload) {
             return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
-                              rolledBack, sourceTag, signSide, signDyeColor, signWaxed);
+                              rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
+                              null, null, null, null, null, readPairId(rs, 18));
         }
         // v1.3.1 X1 NBT columns. Read regardless of storage.persistNbt so
         // historical rows survive the operator toggling the flag back off.
@@ -354,7 +360,63 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         byte[] entityNbt = rs.getBytes(22);
         return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
                           rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
-                          oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt);
+                          oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt,
+                          readPairId(rs, 23));
+    }
+
+    private static Long readPairId(ResultSet rs, int column) throws SQLException {
+        long v = rs.getLong(column);
+        if (rs.wasNull() || v == 0L) {
+            return null;
+        }
+        return v;
+    }
+
+    @Override
+    public List<Action> findByPairIds(java.util.Collection<Long> pairIds) throws SQLException {
+        if (pairIds == null || pairIds.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>();
+        for (Long id : pairIds) {
+            if (id != null && id != 0L) {
+                ids.add(id);
+            }
+        }
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<Action> out = new ArrayList<>();
+        Connection c = borrow();
+        try {
+            for (int start = 0; start < ids.size(); start += MARK_ROLLED_BACK_CHUNK_SIZE) {
+                int end = Math.min(start + MARK_ROLLED_BACK_CHUNK_SIZE, ids.size());
+                StringBuilder sql = new StringBuilder("SELECT ")
+                        .append(QueryCompiler.SELECT_PROJECTION)
+                        .append(" FROM vg_actions a ")
+                        .append("JOIN vg_users  u ON u.id = a.user_id ")
+                        .append("JOIN vg_worlds w ON w.id = a.world_id ")
+                        .append("WHERE a.pair_id IN (");
+                for (int i = start; i < end; i++) {
+                    if (i > start) sql.append(',');
+                    sql.append('?');
+                }
+                sql.append(')');
+                try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+                    for (int i = start; i < end; i++) {
+                        ps.setLong(i - start + 1, ids.get(i));
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            out.add(readAction(rs, true));
+                        }
+                    }
+                }
+            }
+            return out;
+        } finally {
+            release(c);
+        }
     }
 
     private static UUID safeUuid(String s) {

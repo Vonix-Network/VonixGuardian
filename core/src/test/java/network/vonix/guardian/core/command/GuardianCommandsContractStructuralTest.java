@@ -24,7 +24,8 @@ class GuardianCommandsContractStructuralTest {
         "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/common/GuardianCommands.java",
         "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/common/GuardianCommands.java",
         "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/common/GuardianCommands.java",
-        "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/common/GuardianCommands.java"
+        "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/common/GuardianCommands.java",
+        "mc-26.1/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/common/GuardianCommands.java"
     );
 
     @Test
@@ -80,7 +81,8 @@ class GuardianCommandsContractStructuralTest {
                 .contains("if (filter.countOnly())")
                 .contains("[VonixGuardian] Count: ")
                 .contains("LookupPermissionFilter.countVisible(")
-                .doesNotContain("long total = g.dao().count(filter);");
+                .doesNotContain("long total = g.dao().count(filter);")
+                .doesNotContain("int pages = (int) Math.max(1L, (total + perPageF - 1) / Math.max(1, perPageF));");
             assertThat(text)
                 .as("%s should fill pages in visible-row coordinates", cell)
                 .contains("LookupPermissionFilter.visiblePage(")
@@ -88,7 +90,15 @@ class GuardianCommandsContractStructuralTest {
                 .contains("if (!visiblePage.complete())")
                 .contains("visiblePage.rows()")
                 .contains("Lookup aborted: the permission-filtered page exceeded")
+                .contains("filter, pageActual, perPageF, true)")
+                .contains("visiblePage.hasNext()")
                 .doesNotContain("LookupPermissionFilter.visiblePage(\n                            g.dao(), g.perms(), viewer, PermissionNode.LOOKUP,\n                            filter, pageActual, perPageF).rows()");
+            assertThat(text)
+                .as("%s should document and implement CoreProtect-style page[:perPage] lookup tokens", cell)
+                .contains("private static final Pattern PAGE_TOKEN")
+                .contains("Matcher m = PAGE_TOKEN.matcher(first)")
+                .contains("LookupFormatter.page(")
+                .contains("<page>[:<perPage>] before filter");
             assertThat(text.indexOf("if (filter.countOnly())"))
                 .as("%s should branch before the visible lookup query", cell)
                 .isLessThan(text.indexOf("LookupPermissionFilter.visiblePage("));

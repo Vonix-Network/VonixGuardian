@@ -110,7 +110,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      */
     private final network.vonix.guardian.core.attribution.TntPrimeMemory tntPrimeMemory;
     /**
-     * v1.3.11 C2: short-lived spatial cache mapping an entity's block change to
+     * v1.3.13 C2: short-lived spatial cache mapping an entity's block change to
      * who did it and whether it was allowlisted, so fire ignited as a side
      * effect can be paired/attributed (allowlisted causer) or suppressed as
      * orphan noise (non-allowlisted causer). Populated by the loader-side
@@ -370,7 +370,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     /**
-     * v1.3.11 C2: shared fire-causer memory. The loader entity-block-change
+     * v1.3.13 C2: shared fire-causer memory. The loader entity-block-change
      * handler records here on every entity break (allowlisted or not); the fire
      * bridge consults it via
      * {@link network.vonix.guardian.core.attribution.UniversalAttribution#resolveFireCauser}
@@ -1101,14 +1101,18 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public void submitBurn(UUID actorUuid, String actorName, String worldId,
                            int x, int y, int z, String blockId, String sourceTag) {
         submit(seed(ActionType.BURN, actorUuid, actorName, worldId)
-                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag)
+                .pairId(network.vonix.guardian.core.attribution.UniversalAttribution.takePendingFirePairId())
+                .build());
     }
 
     @Override
     public void submitIgnite(UUID actorUuid, String actorName, String worldId,
                              int x, int y, int z, String blockId, String sourceTag) {
         submit(seed(ActionType.IGNITE, actorUuid, actorName, worldId)
-                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag)
+                .pairId(network.vonix.guardian.core.attribution.UniversalAttribution.takePendingFirePairId())
+                .build());
     }
 
     @Override
@@ -1223,6 +1227,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 .targetId(oldBlockId != null ? oldBlockId : "minecraft:air")
                 .targetMeta(newBlockId != null ? newBlockId : "minecraft:air")
                 .sourceTag(sourceTag)
+                .pairId(fireCauserMemory.pairIdAt(worldId, x, y, z))
                 .build());
     }
 
@@ -1454,6 +1459,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 .oldBlockState(oldBlockState)
                 .newBlockState(newBlockState)
                 .blockEntityNbt(blockEntityNbt)
+                .pairId(fireCauserMemory.pairIdAt(worldId, x, y, z))
                 .build());
     }
 
