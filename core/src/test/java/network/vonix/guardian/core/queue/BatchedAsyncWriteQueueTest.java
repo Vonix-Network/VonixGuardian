@@ -641,6 +641,50 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void awaitIdleDoesNotBlockWhileWorkerPolls() throws Exception {
+        CapturingSink sink = new CapturingSink(0);
+        CountDownLatch prePollEntered = new CountDownLatch(1);
+        CountDownLatch releasePrePoll = new CountDownLatch(1);
+        Runnable prePollProbe = () -> {
+            prePollEntered.countDown();
+            try {
+                assertThat(releasePrePoll.await(3, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(ex);
+            }
+        };
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                16, 5_000L, 1, sink, DAEMON, (QuarantineStore) null,
+                null, null, null, null, prePollProbe);
+        AtomicBoolean idle = new AtomicBoolean(true);
+        CountDownLatch returned = new CountDownLatch(1);
+        Thread waiter = new Thread(() -> {
+            try {
+                idle.set(q.awaitIdle(50L));
+            } finally {
+                returned.countDown();
+            }
+        }, "vg-idle-timeout-waiter");
+        try {
+            assertThat(q.freezeAdmission()).isTrue();
+            waiter.start();
+            assertThat(prePollEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(returned.await(500, TimeUnit.MILLISECONDS))
+                    .as("awaitIdle must not block behind the worker's long poll")
+                    .isTrue();
+            assertThat(idle).isTrue();
+            releasePrePoll.countDown();
+        } finally {
+            releasePrePoll.countDown();
+            if (waiter.isAlive()) {
+                waiter.join(2_000L);
+            }
+            q.close();
+        }
+    }
+
+    @Test
     void idleBarrierCannotObserveEmptyQueueBeforeWorkerPublishesPollState() throws Exception {
         CapturingSink sink = new CapturingSink(1);
         CountDownLatch pollEntered = new CountDownLatch(1);
@@ -661,7 +705,7 @@ class BatchedAsyncWriteQueueTest {
         CountDownLatch idleReturned = new CountDownLatch(1);
         Thread waiter = new Thread(() -> {
             try {
-                idle.set(q.awaitIdle(2_000L));
+                idle.set(q.awaitIdle(10_000L));
             } finally {
                 idleReturned.countDown();
             }

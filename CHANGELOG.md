@@ -68,7 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observation so a concurrent quarantine cannot produce a stale idle result.
   Queue removal and worker-state publication are also serialized with idle
   inspection so an admitted action cannot disappear between `poll()` and its
-  non-idle state publication.
+  non-idle state publication; the timed poll itself is outside the state lock,
+  so the caller's idle timeout remains bounded.
 - **Forge server directory.** 1.18.2/1.19.2/1.20.1 Forge bootstraps resolve
   Mojmap/SRG `getServerDirectory` or `FMLPaths.GAMEDIR` and fail closed
   instead of silently using cwd.
