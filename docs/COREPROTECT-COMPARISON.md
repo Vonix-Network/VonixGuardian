@@ -1,12 +1,12 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-**Current candidate (r56 release successor, 2026-08-25):** VonixGuardian 1.4.1 at the successor commit pinned by Hermes evidence on baseline `505cee04099152d7144b241c69140b4e9204cd9a`, with the r55 Terra timeout finding repaired by moving the timed queue poll outside the pipeline-state lock while publishing explicit poll-in-flight/returned phases and retaining deterministic handoff, empty-poll, timeout, and quarantine interleaving regressions. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
+**Current candidate (r57 release successor, 2026-08-25):** VonixGuardian 1.4.1 at the successor commit pinned by Hermes evidence on baseline `505cee04099152d7144b241c69140b4e9204cd9a`, with the r56 Terra test-quality finding repaired by making the empty-poll regression teardown-safe, joining the probe before queue close, and capturing uncaught worker failures. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
 
 This matrix describes the versioned source candidate and its committed evidence boundary. The candidate pin, source manifest, artifact manifest, and Terra verdict are external Hermes evidence records and are not tracked in this repository.
 
 This file still contains a historical v1.2.0 / 2026-07-02 matrix below. Where that older text says eight loader cells, 39 action types, ~380 tests, schema v2, `/vg reload` stub, missing migrate-db, or “1:1 parity”, treat the **current-state** section as authoritative.
 
-## Current state (r56) — do not invent remaining v24 features
+## Current state (r57) — do not invent remaining v24 features
 
 Implemented on this tree and **not** complete CoreProtect v24 parity:
 

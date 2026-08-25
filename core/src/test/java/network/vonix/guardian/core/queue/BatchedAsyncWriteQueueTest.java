@@ -14,6 +14,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -645,17 +646,30 @@ class BatchedAsyncWriteQueueTest {
         CapturingSink sink = new CapturingSink(0);
         CountDownLatch prePollEntered = new CountDownLatch(1);
         CountDownLatch releasePrePoll = new CountDownLatch(1);
+        CountDownLatch prePollExited = new CountDownLatch(1);
+        AtomicReference<Throwable> probeFailure = new AtomicReference<>();
+        AtomicReference<Throwable> workerFailure = new AtomicReference<>();
         Runnable prePollProbe = () -> {
             prePollEntered.countDown();
             try {
-                assertThat(releasePrePoll.await(3, TimeUnit.SECONDS)).isTrue();
+                if (!releasePrePoll.await(3, TimeUnit.SECONDS)) {
+                    probeFailure.set(new AssertionError("pre-poll probe was not released"));
+                }
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
-                throw new AssertionError(ex);
+                probeFailure.set(ex);
+            } finally {
+                prePollExited.countDown();
             }
         };
+        ThreadFactory testFactory = r -> {
+            Thread t = new Thread(r, "vg-idle-timeout-queue-test");
+            t.setDaemon(true);
+            t.setUncaughtExceptionHandler((thread, failure) -> workerFailure.set(failure));
+            return t;
+        };
         BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
-                16, 5_000L, 1, sink, DAEMON, (QuarantineStore) null,
+                16, 5_000L, 1, sink, testFactory, (QuarantineStore) null,
                 null, null, null, null, prePollProbe);
         AtomicBoolean idle = new AtomicBoolean(true);
         CountDownLatch returned = new CountDownLatch(1);
@@ -675,6 +689,9 @@ class BatchedAsyncWriteQueueTest {
                     .isTrue();
             assertThat(idle).isTrue();
             releasePrePoll.countDown();
+            assertThat(prePollExited.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(probeFailure.get()).isNull();
+            assertThat(workerFailure.get()).isNull();
         } finally {
             releasePrePoll.countDown();
             if (waiter.isAlive()) {
