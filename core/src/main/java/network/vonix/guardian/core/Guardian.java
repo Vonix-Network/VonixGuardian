@@ -464,8 +464,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     /**
      * Wait for the async pipeline to become idle without closing it: bounded
-     * queue empty, worker local batch empty, and no in-flight sink
-     * transaction. Must only be called off the server thread after
+     * queue empty, worker local batch empty, no in-flight sink transaction, and
+     * no durable quarantine recovery entries. Must only be called off the
+     * server thread after
      * {@link #beginMaintenanceWriteBlock(String)}. Returns false on
      * timeout/interruption.
      */

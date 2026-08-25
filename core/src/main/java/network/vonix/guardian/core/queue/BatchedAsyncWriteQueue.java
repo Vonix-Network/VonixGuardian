@@ -321,9 +321,10 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     }
 
     /**
-     * Wait until the ring buffer, worker local batch, and in-flight sink
-     * transaction are all idle. Callers must freeze admission first so the
-     * idle observation cannot race a new offer.
+     * Wait until the ring buffer, worker local batch, in-flight sink
+     * transaction, and durable quarantine recovery map are all idle. Callers
+     * must freeze admission first so the idle observation cannot race a new
+     * offer or a deferred recovery write.
      */
     public boolean awaitIdle(long timeoutMs) {
         long deadline = System.nanoTime() + Math.max(0L, timeoutMs) * 1_000_000L;
@@ -344,10 +345,15 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     }
 
     boolean isPipelineIdle() {
+        boolean recoveryIdle;
+        synchronized (recovery) {
+            recoveryIdle = recovery.isEmpty();
+        }
         return queue.isEmpty()
                 && localBatchHeld.get() == 0
                 && sinkInFlight.get() == 0
-                && workerIdle.get();
+                && workerIdle.get()
+                && recoveryIdle;
     }
 
     private void recordSubmit(Action a) {

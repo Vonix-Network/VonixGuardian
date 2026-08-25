@@ -641,6 +641,24 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void freezeAdmissionDoesNotReportIdleWhileDurableRecoveryRemainsPending() throws Exception {
+        Path journal = Files.createTempFile("vg-migrate-recovery-idle", ".bin");
+        QuarantineStore store = new QuarantineStore(journal, 8, 1_000_000L);
+        store.append(action(777));
+        AlwaysFailingSink sink = new AlwaysFailingSink();
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(8, 25L, 1, sink, DAEMON, store);
+        try {
+            assertThat(q.freezeAdmission()).isTrue();
+            Thread.sleep(100L);
+            assertThat(q.isPipelineIdle())
+                    .as("migrate-db must wait for pending durable recovery before copying")
+                    .isFalse();
+        } finally {
+            q.close();
+        }
+    }
+
+    @Test
     void freezeAdmissionWaitsForSinkIdleAndRejectsOffers() throws Exception {
         CountDownLatch inSink = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
