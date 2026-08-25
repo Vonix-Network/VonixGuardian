@@ -84,21 +84,31 @@ public final class ForgeBootstrap {
         bootFuture = future;
 
         future.whenComplete((g, failure) -> {
-            if (failure != null) {
-                if (isCurrent(server, generation)) {
-                    LOG.error(Guardian.MARKER, "Failed to boot VonixGuardian asynchronously", unwrap(failure));
-                }
-                return;
-            }
-            if (!isCurrent(server, generation)) {
-                closeQuietly(g);
-                return;
-            }
             try {
-                server.execute(() -> installIfCurrent(server, generation, g));
-            } catch (Throwable dispatchFailure) {
-                closeQuietly(g);
-                LOG.error(Guardian.MARKER, "Could not return VonixGuardian bootstrap to the server thread", dispatchFailure);
+                if (failure != null) {
+                    if (isCurrent(server, generation)) {
+                        LOG.error(Guardian.MARKER, "Failed to boot VonixGuardian asynchronously", unwrap(failure));
+                    }
+                    return;
+                }
+                if (!isCurrent(server, generation)) {
+                    closeQuietly(g);
+                    return;
+                }
+                try {
+                    server.execute(() -> installIfCurrent(server, generation, g));
+                } catch (Throwable dispatchFailure) {
+                    closeQuietly(g);
+                    LOG.error(Guardian.MARKER, "Could not return VonixGuardian bootstrap to the server thread", dispatchFailure);
+                }
+            } finally {
+                if (bootFuture == future) {
+                    bootFuture = null;
+                }
+                if (bootstrapExecutor == executor) {
+                    bootstrapExecutor = null;
+                    executor.close();
+                }
             }
         });
     }
@@ -143,10 +153,9 @@ public final class ForgeBootstrap {
         // racing with shutdown must close its Guardian instead of installing it.
         BOOT_GENERATION.incrementAndGet();
         activeServer = null;
-        CompletableFuture<Guardian> future = bootFuture;
-        if (future != null) {
-            future.cancel(true);
-        }
+        // Do not cancel the future: if the worker returns a Guardian after the
+        // interrupt race, the completion callback must receive it and close it
+        // as stale instead of losing the resource behind CancellationException.
         bootFuture = null;
         AsyncBootstrapExecutor executor = bootstrapExecutor;
         bootstrapExecutor = null;

@@ -16,9 +16,11 @@ _No unreleased changes._
 - **Forge startup watchdog hang during MySQL schema bootstrap.** Forge 1.18.2 now initializes Guardian off the Minecraft server thread, so a blocked MySQL response cannot consume the server tick and trigger `ServerHangWatchdog`.
 - **Bounded MySQL bootstrap I/O.** Connector/J `connectTimeout` and `socketTimeout` are set to 15 seconds for the MySQL pool, causing a blocked database response to fail closed instead of hanging indefinitely.
 
+- **Bootstrap shutdown race cleanup.** A stopped server generation no longer cancels the completion future before a late Guardian result can be closed as stale, and completed bootstrap executors are released after completion.
+
 ### Verification
 
-- Added regression coverage for off-thread blocking bootstrap execution and bounded MySQL timeout properties.
+- Added regression coverage for off-thread blocking bootstrap execution, bounded MySQL timeout properties, and stale-result shutdown cleanup.
 
 ## [1.4.2] - 2026-08-25
 
