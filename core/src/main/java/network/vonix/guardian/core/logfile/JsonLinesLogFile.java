@@ -72,6 +72,20 @@ public final class JsonLinesLogFile implements AutoCloseable {
 
     /** Append a single action as one JSON line. Never throws — IO errors are logged and the event dropped. */
     public void append(Action a) {
+        try {
+            appendOrThrow(a);
+        } catch (IOException e) {
+            LOG.warn(LogRotator.MARKER, "Failed to append audit event; dropping: {}", e.toString());
+        } catch (RuntimeException e) {
+            LOG.warn(LogRotator.MARKER, "Failed to serialize audit event; dropping: {}", e.toString());
+        }
+    }
+
+    /**
+     * Append that surfaces IO failure so a dual-write sink can retry without
+     * treating a dropped JSONL line as success.
+     */
+    public void appendOrThrow(Action a) throws IOException {
         if (a == null) {
             return;
         }
@@ -82,15 +96,11 @@ public final class JsonLinesLogFile implements AutoCloseable {
                 rollTo(today);
             }
             if (writer == null) {
-                return; // open failed; already warned
+                throw new IOException("audit log writer is not open");
             }
             String line = gson.toJson(a, Action.class);
             writer.write(line);
             writer.write('\n');
-        } catch (IOException e) {
-            LOG.warn(LogRotator.MARKER, "Failed to append audit event; dropping: {}", e.toString());
-        } catch (RuntimeException e) {
-            LOG.warn(LogRotator.MARKER, "Failed to serialize audit event; dropping: {}", e.toString());
         } finally {
             lock.unlock();
         }
@@ -98,6 +108,15 @@ public final class JsonLinesLogFile implements AutoCloseable {
 
     /** Flush OS buffers to disk. Best-effort; failures are logged and swallowed. */
     public void flush() {
+        try {
+            flushOrThrow();
+        } catch (IOException e) {
+            LOG.warn(LogRotator.MARKER, "Failed to flush audit log: {}", e.toString());
+        }
+    }
+
+    /** Flush that surfaces IO failure for the JDBC/JSONL dual-write sink. */
+    public void flushOrThrow() throws IOException {
         lock.lock();
         try {
             doFlush();
@@ -106,17 +125,13 @@ public final class JsonLinesLogFile implements AutoCloseable {
         }
     }
 
-    private void doFlush() {
+    private void doFlush() throws IOException {
         if (writer == null) {
             return;
         }
-        try {
-            writer.flush();
-            if (forceSyncOnFlush && channel != null && channel.isOpen()) {
-                channel.force(false);
-            }
-        } catch (IOException e) {
-            LOG.warn(LogRotator.MARKER, "Failed to flush audit log: {}", e.toString());
+        writer.flush();
+        if (forceSyncOnFlush && channel != null && channel.isOpen()) {
+            channel.force(false);
         }
     }
 

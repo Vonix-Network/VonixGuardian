@@ -132,6 +132,7 @@ public final class RollbackPlan {
             }
             ordered.add(a);
         }
+        orderForExecution(ordered, mode);
         return new RollbackPlan(ordered, skipped, originalFilter, mode, actorUuid);
     }
 
@@ -196,6 +197,7 @@ public final class RollbackPlan {
             if (ordered.isEmpty() && skipped.isEmpty()) {
                 return RollbackPlan.empty(originalFilter, mode, actorUuid);
             }
+            orderForExecution(ordered, mode);
             return new RollbackPlan(new ArrayList<>(ordered), new ArrayList<>(skipped),
                 originalFilter, mode, actorUuid);
         }
@@ -237,6 +239,31 @@ public final class RollbackPlan {
 
     /** Convenience: number of mutations the plan will dispatch. */
     public int size() { return ordered.size(); }
+
+    private static void orderForExecution(List<Action> actions, RollbackResult.Mode mode) {
+        if (mode != RollbackResult.Mode.RESTORE) return;
+
+        // Keep non-inventory world operations in their original newest-first
+        // positions, but rewrite the inventory positions from oldest to newest.
+        // This handles replacement pairs separated by unrelated world rows.
+        List<Action> inventory = new ArrayList<>();
+        for (Action action : actions) {
+            if (isInventoryAction(action)) inventory.add(action);
+        }
+        inventory.sort((a, b) -> {
+            int c = Long.compare(a.timestamp(), b.timestamp());
+            return c != 0 ? c : Long.compare(a.id(), b.id());
+        });
+        int next = 0;
+        for (int i = 0; i < actions.size(); i++) {
+            if (isInventoryAction(actions.get(i))) actions.set(i, inventory.get(next++));
+        }
+    }
+
+    private static boolean isInventoryAction(Action a) {
+        return a.type() == network.vonix.guardian.core.action.ActionType.INVENTORY_DEPOSIT
+            || a.type() == network.vonix.guardian.core.action.ActionType.INVENTORY_WITHDRAW;
+    }
 
     static boolean isRollbackable(Action a) {
         return RollbackEngine.isRollbackable(a.type());

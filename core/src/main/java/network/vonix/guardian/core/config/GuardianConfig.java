@@ -607,20 +607,15 @@ public record GuardianConfig(
      *                   full block-state properties + raw BE / item / entity NBT bytes
      *                   and hand them to the {@link EventSubmitter} NBT-fidelity
      *                   overloads. The DAO always reads NBT columns if present, so
-     *                   downgrading this toggle to {@code false} does not lose
-     *                   already-captured NBT for historical rows. <b>Default:
-     *                   {@code false}</b> — CoreProtect / Ledger parity for
-     *                   waterlogged fences, named enchanted swords, chest contents,
-     *                   named/tamed mobs is only meaningful for operators who want
-     *                   it, and the extra bytes-on-disk cost per event is significant
-     *                   on high-throughput servers (chest snapshots alone can be many
-     *                   KB per BLOCK_BREAK). Opt in by setting {@code true}.
+     *                   historical rows. <b>Default: {@code true}</b> — metadata-faithful
+     *                   rollback is the safe default. Operators may set it to {@code false};
+     *                   inventory rollback/restore then refuses rows without a full payload.
      * @since 1.3.1
      */
     public record Storage(boolean persistNbt) {
-        /** Canonical safe default: no NBT capture. */
+        /** Canonical safe default: capture full NBT for metadata-faithful replay. */
         public static Storage defaults() {
-            return new Storage(false);
+            return new Storage(true);
         }
     }
 

@@ -59,12 +59,20 @@ import java.util.List;
  *       and process restart. {@code NULL} means unpaired. Existing v5
  *       databases are upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V6PairId}.</li>
+ *   <li><b>v7</b> — additive nullable {@code inventory_slot INTEGER} on
+ *       {@code vg_actions}; exact player-inventory slot identity for
+ *       compartment-safe rollback. {@code NULL} means non-inventory row.
+ *       Added in the r38 candidate.</li>
+ *   <li><b>v8</b> — additive {@code vg_repair_required} (durable
+ *       uncompensated rollback state) and {@code vg_sink_outbox} (JDBC/JSONL
+ *       dual-write staging). Existing v7 databases are upgraded in place by
+ *       {@link network.vonix.guardian.core.storage.migration.V8RepairAndOutbox}.</li>
  * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 6;
+    public static final int CURRENT_VERSION = 8;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -159,6 +167,9 @@ public final class Schema {
         // --- v2 (additive) ---
         out.add(rollbackBatches(d));
         out.add(rollbackBatchActions(d));
+        // --- v8 (additive) ---
+        out.add(repairRequired(d));
+        out.add(sinkOutbox(d));
         // --- schema_version table ---
         out.add(schemaVersion(d));
         return List.copyOf(out);
@@ -292,6 +303,7 @@ public final class Schema {
             + "block_entity_nbt " + blob + " NULL, "
             + "item_nbt " + blob + " NULL, "
             + "entity_nbt " + blob + " NULL, "
+            + "inventory_slot INTEGER NULL, "
             + "pair_id BIGINT NULL"
             + ")";
     }
@@ -313,6 +325,29 @@ public final class Schema {
             + "batch_id INTEGER NOT NULL, "
             + "action_id INTEGER NOT NULL, "
             + "PRIMARY KEY (batch_id, action_id)"
+            + ")";
+    }
+
+    private static String repairRequired(Dialect d) {
+        return "CREATE TABLE IF NOT EXISTS vg_repair_required ("
+            + "action_id INTEGER PRIMARY KEY, "
+            + "pair_id BIGINT NULL, "
+            + "batch_id INTEGER NULL, "
+            + "reason " + textType(d) + " NOT NULL, "
+            + "ts BIGINT NOT NULL"
+            + ")";
+    }
+
+    private static String sinkOutbox(Dialect d) {
+        String blob = switch (d) {
+            case MYSQL    -> "LONGBLOB";
+            case POSTGRES -> "BYTEA";
+            case SQLITE   -> "BLOB";
+        };
+        return "CREATE TABLE IF NOT EXISTS vg_sink_outbox ("
+            + "id INTEGER PRIMARY KEY, "
+            + "payload " + blob + " NOT NULL, "
+            + "created_ts BIGINT NOT NULL"
             + ")";
     }
 

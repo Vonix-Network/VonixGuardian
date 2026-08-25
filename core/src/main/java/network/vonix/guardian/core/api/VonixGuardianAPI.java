@@ -46,6 +46,24 @@ public interface VonixGuardianAPI {
     int apiVersion();
 
     /**
+     * CoreProtect v12 naming compatibility. This is an alias for
+     * {@link #apiVersion()} and does not change VG's semver contract.
+     *
+     * @return the API major version
+     */
+    default int APIVersion() {
+        return apiVersion();
+    }
+
+    /**
+     * @return {@code true} while this live API handle is available. This is a
+     * handle-health check, not a promise that a server has not begun shutdown.
+     */
+    default boolean isEnabled() {
+        return true;
+    }
+
+    /**
      * @return the plugin's {@code mod_version} string (e.g. {@code "1.1.7"}).
      *         Human-readable; do not parse for feature gating (use
      *         {@link #apiVersion()} for that).
@@ -301,4 +319,16 @@ public interface VonixGuardianAPI {
      */
     boolean logRemoval(UUID user, String actorName, String worldId,
                        int x, int y, int z, String blockId);
+
+    /**
+     * Direct-log a signed container transaction. Positive {@code delta} is a
+     * deposit; negative {@code delta} is a withdrawal. Zero is rejected as a
+     * no-op, matching the core submitter contract.
+     *
+     * @return {@code true} when the action passed the live gate and was
+     *         accepted by the bounded queue
+     */
+    boolean logContainerTransaction(UUID user, String actorName, String worldId,
+                                    int x, int y, int z, String itemId,
+                                    int delta, String sourceTag);
 }

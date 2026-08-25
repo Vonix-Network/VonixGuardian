@@ -11,6 +11,7 @@ import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.DamageHistory;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.mc.v26_1.common.GuardianCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -105,11 +106,20 @@ public final class NeoForgeBootstrap {
      */
     public static void onServerStopping(ServerStoppingEvent ev) {
         Guardian g = VonixGuardianNeoForge.guardian();
-        if (g != null) {
+        boolean commandsStopped = GuardianCommands.reset(() -> {
+            try {
+                if (g != null) {
+                    g.close();
+                }
+            } catch (Throwable t) {
+                LOG.warn(Guardian.MARKER, "Guardian.close() raised", t);
+            }
+        });
+        if (!commandsStopped && g != null) {
             try {
                 g.close();
             } catch (Throwable t) {
-                LOG.warn(Guardian.MARKER, "Guardian.close() raised", t);
+                LOG.warn(Guardian.MARKER, "Guardian.close() raised after command reset rejection", t);
             }
         }
         if (damageHistory != null) {

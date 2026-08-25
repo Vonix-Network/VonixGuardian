@@ -33,7 +33,7 @@ class FabricPackagingStructuralTest {
                     .contains("tasks.register('embedCoreJarInJar')")
                     .contains("dependsOn ':core:jar', 'remapJar'")
                     .contains("META-INF/jars/${coreJar.name}")
-                    .contains("META-INF/jars/core-1.4.0.jar")
+                    .contains("META-INF/jars/core-${project.version}.jar")
                     .contains("include modImplementation('org.xerial:sqlite-jdbc:3.46.1.0')")
                     .contains("include modImplementation('com.mysql:mysql-connector-j:8.4.0')")
                     .contains("include modImplementation('org.postgresql:postgresql:42.7.4')")

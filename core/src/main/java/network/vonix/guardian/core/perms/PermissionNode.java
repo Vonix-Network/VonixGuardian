@@ -57,15 +57,20 @@ public enum PermissionNode {
     // W3-B7: CoreProtect-compatible child nodes (per-category scoping)
     LOOKUP_BLOCK         ("vonixguardian.lookup.block",      2),
     LOOKUP_CONTAINER     ("vonixguardian.lookup.container",  2),
+    LOOKUP_INVENTORY     ("vonixguardian.lookup.inventory",  2),
     LOOKUP_ITEM          ("vonixguardian.lookup.item",       2),
     LOOKUP_KILL          ("vonixguardian.lookup.kill",       2),
+    LOOKUP_CLICK          ("vonixguardian.lookup.click",     2),
     LOOKUP_SESSION       ("vonixguardian.lookup.session",    2),
     LOOKUP_SIGN          ("vonixguardian.lookup.sign",       2),
+    LOOKUP_USERNAME      ("vonixguardian.lookup.username",   2),
     ROLLBACK_BLOCK       ("vonixguardian.rollback.block",    3),
     ROLLBACK_CONTAINER   ("vonixguardian.rollback.container",3),
+    ROLLBACK_INVENTORY   ("vonixguardian.rollback.inventory",3),
     ROLLBACK_ITEM        ("vonixguardian.rollback.item",     3),
     RESTORE_BLOCK        ("vonixguardian.restore.block",     3),
     RESTORE_CONTAINER    ("vonixguardian.restore.container", 3),
+    RESTORE_INVENTORY    ("vonixguardian.restore.inventory", 3),
     RESTORE_ITEM         ("vonixguardian.restore.item",      3);
 
     private final String node;
@@ -193,11 +198,18 @@ public enum PermissionNode {
         if (family == null || type == null) {
             throw new IllegalArgumentException("family and type must be non-null");
         }
+        if (type == ActionType.INVENTORY_DEPOSIT || type == ActionType.INVENTORY_WITHDRAW) {
+            if (family == LOOKUP) return LOOKUP_INVENTORY;
+            if (family == ROLLBACK) return ROLLBACK_INVENTORY;
+            if (family == RESTORE) return RESTORE_INVENTORY;
+        }
         if (family == LOOKUP) {
             switch (type) {
                 case CHAT:    return LOOKUP_CHAT;
                 case COMMAND: return LOOKUP_COMMAND;
                 case SIGN:    return LOOKUP_SIGN;
+                case CLICK:   return LOOKUP_CLICK;
+                case USERNAME_CHANGE: return LOOKUP_USERNAME;
                 default:      /* fall through to category */ break;
             }
         }

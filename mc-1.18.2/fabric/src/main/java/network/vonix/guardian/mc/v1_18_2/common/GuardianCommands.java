@@ -81,6 +81,8 @@ public final class GuardianCommands {
     private static final int COMMAND_WORKER_QUEUE_CAPACITY = 64;
     private static final BoundedGenerationExecutor WORKER =
             new BoundedGenerationExecutor("VonixGuardian-Cmd", COMMAND_WORKER_QUEUE_CAPACITY, 2);
+    private static final network.vonix.guardian.core.rollback.RollbackPreviewStore PENDING_PREVIEWS =
+            new network.vonix.guardian.core.rollback.RollbackPreviewStore(256);
 
     private GuardianCommands() {
         // utility
@@ -104,6 +106,7 @@ public final class GuardianCommands {
                 .then(Commands.literal("i")
                         .requires(s -> hasPerm(s, PermissionNode.INSPECT, g))
                         .executes(ctx -> Inspect.toggle(ctx, g)))
+                .then(Commands.literal("inspector").requires(s -> hasPerm(s, PermissionNode.INSPECT, g)).executes(ctx -> Inspect.toggle(ctx, g)))
                 // lookup (long + short)
                 .then(Commands.literal("lookup")
                         .requires(s -> hasPerm(s, PermissionNode.LOOKUP, g))
@@ -117,6 +120,7 @@ public final class GuardianCommands {
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
                                 .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Lookup.run(ctx, g))))
+                .then(Commands.literal("page").requires(s -> hasPerm(s, PermissionNode.LOOKUP, g)).executes(ctx -> Help.usage(ctx, g, "lookup")).then(Commands.argument("filter", StringArgumentType.greedyString()).suggests(GuardianSuggestions.filterTokens()).executes(ctx -> Lookup.run(ctx, g))))
                 // rollback (long + short)
                 .then(Commands.literal("rollback")
                         .requires(s -> hasPerm(s, PermissionNode.ROLLBACK, g))
@@ -130,6 +134,9 @@ public final class GuardianCommands {
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
                                 .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Rollback.run(ctx, g, false))))
+                .then(Commands.literal("ro").requires(s -> hasPerm(s, PermissionNode.ROLLBACK, g)).executes(ctx -> Help.usage(ctx, g, "rollback")).then(Commands.argument("filter", StringArgumentType.greedyString()).suggests(GuardianSuggestions.filterTokens()).executes(ctx -> Rollback.run(ctx, g, false))))
+                .then(Commands.literal("apply").requires(s -> hasPreviewPermission(s, g)).executes(ctx -> Preview.apply(ctx, g)))
+                .then(Commands.literal("cancel").requires(s -> hasPreviewPermission(s, g)).executes(ctx -> Preview.cancel(ctx, g)))
                 // restore (long + short)
                 .then(Commands.literal("restore")
                         .requires(s -> hasPerm(s, PermissionNode.RESTORE, g))
@@ -143,6 +150,7 @@ public final class GuardianCommands {
                         .then(Commands.argument("filter", StringArgumentType.greedyString())
                                 .suggests(GuardianSuggestions.filterTokens())
                                 .executes(ctx -> Restore.run(ctx, g))))
+                .then(Commands.literal("re").requires(s -> hasPerm(s, PermissionNode.RESTORE, g)).executes(ctx -> Help.usage(ctx, g, "restore")).then(Commands.argument("filter", StringArgumentType.greedyString()).suggests(GuardianSuggestions.filterTokens()).executes(ctx -> Restore.run(ctx, g))))
                 // purge
                 .then(Commands.literal("purge")
                         .requires(s -> hasPerm(s, PermissionNode.PURGE, g))
@@ -169,6 +177,8 @@ public final class GuardianCommands {
                 .then(Commands.literal("status")
                         .requires(s -> hasPerm(s, PermissionNode.STATUS, g))
                         .executes(ctx -> Status.run(ctx, g)))
+                .then(Commands.literal("stats").requires(s -> hasPerm(s, PermissionNode.STATUS, g)).executes(ctx -> Status.run(ctx, g)))
+                .then(Commands.literal("version").requires(s -> hasPerm(s, PermissionNode.STATUS, g)).executes(ctx -> Status.run(ctx, g)))
                 // reload
                 .then(Commands.literal("reload")
                         .requires(s -> hasPerm(s, PermissionNode.RELOAD, g))
@@ -247,7 +257,12 @@ public final class GuardianCommands {
 
     /** Stops command admission and defers the callback until all command work terminates. */
     public static boolean reset(Runnable afterWorkerTermination) {
-        return WORKER.reset(afterWorkerTermination);
+        return WORKER.reset(() -> {
+            PENDING_PREVIEWS.clear();
+            if (afterWorkerTermination != null) {
+                afterWorkerTermination.run();
+            }
+        });
     }
 
     private static boolean submitAsync(CommandSourceStack src, Guardian g, Runnable task) {
@@ -305,7 +320,7 @@ public final class GuardianCommands {
         return src.getEntity() instanceof ServerPlayer p ? p.getUUID() : null;
     }
 
-    private static RollbackOptions rollbackOptions(MinecraftServer server, CommandSourceStack src) {
+    private static RollbackOptions rollbackOptions(MinecraftServer server, CommandSourceStack src, UUID progressActor) {
         return new RollbackOptions(
                 RollbackOptions.DEFAULT_PAGE_SIZE,
                 RollbackOptions.DEFAULT_MAX_SCANNED_ACTIONS,
@@ -313,7 +328,6 @@ public final class GuardianCommands {
                 () -> Thread.currentThread().isInterrupted(),
                 progress -> {
                     if (!shouldReportRollbackProgress(progress)) return;
-                    UUID progressActor = actorUuid(src);
                     server.execute(() -> sendToPlayerOrSrc(server, src, progressActor, ChatRenderer.muted(null,
                             "[VonixGuardian] Rollback planning: scanned=" + progress.scannedActions()
                                     + " planned=" + progress.plannedSteps()
@@ -527,15 +541,19 @@ public final class GuardianCommands {
             }
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
+            // Any new rollback/restore request supersedes an older actionable preview.
+            final long previewGeneration = PENDING_PREVIEWS.invalidate(previewKey(actor));
             final QueryFilter filter = qf;
             final boolean preview = previewForced || filter.preview();
             submitAsync(src, g, () -> {
                 try {
-                    RollbackOptions options = rollbackOptions(server, src);
+                    RollbackOptions options = rollbackOptions(server, src, actor);
                     RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor, options);
                     if (!result.preview()) {
                         g.undoStack().push(actor != null ? actor
                                 : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    } else {
+                        PENDING_PREVIEWS.putIfGeneration(previewKey(actor), previewGeneration, result);
                     }
                     server.execute(() -> {
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
@@ -578,14 +596,18 @@ public final class GuardianCommands {
             }
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
+            // Any new rollback/restore request supersedes an older actionable preview.
+            final long previewGeneration = PENDING_PREVIEWS.invalidate(previewKey(actor));
             final QueryFilter filter = qf;
             submitAsync(src, g, () -> {
                 try {
-                    RollbackOptions options = rollbackOptions(server, src);
+                    RollbackOptions options = rollbackOptions(server, src, actor);
                     RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
                     if (!result.preview()) {
                         g.undoStack().push(actor != null ? actor
                                 : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                    } else {
+                        PENDING_PREVIEWS.putIfGeneration(previewKey(actor), previewGeneration, result);
                     }
                     server.execute(() -> {
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
@@ -631,19 +653,20 @@ public final class GuardianCommands {
                     : g.config().purge().minAgeSecondsInGame();
             MinecraftServer server = src.getServer();
             final QueryFilter filter = qf;
+            final UUID actor = actorUuid(src);
             submitAsync(src, g, () -> {
                 try {
                     var result = g.purgeEngine().purge(filter, minAgeSeconds);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actorUuid(src), ChatRenderer.warning(g.theme(),
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.warning(g.theme(),
                             "[VonixGuardian] Purge removed " + result.deletedCount()
                                     + " rows (minAge=" + minAgeSeconds + "s).")));
                 } catch (IllegalArgumentException tooRecent) {
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actorUuid(src), ChatRenderer.error(g.theme(),
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                             "[VonixGuardian] Purge refused: " + tooRecent.getMessage()
                                     + " (CP-1:1 safety floor; use a larger t: window)")));
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Purge failed", t);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actorUuid(src), ChatRenderer.error(g.theme(),
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                             "[VonixGuardian] Purge error: " + t.getMessage())));
                 }
             });
@@ -698,6 +721,84 @@ public final class GuardianCommands {
                             "[VonixGuardian] Undo error: " + t.getMessage())));
                 }
             });
+            return 1;
+        }
+    }
+
+    private static UUID previewKey(UUID actor) {
+        return actor != null ? actor : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY;
+    }
+
+    private static boolean hasPreviewPermission(CommandSourceStack src, Guardian g) {
+        var pending = PENDING_PREVIEWS.peek(previewKey(actorUuid(src)));
+        if (pending.isPresent()) {
+            PermissionNode required = pending.get().mode() == RollbackResult.Mode.RESTORE
+                    ? PermissionNode.RESTORE : PermissionNode.ROLLBACK;
+            return hasPerm(src, required, g);
+        }
+        return hasPerm(src, PermissionNode.ROLLBACK, g) || hasPerm(src, PermissionNode.RESTORE, g);
+    }
+
+    /** CoreProtect-style apply/cancel lifecycle for the most recent exact preview. */
+    public static final class Preview {
+        private Preview() {}
+
+        public static int apply(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            UUID actor = actorUuid(src);
+            var pending = PENDING_PREVIEWS.snapshot(previewKey(actor));
+            if (pending.isEmpty()) {
+                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] No pending rollback preview."));
+                return 0;
+            }
+            network.vonix.guardian.core.rollback.RollbackPreviewStore.Snapshot expectedSnapshot = pending.get();
+            RollbackResult expectedPreview = expectedSnapshot.result();
+            long expectedGeneration = expectedSnapshot.generation();
+            MinecraftServer server = src.getServer();
+            QueryFilter exactFilter = idFilter(expectedPreview.originalFilter(), expectedPreview.affectedIds());
+            boolean admitted = submitAsync(src, g, () -> {
+                PermissionNode requiredPreviewPermission = expectedPreview.mode() == RollbackResult.Mode.RESTORE
+                        ? PermissionNode.RESTORE : PermissionNode.ROLLBACK;
+                if (!hasPerm(src, requiredPreviewPermission, g)) {
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Preview permission changed; run the preview again.")));
+                    return;
+                }
+                var admittedPreview = PENDING_PREVIEWS.takeIfSame(
+                        previewKey(actor), expectedGeneration, expectedPreview);
+                if (admittedPreview.isEmpty()) {
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
+                            "[VonixGuardian] Pending rollback preview changed or expired; run preview again.")));
+                    return;
+                }
+                RollbackResult preview = admittedPreview.get();
+                try {
+                    RollbackOptions options = rollbackOptions(server, src, actor);
+                    var plan = g.rollbackEngine().plan(exactFilter, preview.mode(), actor, options);
+                    RollbackResult result = g.rollbackEngine().execute(plan, false);
+                    if (!result.affectedIds().isEmpty()) {
+                        g.undoStack().push(previewKey(actor), result);
+                    }
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
+                            "[VonixGuardian] Applied preview affected=" + result.affectedCount()
+                                    + " planned=" + result.plannedSteps())));
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Apply preview failed", t);
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Apply error: " + t.getMessage())));
+                }
+            });
+            return admitted ? 1 : 0;
+        }
+
+        public static int cancel(CommandContext<CommandSourceStack> ctx, Guardian g) {
+            CommandSourceStack src = ctx.getSource();
+            UUID actor = actorUuid(src);
+            if (!PENDING_PREVIEWS.cancel(previewKey(actor))) {
+                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] No pending rollback preview."));
+                return 0;
+            }
+            send(src, ChatRenderer.success(g.theme(), "[VonixGuardian] Rollback preview cancelled."));
             return 1;
         }
     }

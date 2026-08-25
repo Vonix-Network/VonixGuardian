@@ -1,6 +1,30 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-Snapshot: **VG @ `073a233`** on branch `integration/v1.2.0` (2026-07-02) — includes v1.1.6 through the first v1.2.0 integration wave.
+**Current candidate (r43, 2026-08-24):** VonixGuardian 1.4.1 working tree on baseline `505cee04099152d7144b241c69140b4e9204cd9a` plus uncommitted r38–r43 work. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
+
+This file still contains a historical v1.2.0 / 2026-07-02 matrix below. Where that older text says eight loader cells, 39 action types, ~380 tests, schema v2, `/vg reload` stub, missing migrate-db, or “1:1 parity”, treat the **current-state** section as authoritative.
+
+## Current state (r43) — do not invent remaining v24 features
+
+Implemented on this tree and **not** complete CoreProtect v24 parity:
+
+- Nine loader jars, schema v7 `pair_id`/`inventory_slot` plus v8 `vg_repair_required` / `vg_sink_outbox`.
+- Player-inventory identity replacements are pair-atomic at admission, JDBC insert, quarantine group write, and group ACK. Rollback compensates a failed second half when possible and otherwise persists repair-required rows.
+- `/vg reload`, `/vg undo` (world revert for non-legacy entries), `/vg migrate-db`, `/vg teleport`, `/vg give`, auto-purge, PreLogEvent, 40 action types, and sign/NBT columns exist.
+
+Material **unresolved** CoreProtect v24 gaps (honest, not implemented here):
+
+- Ender-chest transaction/replay (`RollbackProcessor` ender-chest path in CP v24).
+- Configurable API enablement, `parseResult`, and public rollback/restore/purge API methods (`CoreProtectAPI`).
+- `NETWORK_DEBUG`.
+- Separate item vs entity rollback config controls.
+- Mature plugin-ecosystem integrations (WorldEdit selection bridge is still not a matched CP-style integration).
+
+Complete CoreProtect v24 parity is **not** claimed.
+
+---
+
+Historical snapshot below: **VG @ `073a233`** on branch `integration/v1.2.0` (2026-07-02) — includes v1.1.6 through the first v1.2.0 integration wave.
 CP reference pin (public, immutable): GitHub `https://github.com/PlayPro/CoreProtect` tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`; tag archive SHA-256 `54decf8412da3037fe97b09a5ec1052d257a696d940092affb5b96f098cea5b0` retrieved `2026-08-22T08:09:58Z`. Docs site `docs.coreprotect.net` remains a narrative snapshot only and is not the pinned source.
 
 Legend: ✅ full parity · 🟡 partial · 🟥 stub / broken / dead / advertised-but-unwired · ❌ missing · ❓ unverifiable
@@ -205,10 +229,13 @@ VG has **39 `ActionType` constants**, ids 1..39 dense. CP has ~20 documented (bl
 - Sign v24 columns: `getColor`, `getColorSecondary`, `isFront`, `isFrontGlowing`, `isBackGlowing`, `isWaxed`. VG's `submitSign` only takes `joinedLines` (single string, `EventSubmitter.java:189-190`). Schema (`Schema.java:184`) only shows `source_tag VARCHAR(64)` extension. **Deferred P0** in CHANGELOG v1.0.4.
 - `CoreProtectPreLogEvent` — public cancellable pre-log hook. VG has an internal `EventGate` filter but no public bus other mods can intercept.
 - `blacklist.txt` composite filters (`id@user`).
+- CoreProtect v24 remaining gaps that this candidate does **not** claim: ender-chest inventory replay, configurable API enablement, `parseResult`, public rollback/restore API methods, `NETWORK_DEBUG`, separate item/entity rollback controls, and the broader CoreProtect plugin-ecosystem integrations. Complete v24 parity is not claimed.
 
 ### 2.4 Rollback-vs-record parity matrix
 
-11 action types are **explicitly refused** by `RollbackEngine.applyInverse/applyForward` with per-type WARN messages (v1.0.3 fix removed the silent default branch): `DISPENSE`, `PISTON_EXTEND`, `PISTON_RETRACT`, `INVENTORY_DEPOSIT`, `INVENTORY_WITHDRAW`, `ITEM_CRAFT`, `ENTITY_SPAWN`, `ENTITY_INTERACT`, `CHUNK_POPULATE`, `CLICK`, plus `CHAT`/`COMMAND`/`SIGN`/`SESSION_*`/`USERNAME_CHANGE` (non-mutating audit-only). Verified in `RollbackEngine.java:311-329`.
+Player-inventory `INVENTORY_DEPOSIT` / `INVENTORY_WITHDRAW` **are rollbackable** when the row carries full item NBT, an actor UUID, and (for replacements) a complete `pair_id` pair. Exact-slot replay writes only into `inventory_slot`; restore orders inventory rows oldest-first while leaving non-inventory positions in newest-first relative order. Missing NBT, missing/out-of-range slots, offline players, metadata mismatch, and incomplete replacement pairs fail closed.
+
+11 other action types remain **explicitly refused** by `RollbackEngine.applyInverse/applyForward` with per-type WARN messages: `DISPENSE`, `PISTON_EXTEND`, `PISTON_RETRACT`, `ITEM_CRAFT`, `ENTITY_SPAWN`, `ENTITY_INTERACT`, `CHUNK_POPULATE`, `CLICK`, plus `CHAT`/`COMMAND`/`SIGN`/`SESSION_*`/`USERNAME_CHANGE` (non-mutating audit-only). Item drop/pickup stay audit-only until item-entity identity is tracked.
 
 Asymmetric: `HANGING_PLACE` rollback refused (no `WorldMutator.removeEntity`), forward reapplies. `HANGING_BREAK` rollback respawns, restore refused. Both flagged as TODO in CHANGELOG v1.0.3.
 

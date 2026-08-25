@@ -51,7 +51,7 @@ class V6PairIdMigrationTest {
             assertThat(MigrationRunner.readVersion(c)).isEqualTo(5);
             MigrationRunner.defaults().migrateToCurrent(c, Schema.Dialect.SQLITE);
             assertThat(MigrationRunner.readVersion(c)).isEqualTo(Schema.CURRENT_VERSION);
-            assertThat(Schema.CURRENT_VERSION).isEqualTo(6);
+            assertThat(Schema.CURRENT_VERSION).isGreaterThanOrEqualTo(6);
             assertThat(columnsOf(c)).contains("pair_id");
 
             try (Statement st = c.createStatement();
@@ -82,7 +82,7 @@ class V6PairIdMigrationTest {
     void fresh_install_ddl_carries_pair_id_and_stamps_current() throws Exception {
         try (Connection c = DriverManager.getConnection("jdbc:sqlite::memory:")) {
             Schema.createTables(c, Schema.Dialect.SQLITE);
-            assertThat(MigrationRunner.readVersion(c)).isEqualTo(6);
+            assertThat(MigrationRunner.readVersion(c)).isEqualTo(Schema.CURRENT_VERSION);
             assertThat(columnsOf(c)).contains("pair_id");
         }
     }

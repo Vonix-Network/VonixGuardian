@@ -7,8 +7,10 @@ package network.vonix.guardian.mc.v1_19_2.forge;
 import net.minecraft.server.MinecraftServer;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
+import net.minecraftforge.fml.loading.FMLPaths;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.DamageHistory;
+import network.vonix.guardian.core.bootstrap.ServerDirectoryResolver;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.mc.v1_19_2.common.GuardianCommands;
@@ -87,20 +89,10 @@ public final class ForgeBootstrap {
     }
 
     /**
-     * Sinytra Connector remaps {@code MinecraftServer.getServerDirectory()} to return
-     * {@code java.nio.file.Path} instead of {@code java.io.File}. Resolve via
-     * reflection so both signatures work. See VonixGuardian#1.0.1.
+     * Resolve via Mojmap/SRG {@code getServerDirectory} or Forge
+     * {@code FMLPaths.GAMEDIR}. Never falls back to cwd.
      */
     private static java.nio.file.Path resolveServerDir(net.minecraft.server.MinecraftServer server) {
-        try {
-            java.lang.reflect.Method m = server.getClass().getMethod("getServerDirectory");
-            Object r = m.invoke(server);
-            if (r instanceof java.nio.file.Path p) return p;
-            if (r instanceof java.io.File f) return f.toPath();
-            return java.nio.file.Paths.get("").toAbsolutePath();
-        } catch (ReflectiveOperationException e) {
-            LOG.warn(Guardian.MARKER, "getServerDirectory() reflection failed, using cwd", e);
-            return java.nio.file.Paths.get("").toAbsolutePath();
-        }
+        return ServerDirectoryResolver.resolve(server, FMLPaths.GAMEDIR.get());
     }
 }

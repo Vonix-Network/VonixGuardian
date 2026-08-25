@@ -28,7 +28,9 @@ import java.nio.ByteBuffer;
  * Small framed append-only journal for actions that exhausted sink retries.
  * ADD records make rows recoverable after restart; SINK_SUCCEEDED records mark
  * that the recovery sink flush already completed; ACK records retire rows only
- * after journal retirement succeeds.
+ * after journal retirement succeeds. Inventory replacement pairs use
+ * {@link #markSinkSucceededGroup} / {@link #acknowledgeGroup} so a crash
+ * cannot retire one member without the other.
  */
 class QuarantineStore {
 
@@ -45,13 +47,25 @@ class QuarantineStore {
     static final long MAX_JOURNAL_BYTES = 256L * 1024L * 1024L;
     /** Pre-v6 journal frames (no pairId). */
     private static final int MAGIC_V1 = 0x56475131;
-    /** Current journal frames: trailing optional pairId long after NBT bytes. */
+    /** Current journal frames: trailing pairId and inventory slot after NBT bytes. */
     private static final int MAGIC_V2 = 0x56475132;
-    private static final int MAGIC = MAGIC_V2;
+    /** v7 journal frames add nullable inventory-slot identity. */
+    private static final int MAGIC_V3 = 0x56475133;
+    private static final int MAGIC = MAGIC_V3;
     private static final byte ADD = 1;
     private static final byte ACK = 2;
     /** Durable marker: recovery sink flush succeeded; only journal ACK remains. */
     private static final byte SINK_SUCCEEDED = 3;
+    /**
+     * One frame marking sink success for every listed sequence. Partial
+     * application is impossible: load buffers the full sequence list before
+     * mutating {@link #active}.
+     */
+    private static final byte GROUP_SINK_SUCCEEDED = 4;
+    /** One frame retiring every listed sequence. */
+    private static final byte GROUP_ACK = 5;
+    /** One framed admission for every member of a replacement group. */
+    private static final byte GROUP_ADD = 6;
     private static final int MAX_STRING_BYTES = 1_048_576;
     private static final int MAX_BINARY_BYTES = 64 * 1024 * 1024;
 
@@ -103,6 +117,9 @@ class QuarantineStore {
             if (active.size() >= maxEntries) return -1L;
 
             long sequence = nextSequence;
+            if (sequence <= 0L || sequence == Long.MAX_VALUE) {
+                return -1L;
+            }
             // Encode the full ADD frame first so the hard byte cap is preflighted
             // against the exact next record, not just the current journal size.
             byte[] frame = encodeAddFrame(sequence, action);
@@ -129,30 +146,87 @@ class QuarantineStore {
     }
 
     /**
+     * Append every action in one framed journal record so a replacement pair cannot
+     * retain only one half after a crash during admission. Returns an empty list
+     * when the group would exceed retention limits; the caller must drop all
+     * members together.
+     */
+    synchronized List<Long> appendGroup(List<Action> actions) throws IOException {
+        ensureHealthy();
+        if (actions == null || actions.isEmpty()) {
+            return List.of();
+        }
+        if (actions.size() == 1) {
+            long sequence = append(actions.get(0));
+            return sequence < 0L ? List.of() : List.of(sequence);
+        }
+        boolean restoreInterrupt = Thread.interrupted();
+        try {
+            if (active.size() + actions.size() > maxEntries) {
+                return List.of();
+            }
+            long sequence = nextSequence;
+            if (sequence <= 0L || sequence > Long.MAX_VALUE - actions.size()) {
+                return List.of();
+            }
+            List<Long> sequences = new ArrayList<>(actions.size());
+            for (int i = 0; i < actions.size(); i++) {
+                sequences.add(sequence + i);
+            }
+            byte[] all = encodeGroupAddFrame(sequence, actions);
+            if (all.length > maxJournalBytes) {
+                return List.of();
+            }
+            long currentBytes = Files.exists(path) ? Files.size(path) : 0L;
+            if (currentBytes + all.length > maxJournalBytes) {
+                compact();
+                currentBytes = Files.exists(path) ? Files.size(path) : 0L;
+                if (currentBytes + all.length > maxJournalBytes) {
+                    return List.of();
+                }
+            }
+            appendBytes(all);
+            nextSequence = sequence + actions.size();
+            for (int i = 0; i < actions.size(); i++) {
+                active.put(sequences.get(i), new Entry(sequences.get(i), actions.get(i), false));
+            }
+            return sequences;
+        } finally {
+            if (restoreInterrupt) Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
      * Persist that the recovery sink flush for {@code sequence} already succeeded.
      * Loaded across restart so recovery retries only journal retirement (ACK),
      * never a second sink.flush. No-op when the row is absent or already marked.
      */
     synchronized void markSinkSucceeded(long sequence) throws IOException {
         ensureHealthy();
+        Entry existing = active.get(sequence);
+        if (existing == null || existing.sinkSucceeded()) {
+            return;
+        }
+        markSinkSucceededSingle(sequence, existing);
+    }
+
+    /**
+     * Persist sink-success for every listed sequence in one journal frame.
+     * Explicit groups are fail-closed: malformed, missing, duplicate, or mixed
+     * state members never produce a downgraded singleton marker.
+     */
+    synchronized void markSinkSucceededGroup(List<Long> sequences) throws IOException {
+        ensureHealthy();
+        validateGroup(sequences, false, "sink-success");
         boolean restoreInterrupt = Thread.interrupted();
         try {
-            Entry existing = active.get(sequence);
-            if (existing == null || existing.sinkSucceeded()) return;
-            byte[] frame = encodeOpFrame(SINK_SUCCEEDED, sequence);
-            long currentBytes = Files.exists(path) ? Files.size(path) : 0L;
-            if (currentBytes + frame.length > maxJournalBytes) {
-                compact();
-                currentBytes = Files.exists(path) ? Files.size(path) : 0L;
-                // After compact, SUCCESS markers for active rows are rewritten inline.
-                // If still no room for a new marker, fail closed so caller keeps
-                // in-memory sinkSucceeded and retries later.
-                if (currentBytes + frame.length > maxJournalBytes) {
-                    throw new IOException("quarantine journal full; cannot durable-mark sink success");
-                }
-            }
+            byte[] frame = encodeGroupOpFrame(GROUP_SINK_SUCCEEDED, sequences);
+            reserveForFrame(frame, "quarantine journal full; cannot durable-mark sink success");
             appendBytes(frame);
-            active.put(sequence, new Entry(sequence, existing.action(), true));
+            for (Long sequence : sequences) {
+                Entry existing = active.get(sequence);
+                active.put(sequence, new Entry(sequence, existing.action(), true));
+            }
         } finally {
             if (restoreInterrupt) Thread.currentThread().interrupt();
         }
@@ -160,29 +234,87 @@ class QuarantineStore {
 
     synchronized void acknowledge(long sequence) throws IOException {
         ensureHealthy();
-        // ACK durability has the same interrupt-sensitive FileChannel.force boundary.
+        if (!active.containsKey(sequence)) {
+            return;
+        }
+        acknowledgeSingle(sequence);
+    }
+
+    /**
+     * Retire every listed sequence in one journal frame. Explicit groups require
+     * every member to have a durable sink-success marker before ACK.
+     */
+    synchronized void acknowledgeGroup(List<Long> sequences) throws IOException {
+        ensureHealthy();
+        validateGroup(sequences, true, "ACK");
         boolean restoreInterrupt = Thread.interrupted();
         try {
-            if (!active.containsKey(sequence)) return;
-            // Encode ACK first and preflight hard byte cap before any mutation.
-            // Compact then re-check; fail closed without appending or removing active.
-            byte[] frame = encodeOpFrame(ACK, sequence);
+            byte[] frame = encodeGroupOpFrame(GROUP_ACK, sequences);
             if (frame.length > maxJournalBytes) {
                 throw new IOException("quarantine ACK frame exceeds journal hard byte cap");
             }
-            long currentBytes = Files.exists(path) ? Files.size(path) : 0L;
-            if (currentBytes + frame.length > maxJournalBytes) {
-                compact();
-                currentBytes = Files.exists(path) ? Files.size(path) : 0L;
-                if (currentBytes + frame.length > maxJournalBytes) {
-                    throw new IOException("quarantine journal full; cannot append ACK");
-                }
-            }
+            reserveForFrame(frame, "quarantine journal full; cannot append ACK");
             appendBytes(frame);
-            active.remove(sequence);
+            for (Long sequence : sequences) {
+                active.remove(sequence);
+            }
             if (Files.exists(path) && Files.size(path) >= maxJournalBytes / 2L) compact();
         } finally {
             if (restoreInterrupt) Thread.currentThread().interrupt();
+        }
+    }
+
+    private void markSinkSucceededSingle(long sequence, Entry existing) throws IOException {
+        byte[] frame = encodeOpFrame(SINK_SUCCEEDED, sequence);
+        reserveForFrame(frame, "quarantine journal full; cannot durable-mark sink success");
+        appendBytes(frame);
+        active.put(sequence, new Entry(sequence, existing.action(), true));
+    }
+
+    private void acknowledgeSingle(long sequence) throws IOException {
+        byte[] frame = encodeOpFrame(ACK, sequence);
+        if (frame.length > maxJournalBytes) {
+            throw new IOException("quarantine ACK frame exceeds journal hard byte cap");
+        }
+        reserveForFrame(frame, "quarantine journal full; cannot append ACK");
+        appendBytes(frame);
+        active.remove(sequence);
+        if (Files.exists(path) && Files.size(path) >= maxJournalBytes / 2L) compact();
+    }
+
+    private void validateGroup(List<Long> sequences, boolean requireSinkSucceeded, String operation) {
+        if (sequences == null || sequences.size() < 2) {
+            throw new IllegalArgumentException("quarantine " + operation + " group requires at least two members");
+        }
+        java.util.HashSet<Long> unique = new java.util.HashSet<>();
+        Boolean expectedState = null;
+        for (Long sequence : sequences) {
+            if (sequence == null || sequence <= 0L || sequence == Long.MAX_VALUE || !unique.add(sequence)) {
+                throw new IllegalArgumentException("invalid quarantine " + operation + " group member");
+            }
+            Entry existing = active.get(sequence);
+            if (existing == null) {
+                throw new IllegalArgumentException("missing quarantine " + operation + " group member");
+            }
+            if (expectedState == null) {
+                expectedState = existing.sinkSucceeded();
+            } else if (expectedState != existing.sinkSucceeded()) {
+                throw new IllegalArgumentException("mixed quarantine " + operation + " group state");
+            }
+            if (requireSinkSucceeded != existing.sinkSucceeded()) {
+                throw new IllegalArgumentException("invalid prior state for quarantine " + operation + " group");
+            }
+        }
+    }
+
+    private void reserveForFrame(byte[] frame, String fullMessage) throws IOException {
+        long currentBytes = Files.exists(path) ? Files.size(path) : 0L;
+        if (currentBytes + frame.length > maxJournalBytes) {
+            compact();
+            currentBytes = Files.exists(path) ? Files.size(path) : 0L;
+            if (currentBytes + frame.length > maxJournalBytes) {
+                throw new IOException(fullMessage);
+            }
         }
     }
 
@@ -195,11 +327,15 @@ class QuarantineStore {
             while (raw.available() > 0) {
                 long before = raw.available();
                 int magic = in.readInt();
-                if (magic != MAGIC_V1 && magic != MAGIC_V2) break;
+                if (magic != MAGIC_V1 && magic != MAGIC_V2 && magic != MAGIC_V3) break;
                 byte operation = in.readByte();
                 long sequence = in.readLong();
                 if (operation == ADD) {
-                    Action action = readAction(in, magic == MAGIC_V2);
+                    Action action = readAction(in, magic == MAGIC_V2 || magic == MAGIC_V3,
+                            magic == MAGIC_V3);
+                    if (sequence <= 0L || sequence == Long.MAX_VALUE || active.containsKey(sequence)) {
+                        throw new IOException("invalid, exhausted, or duplicate quarantine sequence");
+                    }
                     active.put(sequence, new Entry(sequence, action, false));
                     if (active.size() > maxEntries) {
                         throw new IOException("quarantine entry cap exceeded");
@@ -212,6 +348,21 @@ class QuarantineStore {
                     }
                 } else if (operation == ACK) {
                     active.remove(sequence);
+                } else if (operation == GROUP_ADD) {
+                    List<Action> actions = readGroupActions(in, sequence);
+                    validateLoadedGroupAdd(sequence, actions.size());
+                    if (active.size() + actions.size() > maxEntries) {
+                        throw new IOException("quarantine entry cap exceeded");
+                    }
+                    for (int i = 0; i < actions.size(); i++) {
+                        long memberSequence = sequence + i;
+                        active.put(memberSequence, new Entry(memberSequence, actions.get(i), false));
+                    }
+                    nextSequence = Math.max(nextSequence, sequence + actions.size());
+                } else if (operation == GROUP_SINK_SUCCEEDED) {
+                    applyLoadedGroup(readGroupSequences(in, sequence), true);
+                } else if (operation == GROUP_ACK) {
+                    applyLoadedGroup(readGroupSequences(in, sequence), false);
                 } else {
                     break;
                 }
@@ -223,6 +374,19 @@ class QuarantineStore {
         if (consumed < bytes.length) {
             Files.write(path, Arrays.copyOf(bytes, (int) consumed),
                     StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        }
+    }
+
+    private void validateLoadedGroupAdd(long firstSequence, int count) throws IOException {
+        if (firstSequence <= 0L || firstSequence == Long.MAX_VALUE || count < 2
+                || firstSequence > Long.MAX_VALUE - (count - 1L)) {
+            throw new IOException("invalid or exhausted quarantine group sequence range");
+        }
+        for (int i = 0; i < count; i++) {
+            long memberSequence = firstSequence + i;
+            if (active.containsKey(memberSequence)) {
+                throw new IOException("duplicate or overlapping quarantine group sequence");
+            }
         }
     }
 
@@ -366,6 +530,97 @@ class QuarantineStore {
         return bos.toByteArray();
     }
 
+    /**
+     * Group ADD frames carry their first sequence in the common header and the
+     * count before all action payloads. The loader does not publish any member
+     * until every payload has been read, so a torn final frame cannot expose a
+     * recoverable singleton.
+     */
+    private static byte[] encodeGroupAddFrame(long firstSequence, List<Action> actions) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(256);
+        try (DataOutputStream out = new DataOutputStream(bos)) {
+            out.writeInt(MAGIC);
+            out.writeByte(GROUP_ADD);
+            out.writeLong(firstSequence);
+            out.writeInt(actions.size());
+            for (Action action : actions) {
+                writeAction(out, action);
+            }
+            out.flush();
+        }
+        return bos.toByteArray();
+    }
+
+    /**
+     * Group frames store {@code count} in the 8-byte sequence slot of the
+     * common header so a truncated tail cannot apply a prefix of the group.
+     * {@code sequences} must contain at least two members.
+     */
+    private static byte[] encodeGroupOpFrame(byte operation, List<Long> sequences) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(16 + sequences.size() * 8);
+        try (DataOutputStream out = new DataOutputStream(bos)) {
+            out.writeInt(MAGIC);
+            out.writeByte(operation);
+            out.writeLong(sequences.size());
+            for (Long sequence : sequences) {
+                out.writeLong(sequence);
+            }
+            out.flush();
+        }
+        return bos.toByteArray();
+    }
+
+    /**
+     * {@code firstWord} is the 8-byte field already consumed as {@code sequence}
+     * by {@link #load()}. For group ops that field is the member count.
+     */
+    private static List<Long> readGroupSequences(DataInputStream in, long firstWord) throws IOException {
+        if (firstWord < 2L || firstWord > MAX_ENTRIES) {
+            throw new EOFException("invalid quarantine group size");
+        }
+        int count = (int) firstWord;
+        List<Long> sequences = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            sequences.add(in.readLong());
+        }
+        return sequences;
+    }
+
+    private static List<Action> readGroupActions(DataInputStream in, long firstSequence) throws IOException {
+        if (firstSequence < 1L) {
+            throw new EOFException("invalid quarantine group first sequence");
+        }
+        int count = in.readInt();
+        if (count < 2 || count > MAX_ENTRIES || firstSequence > Long.MAX_VALUE - count) {
+            throw new EOFException("invalid quarantine group add size");
+        }
+        List<Action> actions = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            actions.add(readAction(in, true, true));
+        }
+        return actions;
+    }
+
+    private void applyLoadedGroup(List<Long> sequences, boolean sinkSucceeded) {
+        // A group marker is all-or-none at replay time too. If a legacy or
+        // corrupted journal lacks any member, leave surviving rows in
+        // quarantine for repair rather than partly marking or retiring them.
+        java.util.HashSet<Long> unique = new java.util.HashSet<>();
+        for (Long sequence : sequences) {
+            if (sequence == null || sequence <= 0L || !unique.add(sequence) || !active.containsKey(sequence)) {
+                return;
+            }
+        }
+        for (Long sequence : sequences) {
+            if (sinkSucceeded) {
+                Entry existing = active.get(sequence);
+                active.put(sequence, new Entry(sequence, existing.action(), true));
+            } else {
+                active.remove(sequence);
+            }
+        }
+    }
+
     private static void writeAction(DataOutputStream out, Action a) throws IOException {
         out.writeLong(a.id());
         out.writeLong(a.timestamp());
@@ -388,9 +643,12 @@ class QuarantineStore {
         writeBytes(out, a.itemNbt());
         writeBytes(out, a.entityNbt());
         out.writeLong(a.pairId() == null ? 0L : a.pairId());
+        if (MAGIC == MAGIC_V3) {
+            out.writeInt(a.inventorySlot() == null ? -1 : a.inventorySlot());
+        }
     }
 
-    private static Action readAction(DataInputStream in, boolean withPairId) throws IOException {
+    private static Action readAction(DataInputStream in, boolean withPairId, boolean withInventorySlot) throws IOException {
         long id = in.readLong();
         long timestamp = in.readLong();
         ActionType type = ActionType.byId(in.readInt());
@@ -416,10 +674,15 @@ class QuarantineStore {
             long raw = in.readLong();
             pairId = raw == 0L ? null : raw;
         }
+        Integer inventorySlot = null;
+        if (withInventorySlot) {
+            int raw = in.readInt();
+            inventorySlot = raw < 0 ? null : raw;
+        }
         return new Action(id, timestamp, type, actorUuid, actorName, worldId,
                 x, y, z, targetId, targetMeta, amount, rolledBack, sourceTag,
                 signSide, signDyeColor, signWaxed, oldBlockState, newBlockState,
-                blockEntityNbt, itemNbt, entityNbt, pairId);
+                blockEntityNbt, itemNbt, entityNbt, pairId, inventorySlot);
     }
 
     private static void writeUuid(DataOutputStream out, UUID value) throws IOException {

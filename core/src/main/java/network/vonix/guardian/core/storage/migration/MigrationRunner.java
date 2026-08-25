@@ -65,7 +65,9 @@ public final class MigrationRunner {
             new V3WidenActionTarget(),
             new V4SignMetadata(),
             new V5NbtFidelity(),
-            new V6PairId()
+            new V6PairId(),
+            new V7InventorySlot(),
+            new V8RepairAndOutbox()
         ));
     }
 

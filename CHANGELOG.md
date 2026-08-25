@@ -5,16 +5,38 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.1] - 2026-08-25
 
 ### Added
 
+- **Pair-atomic player-inventory replacements.** Identity replacements
+  (`WITHDRAW(old)` + `DEPOSIT(new)`) now share a durable `pair_id`, occupy one
+  bounded queue slot, and are admitted, quarantined, recovered, and rolled
+  back/restored as a unit. Saturation, gating, maintenance write-block,
+  shutdown, and sink failure cannot persist only one half. Execution removes
+  the occupant first, then writes the mate. Quarantine recovery uses a
+  group-level sink-success/ACK journal frame so a crash cannot retire one
+  half and later reflush the survivor as a singleton. A second-half rollback
+  failure compensates the first half when possible; if compensation fails the
+  engine persists `vg_repair_required` instead of only logging.
+- **Schema v8 repair/outbox tables.** Additive `vg_repair_required` (durable
+  uncompensated rollback state) and `vg_sink_outbox` (JDBC insert and JSONL
+  dual-write staging in one transaction). Existing v7 databases migrate in
+  place via `V8RepairAndOutbox`.
+- **Failure-safe inventory producers.** All nine `PlayerInventoryMixin`
+  cells wrap `setItem` and snapshot mutators so a mutation that throws is not
+  persisted and `vg$inventoryBefore` is cleared on the exceptional path.
+  All nine exact-slot world mutators restore the previous stack when
+  `setChanged()` throws; if restoration fails or does not read back they
+  throw `UncompensatedSlotMutationException` so rollback can persist
+  repair-required state instead of returning a silent `false`.
 - **Durable fire/break pairing.** `Action.pairId` is persisted as nullable
   `vg_actions.pair_id` (schema v6, additive `V6PairId` migration). An
   allowlisted entity block-change and the fire it causes share the token
   through `FireCauserMemory` → `Action` → DAO → rollback, so paired rollback
   survives persistence and process restart. Existing unpaired rows stay
-  `NULL`.
+  `NULL`. Inventory replacements reuse the same column (schema v7 still owns
+  `inventory_slot`).
 - **Official 26.1.2 NeoForge lane.** The `mc-26.1/neoforge` cell is included
   in the repository build/release matrices and README alongside the existing
   eight cells, with its required Java 25 toolchain and `mc261` build profile.
@@ -31,6 +53,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Quarantine pair recovery ACK.** Replacement pairs no longer retire
+  per-sequence after a joint flush. Group sink-success and group ACK are one
+  journal frame; a surviving half is never re-flushed as a singleton.
+- **Rollback compensation failure.** When the inverse of the applied half
+  cannot be verified, both pair members are stored in `vg_repair_required`
+  and the open rollback batch is left incomplete.
+- **Exact-slot `setChanged()` restore.** All nine loader mutators stop
+  swallowing restoration failure after a thrown `setChanged()`.
+- **migrate-db snapshot barrier.** Maintenance write-block now freezes queue
+  admission and waits for local worker batch plus in-flight sink work, not
+  only `queue.depth()`.
+- **Forge server directory.** 1.18.2/1.19.2/1.20.1 Forge bootstraps resolve
+  Mojmap/SRG `getServerDirectory` or `FMLPaths.GAMEDIR` and fail closed
+  instead of silently using cwd.
+- **JDBC then JSONL.** `IdempotentAuditSink` stages JSONL payload in
+  `vg_sink_outbox` in the same JDBC transaction as `insertBatch`; JSONL
+  failure retries without duplicating `vg_actions` rows.
 - **NeoForge 26.1 mixin refmap packaging.** `vg-neoforge.mixins.json` declared
   `vg-neoforge.refmap.json`; the release archive now includes the named:named
   identity refmap required on Mojmap runtime.
@@ -40,6 +79,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CoreProtect comparison/gap docs now pin the public `PlayPro/CoreProtect`
   `v24.0` tag (`b5f534fd2c735c6f094cda8ca50a66324e81b048`) with retrieved
   archive SHA-256 values instead of a mutable local checkout path.
+
+### Changed (continued)
+
+- **Keyset rollback paging.** Sequential rollback/restore scans after the first
+  page seek on `(ts, id)` instead of `OFFSET`, so later pages do not restrip
+  already-consumed rows. Mocks and older DAOs that return `null` from
+  `queryPageAfter` keep the previous OFFSET path.
+- **Lookup later-page OFFSET jump.** Permission-filtered visible pages already
+  restrict action types SQL-side; later pages now issue one `OFFSET` equal to
+  the visible skip rather than streaming from row zero in 256-row chunks. The
+  100,000 raw-row fail-closed bound still applies, including when the skip
+  itself meets the bound.
+- **Allocation-free action-type id lookup.** `ActionType.byId` uses a dense
+  array instead of boxing into a HashMap on every JDBC row.
+- **Write-path user cache keyed by UUID.** `resolveUserOn` no longer allocates
+  a UUID string on the insert hot path for cached players. JDBC UUID strings
+  are interned with a 4096-entry cap on the read path.
+
+### Verification
+
+- Core regression coverage includes keyset/OFFSET equality (including timestamp
+  ties), a multi-page rollback keyset scan, later-page lookup round-trip
+  counts, and a matched-workload pagination harness that records SQL shape
+  rather than claiming a production speedup.
+
+## [Unreleased]
+
+_No unreleased changes._
 
 ## [1.4.0] - 2026-08-23
 

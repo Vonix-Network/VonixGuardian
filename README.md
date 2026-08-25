@@ -7,15 +7,15 @@
 
 **A blazing-fast server-side block/inventory/entity audit & rollback tool for modded Minecraft.**
 
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
+Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 
-## Feature surface (v1.4.0)
+## Feature surface (v1.4.1)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
-- **Commands** (`/vg`, aliases `/co`, `/guardian`) — CoreProtect 1:1 parity:
+- **Commands** (`/vg`, aliases `/co`, `/guardian`) — CoreProtect-shaped command tree (not complete v24 parity; see `docs/COREPROTECT-COMPARISON.md`):
   - `/vg help` — CoreProtect-style command summary.
   - `/vg inspect` (alias `/vg i`) — toggle the inspector; left/right-click any block to see history.
   - `/vg lookup <filters>` (alias `/vg l`) — paginated query with full CP filter syntax.
@@ -40,7 +40,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
   - Includes / excludes: `i:stone,dirt`, `e:minecraft:tnt`.
   - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, `#optimize`.
 
-- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent (current `vg_actions` includes nullable `pair_id` for durable fire/break pairing). `/vg migrate-db` copies between backends under an explicit maintenance write-block so the async queue drains before the source snapshot is copied.
+- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. Current schema is **v8**: v7 `pair_id` / `inventory_slot` plus `vg_repair_required` and `vg_sink_outbox`. `/vg migrate-db` copies between backends under a maintenance write-block that freezes queue admission and waits for the ring buffer, worker local batch, and in-flight sink transaction to idle before copying. This is a best-effort snapshot barrier, not a global database freeze.
 
 - **Log file**: rolling JSON-Lines at `logs/vonixguardian/audit-YYYY-MM-DD.log` (gzipped after rotation, configurable retention).
 
@@ -48,7 +48,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 - **Public Java API**: `network.vonix.guardian.core.api.VonixGuardianAPI` — typed result classes (`BlockLookupResult`, `ContainerLookupResult`, `ItemLookupResult`, `InventoryLookupResult`, `SessionLookupResult`, `UsernameLookupResult`, `MessageLookupResult`, `SignLookupResult`) + `hasPlaced`, `hasRemoved`, `queueLookup`, `logChat`, `logCommand`, `logPlacement`, `logRemoval`. See `docs/API.md`.
 
-- **Extensibility**: soft-dep pattern via reflection. Third-party mods can subscribe to `PreLogEvent` on any of the 8 loader cells to cancel or annotate audit entries. See `docs/PLUGINS.md`.
+- **Extensibility**: soft-dep pattern via reflection. Third-party mods can subscribe to `PreLogEvent` on any of the 9 loader cells to cancel or annotate audit entries. See `docs/PLUGINS.md`.
 
 - **i18n**: 14 language bundles ported from CoreProtect (en, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh-cn, zh-tw). Select via `config.language`.
 
@@ -62,18 +62,21 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 | MC Version | Fabric | Forge | NeoForge |
 |-----------:|:------:|:-----:|:--------:|
+| 26.1.2     |   —    |   —   |    ✅    |
 | 1.21.1     |   ✅   |   —   |    ✅    |
 | 1.20.1     |   ✅   |   ✅  |    —     |
 | 1.19.2     |   ✅   |   ✅  |    —     |
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
-(NeoForge did not exist before 1.20.4; the 1.21.1 jar replaces Forge on that version per the loader split.)
+Nine loader cells. NeoForge did not exist before 1.20.4; the 1.21.1 and 26.1 jars replace Forge on those versions per the loader split.
 
 ## Architecture
 
 ```
 core/                          Pure-Java engine (JDBC, queue, log, query parser,
-                               rollback engine, config). Zero MC deps. 100% unit-tested.
+                               rollback engine, config). Zero MC deps. Covered by the
+                               core JUnit suite; not a claim that every runtime path
+                               is unit-tested.
 
 mc-<ver>/common/               Per-MC shared surface (NBT codecs, command tree,
                                event payload models). Mojmap.
@@ -104,7 +107,7 @@ packaging. The root `build` task configures every loader cell and is intentional
 CI/release flows because multiple Fabric Loom versions can conflict when configured in one
 Gradle invocation. Classifier artifacts such as `-shadow`, `-all`, and `-slim` are not release assets.
 
-CI builds the full 8-jar matrix on every push to `main` and uploads them to the GitHub Release on tag push.
+CI historically built an 8-jar matrix; the in-tree candidate matrix is **nine** primary artifacts (Fabric/Forge 1.18.2, 1.19.2, 1.20.1; Fabric/NeoForge 1.21.1; NeoForge 26.1). Do not treat a local nine-cell package as a published GitHub Release.
 
 ## Configuration
 

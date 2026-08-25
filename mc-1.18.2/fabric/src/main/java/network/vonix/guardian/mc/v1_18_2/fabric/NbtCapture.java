@@ -55,10 +55,25 @@ final class NbtCapture {
         try { return property.getName(value); } catch (Throwable t) { return String.valueOf(value); }
     }
 
+    /** Full serialized payload retained for rollback/restore replay. */
     static byte[] itemStack(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return null;
         try { return write(stack.save(new CompoundTag())); }
         catch (Throwable t) { LOG.debug(Guardian.MARKER, "itemStack NBT capture failed: {}", t.toString()); return null; }
+    }
+
+    /** Comparison-only payload; stack quantity is represented by InventoryDelta.amount. */
+    static byte[] itemStackComparison(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return null;
+        try {
+            CompoundTag tag = stack.save(new CompoundTag());
+            tag.remove("Count");
+            tag.remove("count");
+            return write(tag);
+        } catch (Throwable t) {
+            LOG.debug(Guardian.MARKER, "itemStack comparison NBT capture failed: {}", t.toString());
+            return null;
+        }
     }
 
     static byte[] entity(Entity entity) {

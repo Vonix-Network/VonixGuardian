@@ -99,6 +99,7 @@ final class NbtCapture {
     }
 
     /** Encode an ItemStack (name, enchants, damage, components…) or return null on failure. */
+    /** Full serialized payload retained for rollback/restore replay. */
     static byte[] itemStack(ItemStack stack, HolderLookup.Provider registries) {
         if (stack == null || stack.isEmpty() || registries == null) return null;
         try {
@@ -108,6 +109,22 @@ final class NbtCapture {
             return write(ct);
         } catch (Throwable t) {
             LOG.debug(Guardian.MARKER, "itemStack NBT capture failed: {}", t.toString());
+            return null;
+        }
+    }
+
+    /** Comparison-only payload; stack quantity is represented by InventoryDelta.amount. */
+    static byte[] itemStackComparison(ItemStack stack, HolderLookup.Provider registries) {
+        if (stack == null || stack.isEmpty() || registries == null) return null;
+        try {
+            RegistryOps<Tag> ops = registries.createSerializationContext(NbtOps.INSTANCE);
+            Tag tag = ItemStack.CODEC.encodeStart(ops, stack).result().orElse(null);
+            if (!(tag instanceof CompoundTag ct)) return null;
+            ct.remove("Count");
+            ct.remove("count");
+            return write(ct);
+        } catch (Throwable t) {
+            LOG.debug(Guardian.MARKER, "itemStack comparison NBT capture failed: {}", t.toString());
             return null;
         }
     }

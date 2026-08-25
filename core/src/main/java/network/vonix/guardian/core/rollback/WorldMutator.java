@@ -1,5 +1,7 @@
 package network.vonix.guardian.core.rollback;
 
+import java.util.UUID;
+
 /**
  * Loader-provided contract for mutating the world during a rollback or restore.
  *
@@ -74,6 +76,40 @@ public interface WorldMutator {
     /** Checked container-removal path used by RollbackEngine. */
     default boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
         removeFromContainer(worldId, x, y, z, itemId, amount);
+        return false;
+    }
+
+    /** Legacy slot-less overload retained for existing mutator implementations. */
+    default boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                             String targetMeta, byte[] itemNbt) {
+        return false;
+    }
+
+    /**
+     * Checked insertion into the named player's inventory. The actor UUID is
+     * the integrity boundary; implementations must fail closed when the player
+     * is not online or the complete stack cannot be inserted.
+     */
+    default boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                             String targetMeta, byte[] itemNbt,
+                                             Integer inventorySlot) {
+        return false;
+    }
+
+    /** Legacy slot-less overload retained for existing mutator implementations. */
+    default boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                  String targetMeta, byte[] itemNbt) {
+        return false;
+    }
+
+    /**
+     * Checked removal from the named player's inventory. Implementations must
+     * match item metadata/components, not merely the registry id, and must not
+     * report success after a partial removal.
+     */
+    default boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                String targetMeta, byte[] itemNbt,
+                                                Integer inventorySlot) {
         return false;
     }
 

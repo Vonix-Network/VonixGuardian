@@ -8,8 +8,42 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class QueryCompilerTest {
+
+    @Test
+    void keyset_select_omits_offset_and_binds_seek_after_filter() {
+        QueryFilter f = QueryFilter.builder()
+            .sinceMillis(1000L)
+            .addAction(new QueryFilter.ActionSelect(ActionType.BLOCK_PLACE, QueryFilter.ActionSelect.Sign.ANY))
+            .build();
+        QueryCompiler.Seek after = new QueryCompiler.Seek(50L, 9L);
+        QueryCompiler.Compiled c = QueryCompiler.compileSelectAfter(f, after, 25);
+        QueryCompiler.Compiled display = QueryCompiler.compileSelectForDisplayAfter(f, after, 25);
+
+        assertThat(c.sql())
+            .contains("a.ts >= ?")
+            .contains("a.type IN (?)")
+            .contains("(a.ts, a.id) < (?, ?)")
+            .contains("ORDER BY a.ts DESC, a.id DESC LIMIT ?")
+            .doesNotContain("OFFSET");
+        assertThat(c.binds()).containsExactly(
+            1000L, ActionType.BLOCK_PLACE.id(), 50L, 9L, 25);
+        assertThat(display.sql())
+            .doesNotContain("a.block_entity_nbt")
+            .contains("(a.ts, a.id) < (?, ?)")
+            .doesNotContain("OFFSET");
+        assertThat(display.binds()).containsExactly(c.binds().toArray());
+    }
+
+    @Test
+    void keyset_select_rejects_null_cursor() {
+        assertThatThrownBy(() -> QueryCompiler.compileSelectAfter(QueryFilter.empty(), null, 10))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> QueryCompiler.compileSelectForDisplayAfter(QueryFilter.empty(), null, 10))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
 
     @Test
     void empty_filter_emits_no_where() {

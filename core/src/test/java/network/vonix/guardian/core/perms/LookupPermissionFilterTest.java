@@ -110,10 +110,10 @@ class LookupPermissionFilterTest {
         List<Action> rows = Arrays.asList(
                 a(1, ActionType.BLOCK_PLACE),      // childForAction → LOOKUP_BLOCK → denied
                 a(2, ActionType.EXPLOSION),        // WORLD → fall-open → survives
-                a(3, ActionType.CLICK));           // INTERACT → fall-open → survives
+                a(3, ActionType.CLICK));           // dedicated LOOKUP_CLICK → denied
         List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, rows);
 
-        assertThat(out).extracting(Action::id).containsExactly(2L, 3L);
+        assertThat(out).extracting(Action::id).containsExactly(2L);
     }
 
     @Test
@@ -381,6 +381,29 @@ class LookupPermissionFilterTest {
     }
 
     @Test
+    void visiblePageCountsOffsetRowsAgainstRawScanCap() throws Exception {
+        PermissionResolver resolver = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+        List<Action> tail = List.of(
+                a(70, ActionType.BLOCK_PLACE), a(71, ActionType.BLOCK_BREAK),
+                a(72, ActionType.CONTAINER_DEPOSIT), a(73, ActionType.ITEM_DROP),
+                a(74, ActionType.ENTITY_KILL));
+        when(dao.queryPageForDisplay(any(QueryFilter.class),
+                org.mockito.ArgumentMatchers.eq(99_995),
+                org.mockito.ArgumentMatchers.eq(5)))
+                .thenReturn(new GuardianDao.QueryPage(tail, false));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 14_286, 7, true);
+
+        assertThat(page.rawRowsScanned()).isEqualTo(100_000);
+        assertThat(page.complete()).isFalse();
+        assertThat(page.hasNext()).isFalse();
+        verify(dao, never()).queryPageForDisplay(any(QueryFilter.class),
+                org.mockito.ArgumentMatchers.eq(100_000), any(Integer.class));
+    }
+
+    @Test
     void visiblePageFailsClosedWhenDaoReportsTruncatedPage() throws Exception {
         PermissionResolver resolver = fakeResolver(2);
         GuardianDao dao = mock(GuardianDao.class);
@@ -459,7 +482,55 @@ class LookupPermissionFilterTest {
     }
 
     @Test
-    void visiblePageLaterPageStillScansFromZeroWithBoundedPrefetch() throws Exception {
+    void visiblePageNearKeysetThresholdUsesOneBoundedOffsetRead() throws Exception {
+        PermissionResolver resolver = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(252),
+                org.mockito.ArgumentMatchers.eq(7)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(
+                        a(253, ActionType.BLOCK_PLACE), a(254, ActionType.BLOCK_PLACE),
+                        a(255, ActionType.BLOCK_PLACE), a(256, ActionType.BLOCK_PLACE),
+                        a(257, ActionType.BLOCK_PLACE), a(258, ActionType.BLOCK_PLACE),
+                        a(259, ActionType.BLOCK_PLACE)), false));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 37, 7);
+
+        assertThat(page.complete()).isTrue();
+        assertThat(page.rows()).extracting(Action::id)
+                .containsExactly(253L, 254L, 255L, 256L, 257L, 258L, 259L);
+        verify(dao).queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(252),
+                org.mockito.ArgumentMatchers.eq(7));
+        verify(dao, never()).queryPageForDisplayAfter(any(),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), anyInt());
+    }
+
+    @Test
+    void visiblePageDeepPageUsesOneBoundedOffsetRead() throws Exception {
+        PermissionResolver resolver = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(273),
+                org.mockito.ArgumentMatchers.eq(7)))
+                .thenReturn(new GuardianDao.QueryPage(
+                        List.of(a(274, ActionType.BLOCK_PLACE), a(275, ActionType.BLOCK_PLACE),
+                                a(276, ActionType.BLOCK_PLACE), a(277, ActionType.BLOCK_PLACE),
+                                a(278, ActionType.BLOCK_PLACE), a(279, ActionType.BLOCK_PLACE),
+                                a(280, ActionType.BLOCK_PLACE)), false));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 40, 7);
+
+        assertThat(page.complete()).isTrue();
+        assertThat(page.rows()).extracting(Action::id)
+                .containsExactly(274L, 275L, 276L, 277L, 278L, 279L, 280L);
+        verify(dao).queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(273),
+                org.mockito.ArgumentMatchers.eq(7));
+        verify(dao, never()).queryPageForDisplayAfter(any(),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), anyInt());
+    }
+
+    @Test
+    void visiblePageLaterPageFallsBackToOffsetWhenKeysetIsUnavailable() throws Exception {
         PermissionResolver resolver = fakeResolver(4);
         GuardianDao dao = mock(GuardianDao.class);
         when(dao.queryPageForDisplay(any(QueryFilter.class), anyInt(), any(Integer.class)))
@@ -472,23 +543,72 @@ class LookupPermissionFilterTest {
                     }
                     return new GuardianDao.QueryPage(rows, false);
                 });
+        when(dao.queryPageForDisplayAfter(any(QueryFilter.class),
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong(), any(Integer.class)))
+                .thenReturn(null);
 
         LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
-                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 40, 7);
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 2, 7);
 
         assertThat(page.complete()).isTrue();
-        assertThat(page.rows()).extracting(Action::id).containsExactly(274L, 275L, 276L, 277L, 278L, 279L, 280L);
-        ArgumentCaptor<Integer> limitCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(dao).queryPageForDisplay(
-                any(QueryFilter.class),
-                org.mockito.ArgumentMatchers.eq(0),
-                limitCaptor.capture());
-        // skip 273 + take 7 = 280, capped at RAW_PAGE_SIZE 256
-        assertThat(limitCaptor.getValue()).isEqualTo(256);
-        verify(dao).queryPageForDisplay(
-                any(QueryFilter.class),
-                org.mockito.ArgumentMatchers.eq(256),
-                org.mockito.ArgumentMatchers.eq(24));
+        assertThat(page.rows()).extracting(Action::id).containsExactly(8L, 9L, 10L, 11L, 12L, 13L, 14L);
+        verify(dao).queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0),
+                org.mockito.ArgumentMatchers.eq(7));
+        verify(dao).queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(7),
+                org.mockito.ArgumentMatchers.eq(7));
+        verify(dao, times(2)).queryPageForDisplay(any(QueryFilter.class), anyInt(), any(Integer.class));
+    }
+
+    @Test
+    void visiblePageLaterPageUsesKeysetAfterInitialBatch() throws Exception {
+        PermissionResolver resolver = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0),
+                org.mockito.ArgumentMatchers.eq(7)))
+                .thenReturn(new GuardianDao.QueryPage(
+                        List.of(a(1, ActionType.BLOCK_PLACE), a(2, ActionType.BLOCK_PLACE),
+                                a(3, ActionType.BLOCK_PLACE), a(4, ActionType.BLOCK_PLACE),
+                                a(5, ActionType.BLOCK_PLACE), a(6, ActionType.BLOCK_PLACE),
+                                a(7, ActionType.BLOCK_PLACE)), false));
+        when(dao.queryPageForDisplayAfter(any(QueryFilter.class),
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.eq(7)))
+                .thenAnswer(invocation -> {
+                    long afterId = invocation.getArgument(2);
+                    List<Action> rows = new ArrayList<>(7);
+                    for (long id = afterId + 1; id <= afterId + 7; id++) {
+                        rows.add(a(id, ActionType.BLOCK_PLACE));
+                    }
+                    return new GuardianDao.QueryPage(rows, false);
+                });
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 2, 7, false);
+
+        assertThat(page.complete()).isTrue();
+        assertThat(page.rows()).extracting(Action::id).containsExactly(8L, 9L, 10L, 11L, 12L, 13L, 14L);
+        verify(dao).queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0),
+                org.mockito.ArgumentMatchers.eq(7));
+        verify(dao).queryPageForDisplayAfter(any(QueryFilter.class),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(7));
+        verify(dao, times(1)).queryPageForDisplayAfter(any(QueryFilter.class),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), any(Integer.class));
+    }
+
+    @Test
+    void visiblePageFailsClosedWhenVisibleSkipMeetsScanBound() throws Exception {
+        PermissionResolver resolver = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 14_287, 7);
+
+        assertThat(page.complete()).isFalse();
+        assertThat(page.rows()).isEmpty();
+        verify(dao, never()).queryPageForDisplay(any(), anyInt(), anyInt());
     }
 
     @Test

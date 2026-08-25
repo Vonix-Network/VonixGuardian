@@ -454,6 +454,262 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void inventoryReplacementPairOccupiesOneSlotAndSurvivesSaturationTogether() throws Exception {
+        CapturingSink sink = new CapturingSink(0);
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(1, 5_000L, 4, sink, DAEMON)) {
+            q.setPaused(true);
+            Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 77L, 1);
+            Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 77L, 2);
+            assertThat(q.submitPair(withdraw, deposit)).isTrue();
+            assertThat(q.depth()).isEqualTo(1);
+            assertThat(q.pendingSnapshot()).extracting(Action::type)
+                    .containsExactly(ActionType.INVENTORY_WITHDRAW, ActionType.INVENTORY_DEPOSIT);
+            assertThat(q.submit(action(9))).isFalse();
+            assertThat(q.dropped()).isEqualTo(1L);
+            assertThat(q.pendingSnapshot()).hasSize(2);
+        }
+    }
+
+    @Test
+    void inventoryReplacementPairIsRejectedAsAUnitWhenQueueIsFull() throws Exception {
+        CapturingSink sink = new CapturingSink(0);
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(1, 5_000L, 4, sink, DAEMON)) {
+            q.setPaused(true);
+            assertThat(q.submit(action(1))).isTrue();
+            Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 88L, 1);
+            Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 88L, 2);
+            assertThat(q.submitPair(withdraw, deposit)).isFalse();
+            assertThat(q.dropped()).isEqualTo(2L);
+            assertThat(q.pendingSnapshot()).extracting(Action::x).containsExactly(1);
+        }
+    }
+
+    @Test
+    void inventoryReplacementPairIsFlushedAndQuarantinedTogetherOnSinkFailure() throws Exception {
+        Path dir = Files.createTempDirectory("vg-pair-quarantine-test");
+        Path journal = dir.resolve("quarantine.bin");
+        AlwaysFailingSink failing = new AlwaysFailingSink();
+        BatchedAsyncWriteQueue first = new BatchedAsyncWriteQueue(8, 25L, 4, failing, DAEMON, journal);
+        try {
+            Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 91L, 1);
+            Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 91L, 2);
+            assertThat(first.submitPair(withdraw, deposit)).isTrue();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+            while (first.quarantined() < 2L && System.nanoTime() < deadline) {
+                Thread.sleep(10L);
+            }
+            assertThat(first.quarantined()).isEqualTo(2L);
+        } finally {
+            first.close();
+        }
+
+        CapturingSink recovered = new CapturingSink(2);
+        BatchedAsyncWriteQueue second = new BatchedAsyncWriteQueue(8, 25L, 4, recovered, DAEMON, journal);
+        try {
+            assertThat(recovered.latch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(recovered.seen).extracting(Action::type)
+                    .containsExactlyInAnyOrder(ActionType.INVENTORY_WITHDRAW, ActionType.INVENTORY_DEPOSIT);
+            assertThat(recovered.seen).extracting(Action::pairId).containsOnly(91L);
+        } finally {
+            second.close();
+        }
+    }
+
+    @Test
+    void survivingPairHalfIsNeverReflushedAsSingleton() throws Exception {
+        Path dir = Files.createTempDirectory("vg-lone-pair");
+        Path journal = dir.resolve("quarantine.bin");
+        Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 92L, 1);
+        Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 92L, 2);
+        QuarantineStore seed = new QuarantineStore(journal, 8, 1_000_000L);
+        List<Long> sequences = seed.appendGroup(List.of(withdraw, deposit));
+        seed.acknowledge(sequences.get(0));
+
+        AtomicInteger flushes = new AtomicInteger();
+        List<Integer> sizes = new CopyOnWriteArrayList<>();
+        BatchSink sink = batch -> {
+            flushes.incrementAndGet();
+            sizes.add(batch.size());
+        };
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(8, 25L, 4, sink, DAEMON, journal);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3L);
+            while (System.nanoTime() < deadline) {
+                Thread.sleep(50L);
+            }
+            assertThat(flushes.get())
+                    .as("lone pair member must never reflush as a singleton")
+                    .isZero();
+            assertThat(sizes).isEmpty();
+            assertThat(q.quarantined()).isEqualTo(1L);
+        } finally {
+            q.close();
+        }
+    }
+
+    @Test
+    void loneSinkSucceededPairMemberIsRetainedForRepairAfterRestart() throws Exception {
+        Path dir = Files.createTempDirectory("vg-lone-marked-pair");
+        Path journal = dir.resolve("quarantine.bin");
+        Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 94L, 1);
+        Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 94L, 2);
+        QuarantineStore seed = new QuarantineStore(journal, 8, 1_000_000L);
+        List<Long> sequences = seed.appendGroup(List.of(withdraw, deposit));
+        seed.acknowledge(sequences.get(0));
+        seed.markSinkSucceeded(sequences.get(1));
+
+        AtomicInteger flushes = new AtomicInteger();
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                8, 25L, 4, batch -> flushes.incrementAndGet(), DAEMON, journal)) {
+            Thread.sleep(1_800L);
+            assertThat(flushes.get()).isZero();
+            assertThat(q.recoveredFromQuarantine()).isZero();
+        }
+
+        QuarantineStore after = new QuarantineStore(journal, 8, 1_000_000L);
+        assertThat(after.entries())
+                .as("a lone sink-succeeded replacement member needs explicit repair, never singleton ACK")
+                .singleElement()
+                .satisfies(entry -> assertThat(entry.sinkSucceeded()).isTrue());
+    }
+
+    @Test
+    void mixedPairSinkMarkersAreRetainedForRepairAfterRestart() throws Exception {
+        Path dir = Files.createTempDirectory("vg-mixed-marked-pair");
+        Path journal = dir.resolve("quarantine.bin");
+        Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 95L, 1);
+        Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 95L, 2);
+        QuarantineStore seed = new QuarantineStore(journal, 8, 1_000_000L);
+        List<Long> sequences = seed.appendGroup(List.of(withdraw, deposit));
+        seed.markSinkSucceeded(sequences.get(0));
+
+        AtomicInteger flushes = new AtomicInteger();
+        try (BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                8, 25L, 4, batch -> flushes.incrementAndGet(), DAEMON, journal)) {
+            Thread.sleep(1_800L);
+            assertThat(flushes.get()).isZero();
+            assertThat(q.recoveredFromQuarantine()).isZero();
+        }
+
+        QuarantineStore after = new QuarantineStore(journal, 8, 1_000_000L);
+        assertThat(after.entries())
+                .as("mixed marker state is not proof that both pair sink effects completed")
+                .hasSize(2);
+        assertThat(after.entries()).extracting(QuarantineStore.Entry::sinkSucceeded)
+                .containsExactlyInAnyOrder(true, false);
+    }
+
+    @Test
+    void groupMarkerFailureRetriesWithoutSplittingPair() throws Exception {
+        Path dir = Files.createTempDirectory("vg-group-marker");
+        Path journal = dir.resolve("quarantine.bin");
+        Action withdraw = inventory(ActionType.INVENTORY_WITHDRAW, 93L, 1);
+        Action deposit = inventory(ActionType.INVENTORY_DEPOSIT, 93L, 2);
+        QuarantineStore seed = new QuarantineStore(journal, 8, 1_000_000L);
+        seed.appendGroup(List.of(withdraw, deposit));
+
+        ControllableGroupMarkerStore failing = new ControllableGroupMarkerStore(journal);
+        AtomicInteger flushes = new AtomicInteger();
+        List<Integer> sizes = new CopyOnWriteArrayList<>();
+        BatchSink sink = batch -> {
+            flushes.incrementAndGet();
+            sizes.add(batch.size());
+        };
+        BatchedAsyncWriteQueue first = new BatchedAsyncWriteQueue(8, 25L, 4, sink, DAEMON, failing);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+            while ((flushes.get() < 1 || failing.groupMarkerAttempts() < 1)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20L);
+            }
+            assertThat(flushes.get()).isEqualTo(1);
+            assertThat(sizes).containsExactly(2);
+            assertThat(first.recoveredFromQuarantine()).isZero();
+            failing.allowMarkers();
+            long recoverDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8L);
+            while (first.recoveredFromQuarantine() < 2L && System.nanoTime() < recoverDeadline) {
+                Thread.sleep(50L);
+            }
+            assertThat(first.recoveredFromQuarantine()).isEqualTo(2L);
+            assertThat(flushes.get())
+                    .as("group marker retry must not reflush the pair")
+                    .isEqualTo(1);
+            assertThat(first.quarantined()).isZero();
+        } finally {
+            first.close();
+        }
+    }
+
+    @Test
+    void freezeAdmissionWaitsForSinkIdleAndRejectsOffers() throws Exception {
+        CountDownLatch inSink = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        BatchSink sink = batch -> {
+            inSink.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("release timeout");
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(ie);
+            }
+        };
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(8, 25L, 4, sink, DAEMON);
+        try {
+            assertThat(q.submit(action(1))).isTrue();
+            assertThat(inSink.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(q.freezeAdmission()).isTrue();
+            assertThat(q.submit(action(2))).isFalse();
+            AtomicBoolean idle = new AtomicBoolean(false);
+            Thread waiter = new Thread(() -> idle.set(q.awaitIdle(3_000L)), "idle-waiter");
+            waiter.start();
+            Thread.sleep(80L);
+            assertThat(idle.get()).isFalse();
+            release.countDown();
+            waiter.join(4_000L);
+            assertThat(idle.get()).isTrue();
+            assertThat(q.isPipelineIdle()).isTrue();
+        } finally {
+            release.countDown();
+            q.close();
+        }
+    }
+
+    private static final class ControllableGroupMarkerStore extends QuarantineStore {
+        private final AtomicInteger groupMarkerAttempts = new AtomicInteger();
+        private volatile boolean allow;
+
+        ControllableGroupMarkerStore(Path path) throws Exception {
+            super(path, 8, 1_000_000L);
+        }
+
+        void allowMarkers() {
+            allow = true;
+        }
+
+        int groupMarkerAttempts() {
+            return groupMarkerAttempts.get();
+        }
+
+        @Override
+        synchronized void markSinkSucceededGroup(List<Long> sequences) throws java.io.IOException {
+            groupMarkerAttempts.incrementAndGet();
+            if (!allow) {
+                throw new java.io.IOException("controlled group marker failure");
+            }
+            super.markSinkSucceededGroup(sequences);
+        }
+    }
+
+    private static Action inventory(ActionType type, long pairId, int x) {
+        return new Action(-1L, System.currentTimeMillis(), type,
+                UUID.randomUUID(), "tester", "minecraft:overworld",
+                x, 64, 0, "minecraft:diamond", null, 1, false, null,
+                null, null, null, null, null, null, new byte[]{1}, null, pairId, 5);
+    }
+
+    @Test
     void close_terminatesWorkerThread() throws Exception {
         CapturingSink sink = new CapturingSink(0);
         List<Thread> spawned = new ArrayList<>();

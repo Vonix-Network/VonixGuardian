@@ -44,6 +44,26 @@ public interface GuardianDao extends AutoCloseable {
         return queryPage(filter, offset, limit);
     }
 
+    /**
+     * Next page after {@code (afterTs, afterId)} in canonical
+     * {@code ts DESC, id DESC} order. Implementations SHOULD compile a keyset
+     * predicate rather than {@code OFFSET}. Returning {@code null} means the
+     * caller must fall back to {@link #queryPage} (mocks and pre-keyset DAOs).
+     */
+    default QueryPage queryPageAfter(QueryFilter filter, long afterTs, long afterId, int limit)
+            throws Exception {
+        return null;
+    }
+
+    /**
+     * Lookup-display variant of {@link #queryPageAfter}. Default delegates to
+     * {@link #queryPageAfter}; JDBC implementations omit NBT payload columns.
+     */
+    default QueryPage queryPageForDisplayAfter(QueryFilter filter, long afterTs, long afterId, int limit)
+            throws Exception {
+        return queryPageAfter(filter, afterTs, afterId, limit);
+    }
+
     /** Result of a bounded page fetch. */
     record QueryPage(List<Action> rows, boolean truncated) {
         public QueryPage {
@@ -56,6 +76,41 @@ public interface GuardianDao extends AutoCloseable {
 
     /** Mark a set of action IDs as rolled-back (used by RollbackEngine). */
     int markRolledBack(List<Long> ids, boolean rolledBack) throws Exception;
+
+    /**
+     * Durable repair-required row: world mutation may remain applied after
+     * compensation failed. Default is a no-op for mocks; JDBC persists to
+     * {@code vg_repair_required}.
+     */
+    record RepairRequired(long actionId, Long pairId, Long batchId, String reason, long timestamp) {}
+
+    default int markRepairRequired(List<RepairRequired> rows) throws Exception {
+        return rows == null ? 0 : rows.size();
+    }
+
+    default List<RepairRequired> findRepairRequired() throws Exception {
+        return List.of();
+    }
+
+    /**
+     * Insert {@code batch} and stage a JSONL outbox payload in the same JDBC
+     * transaction. Default is not atomic; {@code AbstractJdbcDao} overrides.
+     * When an outbox row already exists, implementations MUST skip the insert
+     * so a retry cannot duplicate {@code vg_actions} rows.
+     */
+    default int insertBatchWithOutbox(List<Action> batch, byte[] outboxPayload) throws Exception {
+        return insertBatch(batch);
+    }
+
+    /** Peek the durable JSONL outbox payload, or {@code null} when idle. */
+    default byte[] peekSinkOutbox() throws Exception {
+        return null;
+    }
+
+    /** Drop the durable JSONL outbox after JSONL append+flush succeeded. */
+    default void ackSinkOutbox() throws Exception {
+        // no-op default for mocks and pre-v8 DAOs
+    }
 
     /**
      * Load every action sharing one of {@code pairIds}. Used by rollback to

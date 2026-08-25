@@ -23,6 +23,23 @@ public interface AsyncWriteQueue {
     boolean submit(Action a);
 
     /**
+     * Non-blocking enqueue of a two-row inventory replacement. Default is
+     * sequential and is <em>not</em> pair-atomic; {@link BatchedAsyncWriteQueue}
+     * overrides with a single queue slot so saturation, shutdown, or gating
+     * cannot retain only one half.
+     *
+     * @return {@code true} when both actions were enqueued
+     */
+    default boolean submitPair(Action first, Action second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        boolean acceptedFirst = submit(first);
+        boolean acceptedSecond = submit(second);
+        return acceptedFirst && acceptedSecond;
+    }
+
+    /**
      * Stop accepting new work, signal the worker, and force-flush any pending items within the
      * given timeout budget. Implementations should treat exhausted budgets as a WARN, not an
      * error.

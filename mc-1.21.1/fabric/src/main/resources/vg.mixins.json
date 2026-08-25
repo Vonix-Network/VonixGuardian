@@ -34,7 +34,8 @@
     "SilverfishMixin",
     "SnowGolemMixin",
     "SpreadingSnowyDirtBlockMixin",
-    "TntBlockMixin"
+    "TntBlockMixin",
+    "PlayerInventoryMixin"
   ],
   "server": [],
   "client": [],

@@ -241,7 +241,32 @@ class RollbackPlanTest {
         assertThat(r.inverseMode()).isEqualTo(RollbackResult.Mode.RESTORE);
     }
 
-    // ------------------------------------------------------------- helpers
+    @Test
+    void restoreOrdersInventoryReplacementOldestFirstWithoutChangingRollbackOrder() {
+        Action oldWithdraw = action(10L, 100L, ActionType.INVENTORY_WITHDRAW,
+                "minecraft:overworld", 0, 64, 0, "minecraft:diamond", null, 1, false);
+        Action newDeposit = action(11L, 100L, ActionType.INVENTORY_DEPOSIT,
+                "minecraft:overworld", 0, 64, 0, "minecraft:diamond", null, 1, false);
+
+        RollbackPlan restore = RollbackPlan.build(List.of(newDeposit, oldWithdraw), filter,
+                RollbackResult.Mode.RESTORE, UUID.randomUUID());
+        assertThat(restore.ordered()).extracting(Action::type)
+                .containsExactly(ActionType.INVENTORY_WITHDRAW, ActionType.INVENTORY_DEPOSIT);
+
+        Action world = action(20L, 110L, ActionType.BLOCK_PLACE,
+                "minecraft:overworld", 9, 64, 9, "minecraft:stone", null, 1, false);
+        RollbackPlan interleaved = RollbackPlan.build(List.of(newDeposit, world, oldWithdraw), filter,
+                RollbackResult.Mode.RESTORE, UUID.randomUUID());
+        assertThat(interleaved.ordered()).extracting(Action::type)
+                .containsExactly(ActionType.BLOCK_PLACE, ActionType.INVENTORY_WITHDRAW,
+                        ActionType.INVENTORY_DEPOSIT);
+
+        RollbackPlan rollback = RollbackPlan.build(List.of(oldWithdraw, newDeposit), filter,
+                RollbackResult.Mode.ROLLBACK, UUID.randomUUID());
+        assertThat(rollback.ordered()).extracting(Action::type)
+                .containsExactly(ActionType.INVENTORY_DEPOSIT, ActionType.INVENTORY_WITHDRAW);
+    }
+
 
     private static Action action(long id, long ts, ActionType type,
                                  String world, int x, int y, int z,

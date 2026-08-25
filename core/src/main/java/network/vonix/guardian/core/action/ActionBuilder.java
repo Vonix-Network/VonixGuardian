@@ -49,6 +49,7 @@ public final class ActionBuilder {
     private byte[] itemNbt;
     private byte[] entityNbt;
     private Long pairId;
+    private Integer inventorySlot;
 
     /** Creates a new empty builder. */
     public ActionBuilder() {
@@ -101,6 +102,7 @@ public final class ActionBuilder {
         this.itemNbt = null;
         this.entityNbt = null;
         this.pairId = null;
+        this.inventorySlot = null;
         return this;
     }
 
@@ -393,15 +395,24 @@ public final class ActionBuilder {
     }
 
     /**
-     * Sets the durable fire/break pairing token. {@code null} or {@code 0}
-     * means unpaired. Survives persistence so rollback can join the pair
-     * after restart.
+     * Sets the durable pairing token (fire/break or inventory replacement).
+     * {@code null} or {@code 0} means unpaired. Survives persistence so
+     * rollback can join the pair after restart.
      *
      * @param pairId correlation id; may be {@code null}
      * @return this builder
      */
     public ActionBuilder pairId(Long pairId) {
         this.pairId = (pairId != null && pairId == 0L) ? null : pairId;
+        return this;
+    }
+
+    /** Sets the exact player-inventory slot for an INVENTORY_* action. */
+    public ActionBuilder inventorySlot(Integer inventorySlot) {
+        if (inventorySlot != null && inventorySlot < 0) {
+            throw new IllegalArgumentException("inventorySlot must be non-negative");
+        }
+        this.inventorySlot = inventorySlot;
         return this;
     }
 
@@ -450,7 +461,8 @@ public final class ActionBuilder {
             blockEntityNbt,
             itemNbt,
             entityNbt,
-            pairId
+            pairId,
+            inventorySlot
         );
     }
 }

@@ -31,7 +31,7 @@ public final class QueryCompiler {
         "target", "meta", "amount", "rolled_back", "source_tag",
         "sign_side", "sign_dye_color", "sign_waxed",
         "old_block_state", "new_block_state", "block_entity_nbt", "item_nbt", "entity_nbt",
-        "pair_id",
+        "inventory_slot", "pair_id",
         "uuid", "name", "world_key"
     );
 
@@ -41,7 +41,7 @@ public final class QueryCompiler {
       + "a.x, a.y, a.z, a.target, a.meta, a.amount, a.rolled_back, a.source_tag, "
       + "a.sign_side, a.sign_dye_color, a.sign_waxed, "
       + "a.old_block_state, a.new_block_state, a.block_entity_nbt, a.item_nbt, a.entity_nbt, "
-      + "a.pair_id";
+      + "a.inventory_slot, a.pair_id";
 
     /**
      * Lookup-display projection. Omits the five v1.3.1 NBT fidelity columns so
@@ -51,7 +51,7 @@ public final class QueryCompiler {
     public static final String SELECT_PROJECTION_DISPLAY =
         "a.id, a.ts, a.type, u.uuid, u.name, w.world_key, "
       + "a.x, a.y, a.z, a.target, a.meta, a.amount, a.rolled_back, a.source_tag, "
-      + "a.sign_side, a.sign_dye_color, a.sign_waxed, a.pair_id";
+      + "a.sign_side, a.sign_dye_color, a.sign_waxed, a.inventory_slot, a.pair_id";
 
     private static final String FROM_JOIN =
         " FROM vg_actions a "
@@ -63,9 +63,16 @@ public final class QueryCompiler {
     /** Result of compilation: SQL string + ordered bind values. */
     public record Compiled(String sql, List<Object> binds) {}
 
+    /**
+     * Keyset cursor on the canonical {@code (ts DESC, id DESC)} order.
+     * Rows strictly older than this cursor (smaller ts, or equal ts and
+     * smaller id) are eligible for the next page.
+     */
+    public record Seek(long ts, long id) {}
+
     /** Build a SELECT for paged retrieval, including NBT fidelity columns. */
     public static Compiled compileSelect(QueryFilter filter, int offset, int limit) {
-        return compileSelect(filter, offset, limit, SELECT_PROJECTION);
+        return compileSelect(filter, offset, limit, SELECT_PROJECTION, null);
     }
 
     /**
@@ -73,16 +80,42 @@ public final class QueryCompiler {
      * {@link #compileSelect(QueryFilter, int, int)} but without NBT payload columns.
      */
     public static Compiled compileSelectForDisplay(QueryFilter filter, int offset, int limit) {
-        return compileSelect(filter, offset, limit, SELECT_PROJECTION_DISPLAY);
+        return compileSelect(filter, offset, limit, SELECT_PROJECTION_DISPLAY, null);
     }
 
-    private static Compiled compileSelect(QueryFilter filter, int offset, int limit, String projection) {
+    /**
+     * Keyset SELECT for rollback/restore scans. Equivalent to the next
+     * {@code LIMIT} rows after {@code after} in canonical order, without an
+     * {@code OFFSET} skip of already-consumed rows.
+     */
+    public static Compiled compileSelectAfter(QueryFilter filter, Seek after, int limit) {
+        if (after == null) {
+            throw new IllegalArgumentException("after must not be null");
+        }
+        return compileSelect(filter, 0, limit, SELECT_PROJECTION, after);
+    }
+
+    /**
+     * Keyset SELECT using the lookup-display projection.
+     */
+    public static Compiled compileSelectForDisplayAfter(QueryFilter filter, Seek after, int limit) {
+        if (after == null) {
+            throw new IllegalArgumentException("after must not be null");
+        }
+        return compileSelect(filter, 0, limit, SELECT_PROJECTION_DISPLAY, after);
+    }
+
+    private static Compiled compileSelect(QueryFilter filter, int offset, int limit,
+                                          String projection, Seek after) {
         StringBuilder sb = new StringBuilder("SELECT ").append(projection).append(FROM_JOIN);
         List<Object> binds = new ArrayList<>();
-        appendWhere(sb, filter, binds);
-        sb.append(" ORDER BY a.ts DESC, a.id DESC LIMIT ? OFFSET ?");
+        appendWhere(sb, filter, binds, after);
+        sb.append(" ORDER BY a.ts DESC, a.id DESC LIMIT ?");
         binds.add(limit);
-        binds.add(offset);
+        if (after == null) {
+            sb.append(" OFFSET ?");
+            binds.add(offset);
+        }
         return new Compiled(sb.toString(), binds);
     }
 
@@ -109,6 +142,10 @@ public final class QueryCompiler {
     // ---------------------------------------------------------------------
 
     private static void appendWhere(StringBuilder sb, QueryFilter f, List<Object> binds) {
+        appendWhere(sb, f, binds, null);
+    }
+
+    private static void appendWhere(StringBuilder sb, QueryFilter f, List<Object> binds, Seek after) {
         List<String> clauses = new ArrayList<>();
 
         // Explicit action-id set (used by /vg undo to replay the exact rows from the popped operation).
@@ -217,6 +254,17 @@ public final class QueryCompiler {
         if (f.rolledBack() != null) {
             clauses.add("a.rolled_back = ?");
             binds.add(f.rolledBack() ? 1 : 0);
+        }
+
+        // Keyset seek: walk older than the last consumed (ts, id) in DESC order.
+        if (after != null) {
+            // Row-value comparison keeps the composite index seekable on
+            // SQLite, MySQL, and PostgreSQL. The equivalent OR expansion is
+            // logically correct but caused a residual scan in SQLite at deep
+            // pages, defeating the player-count-independent goal.
+            clauses.add("(a.ts, a.id) < (?, ?)");
+            binds.add(after.ts());
+            binds.add(after.id());
         }
 
         if (!clauses.isEmpty()) {

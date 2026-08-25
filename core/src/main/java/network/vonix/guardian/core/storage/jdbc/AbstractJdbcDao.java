@@ -48,13 +48,21 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         "INSERT INTO vg_actions("
         + "ts, type, user_id, world_id, x, y, z, target, meta, amount, rolled_back, source_tag, "
         + "sign_side, sign_dye_color, sign_waxed, "
-        + "old_block_state, new_block_state, block_entity_nbt, item_nbt, entity_nbt, pair_id"
-        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        + "old_block_state, new_block_state, block_entity_nbt, item_nbt, entity_nbt, inventory_slot, pair_id"
+        + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
-    /** uuid-string -> id, only populated for real (non-null UUID) users. */
-    private final ConcurrentHashMap<String, Integer> userIdByUuid = new ConcurrentHashMap<>();
-    /** name -> id, used for sentinels and uuid-less lookups. */
+    /** uuid -> id, only populated for real (non-null) users; bounded admission. */
+    private final ConcurrentHashMap<UUID, Integer> userIdByUuid = new ConcurrentHashMap<>();
+    /**
+     * Interns UUID strings read from JDBC so repeated lookup/rollback rows for
+     * the same player do not re-parse {@code UUID.fromString}. Bounded so a
+     * hostile unique-uuid flood cannot grow without limit.
+     */
+    private final ConcurrentHashMap<String, UUID> uuidIntern = new ConcurrentHashMap<>();
+    private static final int UUID_INTERN_CAP = 4096;
+    /** name -> id, used for sentinels and uuid-less lookups; bounded admission. */
     private final ConcurrentHashMap<String, Integer> userIdByName = new ConcurrentHashMap<>();
+    private static final int USER_ID_CACHE_CAP = 4096;
     /**
      * v1.3.1 X6 (P3-8): last time (ms) we issued an {@code UPDATE vg_users SET last_seen}
      * for each user id. Amortizes the write — resolveUserOn only issues the UPDATE when
@@ -64,7 +72,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     private final ConcurrentHashMap<Integer, Long> lastSeenLastWriteMs = new ConcurrentHashMap<>();
     /** Amortization threshold: only rewrite last_seen when it drifts by more than this many ms. */
     static final long LAST_SEEN_DRIFT_MS = 60_000L;
+    private static final int LAST_SEEN_CACHE_CAP = 4096;
     private final ConcurrentHashMap<String, Integer> worldIdByKey = new ConcurrentHashMap<>();
+    private static final int WORLD_ID_CACHE_CAP = 4096;
 
     /** Optional read-side rate limit. May be {@code null} (no limit). */
     private final Semaphore lookupSemaphore;
@@ -137,88 +147,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         boolean prevAutoCommit = c.getAutoCommit();
         try {
             c.setAutoCommit(false);
-            try (PreparedStatement ps = c.prepareStatement(INSERT_ACTION_SQL)) {
-                for (Action a : batch) {
-                    int userId = resolveUserOn(c, a.actorUuid(), nullSafeName(a));
-                    int worldId = resolveWorldOn(c, a.worldId());
-                    ps.setLong(1, a.timestamp());
-                    ps.setShort(2, (short) a.type().id());
-                    ps.setInt(3, userId);
-                    ps.setInt(4, worldId);
-                    ps.setInt(5, a.x());
-                    ps.setInt(6, a.y());
-                    ps.setInt(7, a.z());
-                    ps.setString(8, a.targetId() == null ? "" : a.targetId());
-                    if (a.targetMeta() == null) {
-                        ps.setNull(9, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(9, a.targetMeta());
-                    }
-                    ps.setInt(10, a.amount());
-                    ps.setInt(11, a.rolledBack() ? 1 : 0);
-                    if (a.sourceTag() == null) {
-                        ps.setNull(12, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(12, a.sourceTag());
-                    }
-                    if (a.signSide() == null) {
-                        ps.setNull(13, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(13, a.signSide());
-                    }
-                    if (a.signDyeColor() == null) {
-                        ps.setNull(14, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(14, a.signDyeColor());
-                    }
-                    if (a.signWaxed() == null) {
-                        ps.setNull(15, java.sql.Types.BOOLEAN);
-                    } else {
-                        ps.setBoolean(15, a.signWaxed());
-                    }
-                    // v1.3.1 X1 — NBT fidelity columns. All nullable; producers only
-                    // populate them when config.storage.persistNbt=true. The DAO reads
-                    // whatever it finds regardless so historical rows survive a toggle
-                    // flip.
-                    if (a.oldBlockState() == null) {
-                        ps.setNull(16, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(16, a.oldBlockState());
-                    }
-                    if (a.newBlockState() == null) {
-                        ps.setNull(17, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(17, a.newBlockState());
-                    }
-                    if (a.blockEntityNbt() == null) {
-                        ps.setNull(18, java.sql.Types.VARBINARY);
-                    } else {
-                        ps.setBytes(18, a.blockEntityNbt());
-                    }
-                    if (a.itemNbt() == null) {
-                        ps.setNull(19, java.sql.Types.VARBINARY);
-                    } else {
-                        ps.setBytes(19, a.itemNbt());
-                    }
-                    if (a.entityNbt() == null) {
-                        ps.setNull(20, java.sql.Types.VARBINARY);
-                    } else {
-                        ps.setBytes(20, a.entityNbt());
-                    }
-                    if (a.pairId() == null || a.pairId() == 0L) {
-                        ps.setNull(21, java.sql.Types.BIGINT);
-                    } else {
-                        ps.setLong(21, a.pairId());
-                    }
-                    ps.addBatch();
-                }
-                int[] r = ps.executeBatch();
+            try {
+                int total = insertActionsOn(c, batch);
                 c.commit();
-                int total = 0;
-                for (int v : r) {
-                    if (v >= 0) total += v;
-                    else total += 1; // SUCCESS_NO_INFO
-                }
                 return total;
             } catch (SQLException ex) {
                 c.rollback();
@@ -230,6 +161,246 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         }
     }
 
+    @Override
+    public int insertBatchWithOutbox(List<Action> batch, byte[] outboxPayload) throws SQLException {
+        if (batch == null || batch.isEmpty()) {
+            return 0;
+        }
+        if (outboxPayload == null) {
+            throw new SQLException("sink outbox payload is required");
+        }
+        Connection c = borrow();
+        boolean prevAutoCommit = c.getAutoCommit();
+        try {
+            c.setAutoCommit(false);
+            try {
+                if (peekSinkOutboxOn(c) != null) {
+                    c.commit();
+                    return 0;
+                }
+                int total = insertActionsOn(c, batch);
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO vg_sink_outbox(id, payload, created_ts) VALUES (1, ?, ?)")) {
+                    ps.setBytes(1, outboxPayload);
+                    ps.setLong(2, System.currentTimeMillis());
+                    ps.executeUpdate();
+                }
+                c.commit();
+                return total;
+            } catch (SQLException ex) {
+                c.rollback();
+                throw ex;
+            }
+        } finally {
+            try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            release(c);
+        }
+    }
+
+    @Override
+    public byte[] peekSinkOutbox() throws SQLException {
+        Connection c = borrow();
+        try {
+            return peekSinkOutboxOn(c);
+        } finally {
+            release(c);
+        }
+    }
+
+    @Override
+    public void ackSinkOutbox() throws SQLException {
+        Connection c = borrow();
+        boolean prevAutoCommit = c.getAutoCommit();
+        try {
+            c.setAutoCommit(false);
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM vg_sink_outbox WHERE id = 1")) {
+                ps.executeUpdate();
+                c.commit();
+            } catch (SQLException ex) {
+                c.rollback();
+                throw ex;
+            }
+        } finally {
+            try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            release(c);
+        }
+    }
+
+    @Override
+    public int markRepairRequired(List<RepairRequired> rows) throws SQLException {
+        if (rows == null || rows.isEmpty()) {
+            return 0;
+        }
+        Connection c = borrow();
+        boolean prevAutoCommit = c.getAutoCommit();
+        try {
+            c.setAutoCommit(false);
+            int total = 0;
+            try {
+                try (PreparedStatement del = c.prepareStatement(
+                        "DELETE FROM vg_repair_required WHERE action_id = ?")) {
+                    for (RepairRequired row : rows) {
+                        del.setLong(1, row.actionId());
+                        del.addBatch();
+                    }
+                    del.executeBatch();
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO vg_repair_required(action_id, pair_id, batch_id, reason, ts) "
+                                + "VALUES (?,?,?,?,?)")) {
+                    for (RepairRequired row : rows) {
+                        ps.setLong(1, row.actionId());
+                        if (row.pairId() == null) {
+                            ps.setNull(2, java.sql.Types.BIGINT);
+                        } else {
+                            ps.setLong(2, row.pairId());
+                        }
+                        if (row.batchId() == null) {
+                            ps.setNull(3, java.sql.Types.INTEGER);
+                        } else {
+                            ps.setLong(3, row.batchId());
+                        }
+                        ps.setString(4, row.reason() == null ? "repair-required" : row.reason());
+                        ps.setLong(5, row.timestamp());
+                        ps.addBatch();
+                    }
+                    int[] r = ps.executeBatch();
+                    for (int v : r) {
+                        if (v >= 0) total += v;
+                        else total += 1;
+                    }
+                }
+                c.commit();
+                return total;
+            } catch (SQLException ex) {
+                c.rollback();
+                throw ex;
+            }
+        } finally {
+            try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            release(c);
+        }
+    }
+
+    @Override
+    public List<RepairRequired> findRepairRequired() throws SQLException {
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT action_id, pair_id, batch_id, reason, ts FROM vg_repair_required ORDER BY ts, action_id")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                List<RepairRequired> out = new ArrayList<>();
+                while (rs.next()) {
+                    long pairRaw = rs.getLong(2);
+                    Long pairId = rs.wasNull() ? null : pairRaw;
+                    long batchRaw = rs.getLong(3);
+                    Long batchId = rs.wasNull() ? null : batchRaw;
+                    out.add(new RepairRequired(rs.getLong(1), pairId, batchId, rs.getString(4), rs.getLong(5)));
+                }
+                return out;
+            }
+        } finally {
+            release(c);
+        }
+    }
+
+    private static byte[] peekSinkOutboxOn(Connection c) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT payload FROM vg_sink_outbox WHERE id = 1")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                return rs.getBytes(1);
+            }
+        }
+    }
+
+    private int insertActionsOn(Connection c, List<Action> batch) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(INSERT_ACTION_SQL)) {
+            for (Action a : batch) {
+                int userId = resolveUserOn(c, a.actorUuid(), nullSafeName(a));
+                int worldId = resolveWorldOn(c, a.worldId());
+                ps.setLong(1, a.timestamp());
+                ps.setShort(2, (short) a.type().id());
+                ps.setInt(3, userId);
+                ps.setInt(4, worldId);
+                ps.setInt(5, a.x());
+                ps.setInt(6, a.y());
+                ps.setInt(7, a.z());
+                ps.setString(8, a.targetId() == null ? "" : a.targetId());
+                if (a.targetMeta() == null) {
+                    ps.setNull(9, java.sql.Types.VARCHAR);
+                } else {
+                    ps.setString(9, a.targetMeta());
+                }
+                ps.setInt(10, a.amount());
+                ps.setInt(11, a.rolledBack() ? 1 : 0);
+                if (a.sourceTag() == null) {
+                    ps.setNull(12, java.sql.Types.VARCHAR);
+                } else {
+                    ps.setString(12, a.sourceTag());
+                }
+                if (a.signSide() == null) {
+                    ps.setNull(13, java.sql.Types.VARCHAR);
+                } else {
+                    ps.setString(13, a.signSide());
+                }
+                if (a.signDyeColor() == null) {
+                    ps.setNull(14, java.sql.Types.VARCHAR);
+                } else {
+                    ps.setString(14, a.signDyeColor());
+                }
+                if (a.signWaxed() == null) {
+                    ps.setNull(15, java.sql.Types.BOOLEAN);
+                } else {
+                    ps.setBoolean(15, a.signWaxed());
+                }
+                if (a.oldBlockState() == null) {
+                    ps.setNull(16, java.sql.Types.VARCHAR);
+                } else {
+                    ps.setString(16, a.oldBlockState());
+                }
+                if (a.newBlockState() == null) {
+                    ps.setNull(17, java.sql.Types.VARCHAR);
+                } else {
+                    ps.setString(17, a.newBlockState());
+                }
+                if (a.blockEntityNbt() == null) {
+                    ps.setNull(18, java.sql.Types.VARBINARY);
+                } else {
+                    ps.setBytes(18, a.blockEntityNbt());
+                }
+                if (a.itemNbt() == null) {
+                    ps.setNull(19, java.sql.Types.VARBINARY);
+                } else {
+                    ps.setBytes(19, a.itemNbt());
+                }
+                if (a.entityNbt() == null) {
+                    ps.setNull(20, java.sql.Types.VARBINARY);
+                } else {
+                    ps.setBytes(20, a.entityNbt());
+                }
+                if (a.inventorySlot() == null) {
+                    ps.setNull(21, java.sql.Types.INTEGER);
+                } else {
+                    ps.setInt(21, a.inventorySlot());
+                }
+                if (a.pairId() == null || a.pairId() == 0L) {
+                    ps.setNull(22, java.sql.Types.BIGINT);
+                } else {
+                    ps.setLong(22, a.pairId());
+                }
+                ps.addBatch();
+            }
+            int[] r = ps.executeBatch();
+            int total = 0;
+            for (int v : r) {
+                if (v >= 0) total += v;
+                else total += 1; // SUCCESS_NO_INFO
+            }
+            return total;
+        }
+    }
+
     private static String nullSafeName(Action a) {
         return a.actorName() != null ? a.actorName() : "#unknown";
     }
@@ -238,28 +409,49 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
     @Override
     public List<Action> query(QueryFilter filter, int offset, int limit) throws SQLException {
-        return query(filter, offset, limit, true);
+        return query(filter, offset, limit, true, null);
     }
 
     @Override
     public GuardianDao.QueryPage queryPage(QueryFilter filter, int offset, int limit) throws SQLException {
-        return toQueryPage(query(filter, offset, limit, true), limit);
+        return toQueryPage(query(filter, offset, limit, true, null), limit);
     }
 
     @Override
     public GuardianDao.QueryPage queryPageForDisplay(QueryFilter filter, int offset, int limit)
             throws SQLException {
-        return toQueryPage(query(filter, offset, limit, false), limit);
+        return toQueryPage(query(filter, offset, limit, false, null), limit);
     }
 
-    private List<Action> query(QueryFilter filter, int offset, int limit, boolean includePayload)
+    @Override
+    public GuardianDao.QueryPage queryPageAfter(QueryFilter filter, long afterTs, long afterId, int limit)
             throws SQLException {
+        QueryCompiler.Seek after = new QueryCompiler.Seek(afterTs, afterId);
+        return toQueryPage(query(filter, 0, limit, true, after), limit);
+    }
+
+    @Override
+    public GuardianDao.QueryPage queryPageForDisplayAfter(QueryFilter filter, long afterTs, long afterId,
+                                                          int limit) throws SQLException {
+        QueryCompiler.Seek after = new QueryCompiler.Seek(afterTs, afterId);
+        return toQueryPage(query(filter, 0, limit, false, after), limit);
+    }
+
+    private List<Action> query(QueryFilter filter, int offset, int limit, boolean includePayload,
+                               QueryCompiler.Seek after) throws SQLException {
         int effectiveLimit = (maxResultRows > 0) ? Math.min(limit, maxResultRows) : limit;
         acquireLookupPermit();
         try {
-            QueryCompiler.Compiled q = includePayload
-                    ? QueryCompiler.compileSelect(filter, offset, effectiveLimit)
-                    : QueryCompiler.compileSelectForDisplay(filter, offset, effectiveLimit);
+            QueryCompiler.Compiled q;
+            if (after != null) {
+                q = includePayload
+                        ? QueryCompiler.compileSelectAfter(filter, after, effectiveLimit)
+                        : QueryCompiler.compileSelectForDisplayAfter(filter, after, effectiveLimit);
+            } else {
+                q = includePayload
+                        ? QueryCompiler.compileSelect(filter, offset, effectiveLimit)
+                        : QueryCompiler.compileSelectForDisplay(filter, offset, effectiveLimit);
+            }
             Connection c = borrow();
             try (PreparedStatement ps = c.prepareStatement(q.sql())) {
                 bind(ps, q.binds());
@@ -349,7 +541,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         if (!includePayload) {
             return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
                               rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
-                              null, null, null, null, null, readPairId(rs, 18));
+                              null, null, null, null, null, readPairId(rs, 19), readInventorySlot(rs, 18));
         }
         // v1.3.1 X1 NBT columns. Read regardless of storage.persistNbt so
         // historical rows survive the operator toggling the flag back off.
@@ -361,7 +553,12 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         return new Action(id, ts, type, uuid, name, worldKey, x, y, z, target, meta, amount,
                           rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
                           oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt,
-                          readPairId(rs, 23));
+                          readPairId(rs, 24), readInventorySlot(rs, 23));
+    }
+
+    private static Integer readInventorySlot(ResultSet rs, int column) throws SQLException {
+        int v = rs.getInt(column);
+        return rs.wasNull() ? null : v;
     }
 
     private static Long readPairId(ResultSet rs, int column) throws SQLException {
@@ -419,8 +616,38 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         }
     }
 
-    private static UUID safeUuid(String s) {
-        try { return UUID.fromString(s); } catch (IllegalArgumentException ex) { return null; }
+    static <K, V> void cacheIfWithinBound(
+            ConcurrentHashMap<K, V> cache, K key, V value, int cap) {
+        if (cache == null || key == null || value == null || cap <= 0) {
+            return;
+        }
+        synchronized (cache) {
+            if (cache.containsKey(key) || cache.size() < cap) {
+                cache.put(key, value);
+            }
+        }
+    }
+
+    private UUID safeUuid(String s) {
+        UUID interned = uuidIntern.get(s);
+        if (interned != null) {
+            return interned;
+        }
+        try {
+            UUID parsed = UUID.fromString(s);
+            synchronized (uuidIntern) {
+                UUID raced = uuidIntern.get(s);
+                if (raced != null) {
+                    return raced;
+                }
+                if (uuidIntern.size() < UUID_INTERN_CAP) {
+                    uuidIntern.put(s, parsed);
+                }
+            }
+            return parsed;
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------ MUTATE
@@ -772,7 +999,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     private int resolveUserOn(Connection c, UUID uuid, String name) throws SQLException {
         String resolveName = name != null ? name : "#unknown";
         if (uuid != null) {
-            Integer cached = userIdByUuid.get(uuid.toString());
+            Integer cached = userIdByUuid.get(uuid);
             if (cached != null) return cached;
         } else {
             Integer cached = userIdByName.get(resolveName);
@@ -835,14 +1062,17 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                     ps.setInt(2, found);
                     ps.executeUpdate();
                 }
-                lastSeenLastWriteMs.put(found, now);
+                cacheIfWithinBound(lastSeenLastWriteMs, found, now, LAST_SEEN_CACHE_CAP);
             }
         }
         if (found == null) {
             throw new SQLException("Failed to resolve/insert user: uuid=" + uuid + " name=" + resolveName);
         }
-        if (uuid != null) userIdByUuid.put(uuid.toString(), found);
-        else userIdByName.put(resolveName, found);
+        if (uuid != null) {
+            cacheIfWithinBound(userIdByUuid, uuid, found, USER_ID_CACHE_CAP);
+        } else {
+            cacheIfWithinBound(userIdByName, resolveName, found, USER_ID_CACHE_CAP);
+        }
         return found;
     }
 
@@ -888,7 +1118,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         if (found == null) {
             throw new SQLException("Failed to resolve/insert world: " + key);
         }
-        worldIdByKey.put(key, found);
+        cacheIfWithinBound(worldIdByKey, key, found, WORLD_ID_CACHE_CAP);
         return found;
     }
 

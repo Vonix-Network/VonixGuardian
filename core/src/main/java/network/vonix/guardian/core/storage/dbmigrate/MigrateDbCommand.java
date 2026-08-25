@@ -91,10 +91,10 @@ public final class MigrateDbCommand {
             return false;
         }
         try {
-            printLine.accept("[VonixGuardian] migrate-db: blocking new audit writes and waiting for the async queue to drain...");
+            printLine.accept("[VonixGuardian] migrate-db: blocking new audit writes and waiting for the async pipeline to idle...");
             if (!g.awaitQueueDrained(30_000L)) {
-                printLine.accept("[VonixGuardian] migrate-db: refusing — async queue did not drain within 30s. "
-                    + "Pause event producers / retry during a quieter maintenance window.");
+                printLine.accept("[VonixGuardian] migrate-db: refusing — queue, local worker batch, or sink transaction "
+                    + "did not become idle within 30s. Pause event producers / retry during a quieter maintenance window.");
                 return false;
             }
 

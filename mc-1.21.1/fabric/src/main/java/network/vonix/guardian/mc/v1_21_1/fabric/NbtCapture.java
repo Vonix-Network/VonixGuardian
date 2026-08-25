@@ -57,13 +57,32 @@ final class NbtCapture {
         try { return property.getName(value); } catch (Throwable t) { return String.valueOf(value); }
     }
 
+    /** Full serialized payload retained for rollback/restore replay. */
     static byte[] itemStack(ItemStack stack, HolderLookup.Provider registries) {
         if (stack == null || stack.isEmpty() || registries == null) return null;
         try {
             Tag tag = stack.save(registries);
             if (!(tag instanceof CompoundTag ct)) return null;
             return write(ct);
-        } catch (Throwable t) { LOG.debug(Guardian.MARKER, "itemStack NBT capture failed: {}", t.toString()); return null; }
+        } catch (Throwable t) {
+            LOG.debug(Guardian.MARKER, "itemStack NBT capture failed: {}", t.toString());
+            return null;
+        }
+    }
+
+    /** Comparison-only payload; stack quantity is represented by InventoryDelta.amount. */
+    static byte[] itemStackComparison(ItemStack stack, HolderLookup.Provider registries) {
+        if (stack == null || stack.isEmpty() || registries == null) return null;
+        try {
+            Tag tag = stack.save(registries);
+            if (!(tag instanceof CompoundTag ct)) return null;
+            ct.remove("Count");
+            ct.remove("count");
+            return write(ct);
+        } catch (Throwable t) {
+            LOG.debug(Guardian.MARKER, "itemStack comparison NBT capture failed: {}", t.toString());
+            return null;
+        }
     }
 
     static byte[] entity(Entity entity) {

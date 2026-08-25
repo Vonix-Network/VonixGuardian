@@ -7,8 +7,10 @@ package network.vonix.guardian.mc.v1_20_1.forge;
 import net.minecraft.server.MinecraftServer;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
+import net.minecraftforge.fml.loading.FMLPaths;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.attribution.DamageHistory;
+import network.vonix.guardian.core.bootstrap.ServerDirectoryResolver;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.mc.v1_20_1.common.GuardianCommands;
@@ -87,26 +89,10 @@ public final class ForgeBootstrap {
     }
 
     /**
-     * Sinytra Connector remaps {@code MinecraftServer.getServerDirectory()} to return
-     * {@code java.nio.file.Path} (the post-1.21.2 Mojang signature) instead of
-     * {@code java.io.File} (the 1.20.1 Forge signature). Calling the method through
-     * a compiled-against-{@code File} call site throws {@code NoSuchMethodError} on
-     * Connector-enabled servers. Resolve via reflection so both signatures work.
-     *
-     * <p>Falls back to the JVM's working directory if reflection fails entirely —
-     * Pterodactyl/Wings runs servers from their data directory, so this is correct
-     * in practice for any sane deployment.
+     * Resolve via Mojmap/SRG {@code getServerDirectory} or Forge
+     * {@code FMLPaths.GAMEDIR}. Never falls back to cwd.
      */
     private static java.nio.file.Path resolveServerDir(net.minecraft.server.MinecraftServer server) {
-        try {
-            java.lang.reflect.Method m = server.getClass().getMethod("getServerDirectory");
-            Object r = m.invoke(server);
-            if (r instanceof java.nio.file.Path p) return p;
-            if (r instanceof java.io.File f) return f.toPath();
-            return java.nio.file.Paths.get("").toAbsolutePath();
-        } catch (ReflectiveOperationException e) {
-            LOG.warn(Guardian.MARKER, "getServerDirectory() reflection failed, using cwd", e);
-            return java.nio.file.Paths.get("").toAbsolutePath();
-        }
+        return ServerDirectoryResolver.resolve(server, FMLPaths.GAMEDIR.get());
     }
 }

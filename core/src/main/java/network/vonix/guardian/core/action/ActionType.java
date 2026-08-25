@@ -97,23 +97,34 @@ public enum ActionType {
     /** Direction marker; used by {@code a:+xxx} vs {@code a:-xxx} sign filtering. */
     public enum Sign { PLACE, BREAK, NEUTRAL }
 
-    private static final Map<Integer, ActionType> BY_ID;
+    /**
+     * Dense id → type table. JDBC reads call {@link #byId(int)} per row; an
+     * array probe avoids boxing an {@link Integer} into the historic HashMap
+     * on every lookup/rollback row. Ids are stable and small ({@code 1..max}).
+     */
+    private static final ActionType[] BY_ID;
     private static final Map<String, ActionType> BY_TOKEN;
     private static final Map<Category, Set<ActionType>> BY_CATEGORY;
 
     static {
-        Map<Integer, ActionType> byId = new HashMap<>();
+        int maxId = 0;
+        for (ActionType t : values()) {
+            if (t.id > maxId) {
+                maxId = t.id;
+            }
+        }
+        ActionType[] byId = new ActionType[maxId + 1];
         Map<String, ActionType> byToken = new HashMap<>();
         Map<Category, EnumSet<ActionType>> byCat = new HashMap<>();
         for (Category c : Category.values()) {
             byCat.put(c, EnumSet.noneOf(ActionType.class));
         }
         for (ActionType t : values()) {
-            byId.put(t.id, t);
+            byId[t.id] = t;
             byToken.put(t.token, t);
             byCat.get(t.category).add(t);
         }
-        BY_ID = Collections.unmodifiableMap(byId);
+        BY_ID = byId;
         BY_TOKEN = Collections.unmodifiableMap(byToken);
         Map<Category, Set<ActionType>> frozen = new HashMap<>();
         for (Map.Entry<Category, EnumSet<ActionType>> e : byCat.entrySet()) {
@@ -170,7 +181,7 @@ public enum ActionType {
      * @throws IllegalArgumentException if no action type has the given id
      */
     public static ActionType byId(int id) {
-        ActionType t = BY_ID.get(id);
+        ActionType t = (id >= 0 && id < BY_ID.length) ? BY_ID[id] : null;
         if (t == null) {
             throw new IllegalArgumentException("No ActionType with id " + id);
         }

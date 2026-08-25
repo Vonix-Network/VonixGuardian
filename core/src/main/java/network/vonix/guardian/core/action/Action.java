@@ -53,9 +53,10 @@ import java.util.UUID;
  *                     can respawn a mob with its original attributes
  *                     (custom name, tame owner, potion effects, etc.)
  * @param pairId       nullable correlation id shared by an entity block-change
- *                     and the fire it caused so paired rollback survives
- *                     persistence and restart. {@code null} (or {@code 0})
- *                     means unpaired. Added schema v6.
+ *                     and the fire it caused, or by an inventory WITHDRAW/DEPOSIT
+ *                     replacement pair, so paired rollback survives persistence
+ *                     and restart. {@code null} (or {@code 0}) means unpaired.
+ *                     Added schema v6.
  */
 public record Action(
     long id,
@@ -78,7 +79,9 @@ public record Action(
     byte[] blockEntityNbt,
     byte[] itemNbt,
     byte[] entityNbt,
-    Long pairId
+    Long pairId,
+    /** Exact PlayerInventory slot for INVENTORY_* rows; null for other actions. */
+    Integer inventorySlot
 ) {
 
     /** Treat {@code 0} as unpaired so producers can pass a primitive zero. */
@@ -98,7 +101,7 @@ public record Action(
                   String worldId, int x, int y, int z, String targetId, String targetMeta,
                   int amount, boolean rolledBack, String sourceTag) {
         this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
-             amount, rolledBack, sourceTag, null, null, null, null, null, null, null, null, null);
+             amount, rolledBack, sourceTag, null, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -113,7 +116,7 @@ public record Action(
                   String signSide, String signDyeColor, Boolean signWaxed) {
         this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
              amount, rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
-             null, null, null, null, null, null);
+             null, null, null, null, null, null, null);
     }
 
     /**
@@ -130,12 +133,23 @@ public record Action(
                   byte[] blockEntityNbt, byte[] itemNbt, byte[] entityNbt) {
         this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
              amount, rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
-             oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt, null);
+             oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt, null, null);
+    }
+
+    /** Compatibility overload retaining the pre-r38 canonical pairId position. */
+    public Action(long id, long timestamp, ActionType type, UUID actorUuid, String actorName,
+                  String worldId, int x, int y, int z, String targetId, String targetMeta,
+                  int amount, boolean rolledBack, String sourceTag,
+                  String signSide, String signDyeColor, Boolean signWaxed,
+                  String oldBlockState, String newBlockState,
+                  byte[] blockEntityNbt, byte[] itemNbt, byte[] entityNbt, Long pairId) {
+        this(id, timestamp, type, actorUuid, actorName, worldId, x, y, z, targetId, targetMeta,
+             amount, rolledBack, sourceTag, signSide, signDyeColor, signWaxed,
+             oldBlockState, newBlockState, blockEntityNbt, itemNbt, entityNbt, pairId, null);
     }
 
     /**
      * Whether this action's coordinates carry meaning.
-     *
      * <p>Chat, commands, session join/leave and username-change events are not
      * tied to a block position; the {@code x/y/z} fields of such records are
      * conventionally zero and should not be used for spatial queries.

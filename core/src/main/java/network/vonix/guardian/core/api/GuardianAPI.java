@@ -50,7 +50,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
     public static final int API_VERSION = 1;
 
     /** Plugin display version — mirrors {@code gradle.properties#mod_version}. */
-    public static final String PLUGIN_VERSION = "1.4.0";
+    public static final String PLUGIN_VERSION = "1.4.1";
 
     private final Guardian guardian;
 
@@ -64,6 +64,16 @@ public final class GuardianAPI implements VonixGuardianAPI {
     @Override
     public int apiVersion() {
         return API_VERSION;
+    }
+
+    @Override
+    public int APIVersion() {
+        return apiVersion();
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return true;
     }
 
     @Override
@@ -336,6 +346,30 @@ public final class GuardianAPI implements VonixGuardianAPI {
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(blockId, "blockId");
         return submitDirect(ActionType.BLOCK_BREAK, user, actorName, worldId, x, y, z, blockId, null, 1, null);
+    }
+
+    @Override
+    public boolean logContainerTransaction(UUID user, String actorName, String worldId,
+                                           int x, int y, int z, String itemId,
+                                           int delta, String sourceTag) {
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(itemId, "itemId");
+        if (delta == 0) return false;
+        if (delta == Integer.MIN_VALUE) {
+            throw new IllegalArgumentException("delta magnitude exceeds supported amount range");
+        }
+        ActionType type = delta > 0 ? ActionType.CONTAINER_DEPOSIT : ActionType.CONTAINER_WITHDRAW;
+        Action a = new ActionBuilder()
+                .type(type)
+                .actorUuid(user)
+                .actorName(actorName)
+                .worldId(worldId)
+                .position(x, y, z)
+                .targetId(itemId)
+                .amount(Math.abs(delta))
+                .sourceTag(sourceTag)
+                .build();
+        return guardian.submitAccepted(a);
     }
 
     private boolean submitDirect(ActionType type, UUID user, String actorName, String worldId,

@@ -11,10 +11,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -372,11 +374,15 @@ public final class RollbackEngine {
                                        List<WorldMutationResult> outcomes) {
         List<Long> appliedIds = new ArrayList<>();
         List<WorldMutationResult> incomplete = new ArrayList<>();
+        List<WorldMutationResult> repairRequired = new ArrayList<>();
         for (WorldMutationResult outcome : outcomes) {
             if (outcome.status() == WorldMutationResult.Status.APPLIED) {
                 appliedIds.add(outcome.actionId());
             } else {
                 incomplete.add(outcome);
+                if (outcome.status() == WorldMutationResult.Status.REPAIR_REQUIRED) {
+                    repairRequired.add(outcome);
+                }
             }
         }
 
@@ -384,6 +390,9 @@ public final class RollbackEngine {
         if (!incomplete.isEmpty()) {
             if (!appliedIds.isEmpty()) {
                 markApplied(batchId, appliedIds, targetFlag);
+            }
+            if (!repairRequired.isEmpty()) {
+                persistRepairRequired(batchId, repairRequired);
             }
             LOG.error("RollbackEngine.{}: batch id={} incomplete; vg_rollback_batches row left OPEN for recovery",
                 mode, batchId);
@@ -418,6 +427,28 @@ public final class RollbackEngine {
         } catch (Exception e) {
             LOG.error("RollbackEngine: failed to mark confirmed mutations for batch id={}; row left OPEN for recovery",
                 batchId, e);
+            throw new CompletionException(e);
+        }
+    }
+
+    private void persistRepairRequired(long batchId, List<WorldMutationResult> repairRequired) {
+        List<GuardianDao.RepairRequired> rows = new ArrayList<>(repairRequired.size());
+        long now = System.currentTimeMillis();
+        for (WorldMutationResult outcome : repairRequired) {
+            String reason = outcome.failure() == null
+                    ? "uncompensated world mutation"
+                    : outcome.failure().toString();
+            rows.add(new GuardianDao.RepairRequired(outcome.actionId(), null, batchId, reason, now));
+        }
+        try {
+            int persisted = dao.markRepairRequired(rows);
+            if (persisted < rows.size()) {
+                LOG.error("RollbackEngine: markRepairRequired persisted {} of {} repair-required rows for batch id={}",
+                        persisted, rows.size(), batchId);
+            }
+        } catch (Exception e) {
+            LOG.error("RollbackEngine: failed to persist repair-required state for batch id={}",
+                    batchId, e);
             throw new CompletionException(e);
         }
     }
@@ -492,6 +523,7 @@ public final class RollbackEngine {
         int offset = 0;
         int scanned = 0;
         int pages = 0;
+        Action seekAfter = null;
 
         while (true) {
             if (options.isCancelRequested()) {
@@ -502,7 +534,7 @@ public final class RollbackEngine {
 
             int remainingScanBudget = options.maxScannedActions() - scanned;
             if (remainingScanBudget <= 0) {
-                if (hasMoreRows(filter, offset)) {
+                if (hasMoreRows(filter, seekAfter, offset)) {
                     RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
                     options.publish(progress);
                     throw new RollbackLimitExceededException(
@@ -516,7 +548,7 @@ public final class RollbackEngine {
             // v1.3.1 X6 (P3-6): request limit+1 rows so we can detect "has more" without
             // a follow-up dao.query() round-trip below. Only the first `limit` rows
             // are actually consumed; the extra row is a boolean signal.
-            GuardianDao.QueryPage fetched = fetchPage(filter, offset, limit + 1);
+            GuardianDao.QueryPage fetched = fetchNext(filter, seekAfter, offset, limit + 1);
             if (fetched.truncated()) {
                 RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
                 options.publish(progress);
@@ -571,6 +603,7 @@ public final class RollbackEngine {
             if (!fullPage) {
                 break;
             }
+            seekAfter = orderedPage.get(orderedPage.size() - 1);
             offset += page.size();
         }
 
@@ -666,6 +699,7 @@ public final class RollbackEngine {
         Integer maxY = centerY == null ? null : centerY + r;
 
         int offset = 0;
+        Action seekAfter = null;
         while (true) {
             if (options.isCancelRequested()) {
                 RollbackProgress progress = progress(pages, scanned, builder, false, false, true);
@@ -674,7 +708,7 @@ public final class RollbackEngine {
             }
             int remainingScanBudget = options.maxScannedActions() - scanned;
             if (remainingScanBudget <= 0) {
-                if (hasMoreRows(supp, offset)) {
+                if (hasMoreRows(supp, seekAfter, offset)) {
                     RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
                     options.publish(progress);
                     throw new RollbackLimitExceededException(
@@ -686,7 +720,7 @@ public final class RollbackEngine {
             int limit = Math.min(options.pageSize(), remainingScanBudget);
             // Same +1 probe as the primary scan: a full page without an extra
             // row is EOF, while a capped page is reported via truncated=true.
-            GuardianDao.QueryPage fetched = fetchPage(supp, offset, limit + 1);
+            GuardianDao.QueryPage fetched = fetchNext(supp, seekAfter, offset, limit + 1);
             if (fetched.truncated()) {
                 RollbackProgress progress = progress(pages, scanned, builder, true, false, false);
                 options.publish(progress);
@@ -740,6 +774,7 @@ public final class RollbackEngine {
             RollbackProgress progress = progress(pages, scanned, builder, false, false, false);
             options.publish(progress);
             if (!fullPage) break;
+            seekAfter = orderedPage.get(orderedPage.size() - 1);
             offset += page.size();
         }
     }
@@ -796,11 +831,29 @@ public final class RollbackEngine {
         );
     }
 
-    private boolean hasMoreRows(QueryFilter filter, int offset) throws Exception {
-        GuardianDao.QueryPage probe = fetchPage(filter, offset, 1);
+    private boolean hasMoreRows(QueryFilter filter, Action seekAfter, int offset) throws Exception {
+        GuardianDao.QueryPage probe = fetchNext(filter, seekAfter, offset, 1);
         // A truncated one-row probe still proves residual work exists behind the
         // DAO cap; empty means EOF only when the page is not truncated.
         return probe.truncated() || !probe.rows().isEmpty();
+    }
+
+    /**
+     * Sequential page fetch. After the first page, prefer a keyset seek so
+     * later pages do not pay {@code OFFSET} skip of already-consumed rows.
+     * {@code queryPageAfter} returning {@code null} (mocks / older DAOs)
+     * falls back to {@link #fetchPage}.
+     */
+    private GuardianDao.QueryPage fetchNext(QueryFilter filter, Action seekAfter, int offset, int limit)
+            throws Exception {
+        if (seekAfter != null) {
+            GuardianDao.QueryPage seek = dao.queryPageAfter(
+                    filter, seekAfter.timestamp(), seekAfter.id(), limit);
+            if (seek != null) {
+                return seek;
+            }
+        }
+        return fetchPage(filter, offset, limit);
     }
 
     private GuardianDao.QueryPage fetchPage(QueryFilter filter, int offset, int limit) throws Exception {
@@ -885,7 +938,7 @@ public final class RollbackEngine {
     private CompletionStage<List<WorldMutationResult>> dispatchBatches(List<Action> ordered,
                                                                         RollbackResult.Mode mode) {
         CompletableFuture<List<WorldMutationResult>> result = new CompletableFuture<>();
-        dispatchNextBatch(ordered, mode, 0, new ArrayList<>(), result);
+        dispatchNextBatch(ordered, mode, 0, new ArrayList<>(), result, new HashSet<>());
         return result;
     }
 
@@ -900,24 +953,46 @@ public final class RollbackEngine {
                                    RollbackResult.Mode mode,
                                    int start,
                                    List<WorldMutationResult> outcomes,
-                                   CompletableFuture<List<WorldMutationResult>> result) {
+                                   CompletableFuture<List<WorldMutationResult>> result,
+                                   Set<Long> consumedIds) {
         if (start >= ordered.size()) {
             result.complete(outcomes);
             return;
         }
-        int end = Math.min(start + BATCH_SIZE, ordered.size());
-        List<Action> batch = List.copyOf(ordered.subList(start, end));
+        List<Action> batch = new ArrayList<>();
+        int cursor = start;
+        while (cursor < ordered.size() && batch.size() < BATCH_SIZE) {
+            Action a = ordered.get(cursor++);
+            if (a.id() >= 0L && !consumedIds.add(a.id())) {
+                continue;
+            }
+            batch.add(a);
+            if (network.vonix.guardian.core.event.InventoryReplacementPairs.isMember(a)) {
+                Action sibling = network.vonix.guardian.core.event.InventoryReplacementPairs.siblingOf(a, ordered);
+                if (sibling != null && (sibling.id() < 0L || consumedIds.add(sibling.id()))
+                        && !batch.contains(sibling)) {
+                    batch.add(sibling);
+                }
+            }
+        }
+        if (batch.isEmpty()) {
+            result.complete(outcomes);
+            return;
+        }
+        List<Action> immutableBatch = List.copyOf(batch);
+        final int nextStart = cursor;
         CompletableFuture<List<WorldMutationResult>> completion = new CompletableFuture<>();
         try {
             mainThreadExecutor.execute(() -> {
                 try {
-                    completion.complete(applyBatch(batch, mode));
+                    completion.complete(applyBatch(immutableBatch, mode));
                 } catch (Throwable failure) {
                     completion.completeExceptionally(failure);
                 }
             });
         } catch (RuntimeException failure) {
-            appendFailed(outcomes, ordered, start, failure);
+            appendFailed(outcomes, immutableBatch, 0, failure);
+            appendUnconsumedFailed(outcomes, ordered, nextStart, consumedIds, failure);
             result.complete(outcomes);
             return;
         }
@@ -925,15 +1000,31 @@ public final class RollbackEngine {
         completion.whenComplete((batchOutcomes, failure) -> {
             Runnable continuation = () -> {
                 if (failure != null) {
-                    appendFailed(outcomes, ordered, start, unwrapCompletionFailure(failure));
+                    Throwable cause = unwrapCompletionFailure(failure);
+                    appendFailed(outcomes, immutableBatch, 0, cause);
+                    appendUnconsumedFailed(outcomes, ordered, nextStart, consumedIds, cause);
                     result.complete(outcomes);
                     return;
                 }
                 outcomes.addAll(batchOutcomes);
-                dispatchNextBatch(ordered, mode, end, outcomes, result);
+                dispatchNextBatch(ordered, mode, nextStart, outcomes, result, consumedIds);
             };
             executeCompletion(continuation, "batch continuation");
         });
+    }
+
+    private static void appendUnconsumedFailed(List<WorldMutationResult> outcomes,
+                                               List<Action> ordered,
+                                               int start,
+                                               Set<Long> consumedIds,
+                                               Throwable failure) {
+        for (int i = start; i < ordered.size(); i++) {
+            Action leftover = ordered.get(i);
+            if (leftover.id() >= 0L && !consumedIds.add(leftover.id())) {
+                continue;
+            }
+            outcomes.add(WorldMutationResult.failed(leftover.id(), failure));
+        }
     }
 
     private static void appendFailed(List<WorldMutationResult> outcomes,
@@ -947,10 +1038,84 @@ public final class RollbackEngine {
 
     private List<WorldMutationResult> applyBatch(List<Action> batch, RollbackResult.Mode mode) {
         List<WorldMutationResult> outcomes = new ArrayList<>(batch.size());
-        for (Action a : batch) {
-            outcomes.add(applyMutation(a, mode));
+        Set<Integer> done = new HashSet<>();
+        for (int i = 0; i < batch.size(); i++) {
+            if (!done.add(i)) {
+                continue;
+            }
+            Action a = batch.get(i);
+            Action sibling = network.vonix.guardian.core.event.InventoryReplacementPairs.siblingOf(a, batch);
+            if (sibling != null) {
+                int siblingIndex = batch.indexOf(sibling);
+                if (siblingIndex >= 0) {
+                    done.add(siblingIndex);
+                }
+                outcomes.addAll(applyInventoryPair(a, sibling, mode));
+            } else if (network.vonix.guardian.core.event.InventoryReplacementPairs.isMember(a)) {
+                IllegalStateException failure = new IllegalStateException(
+                    "Incomplete inventory replacement pair for action id=" + a.id()
+                        + " pairId=" + a.pairId());
+                LOG.warn("RollbackEngine: refusing lone inventory pair member id={} pairId={}",
+                    a.id(), a.pairId());
+                outcomes.add(WorldMutationResult.failed(a.id(), failure));
+            } else {
+                outcomes.add(applyMutation(a, mode));
+            }
         }
         return outcomes;
+    }
+
+    private List<WorldMutationResult> applyInventoryPair(Action a, Action b, RollbackResult.Mode mode) {
+        Action withdraw = a.type() == ActionType.INVENTORY_WITHDRAW ? a : b;
+        Action deposit = a.type() == ActionType.INVENTORY_DEPOSIT ? a : b;
+        Action first = mode == RollbackResult.Mode.ROLLBACK ? deposit : withdraw;
+        Action second = mode == RollbackResult.Mode.ROLLBACK ? withdraw : deposit;
+
+        WorldMutationResult firstResult = applyMutation(first, mode);
+        if (firstResult.status() != WorldMutationResult.Status.APPLIED) {
+            Throwable cause = firstResult.failure() != null ? firstResult.failure()
+                : new IllegalStateException("inventory pair first half not applied: " + firstResult.status());
+            if (firstResult.status() == WorldMutationResult.Status.REPAIR_REQUIRED) {
+                return List.of(firstResult, WorldMutationResult.repairRequired(second.id(),
+                    new IllegalStateException("inventory pair mate repair-required for action id=" + first.id(), cause)));
+            }
+            WorldMutationResult firstOut = firstResult.status() == WorldMutationResult.Status.FAILED
+                ? firstResult : WorldMutationResult.failed(first.id(), cause);
+            return List.of(firstOut, WorldMutationResult.failed(second.id(),
+                new IllegalStateException("inventory pair mate failed for action id=" + first.id(), cause)));
+        }
+
+        WorldMutationResult secondResult = applyMutation(second, mode);
+        if (secondResult.status() != WorldMutationResult.Status.APPLIED) {
+            WorldMutationResult compensation = compensateInventoryHalf(first, mode);
+            Throwable cause = secondResult.failure() != null ? secondResult.failure()
+                : new IllegalStateException("inventory pair second half not applied: " + secondResult.status());
+            if (compensation.status() == WorldMutationResult.Status.APPLIED) {
+                return List.of(
+                    WorldMutationResult.failed(first.id(), new IllegalStateException(
+                        "inventory pair compensated=true after mate failure", cause)),
+                    secondResult.status() == WorldMutationResult.Status.FAILED
+                        ? secondResult : WorldMutationResult.failed(second.id(), cause));
+            }
+            IllegalStateException repair = new IllegalStateException(
+                    "inventory pair compensation failed; world may remain half-mutated"
+                            + " firstId=" + first.id() + " secondId=" + second.id(),
+                    compensation.failure() != null ? compensation.failure() : cause);
+            LOG.error("RollbackEngine: inventory pair compensation failed for action id={} after mate id={}; "
+                    + "persisting repair-required (world may remain half-mutated)",
+                    first.id(), second.id());
+            WorldMutationResult firstRepair = WorldMutationResult.repairRequired(first.id(), repair);
+            WorldMutationResult secondRepair = secondResult.status() == WorldMutationResult.Status.REPAIR_REQUIRED
+                    ? secondResult : WorldMutationResult.repairRequired(second.id(), repair);
+            return List.of(firstRepair, secondRepair);
+        }
+        return List.of(firstResult, secondResult);
+    }
+
+    private WorldMutationResult compensateInventoryHalf(Action applied, RollbackResult.Mode mode) {
+        RollbackResult.Mode inverse = mode == RollbackResult.Mode.ROLLBACK
+            ? RollbackResult.Mode.RESTORE : RollbackResult.Mode.ROLLBACK;
+        return applyMutation(applied, inverse);
     }
 
     private WorldMutationResult applyMutation(Action action, RollbackResult.Mode mode) {
@@ -974,6 +1139,11 @@ public final class RollbackEngine {
                 return WorldMutationResult.failed(action.id(), failure);
             }
             return WorldMutationResult.applied(action.id());
+        } catch (UncompensatedSlotMutationException failure) {
+            LOG.error("RollbackEngine: uncompensated exact-slot mutation for action id={} type={}; "
+                    + "persisting repair-required",
+                    action.id(), action.type(), failure);
+            return WorldMutationResult.repairRequired(action.id(), failure);
         } catch (Throwable failure) {
             LOG.warn("RollbackEngine: mutation failed for action id={} type={} ({})",
                 action.id(), action.type(), failure.toString());
@@ -1099,9 +1269,29 @@ public final class RollbackEngine {
                 LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — source position not tracked", a.type(), a.id());
                 yield false;
             }
-            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW -> {
-                LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — player inventory mutation out of scope", a.type(), a.id());
-                yield false;
+            case INVENTORY_DEPOSIT -> {
+                if (a.actorUuid() == null) {
+                    LOG.warn("RollbackEngine: refusing INVENTORY_DEPOSIT (id={}) — actor UUID missing", a.id());
+                    yield false;
+                }
+                if (a.itemNbt() == null) {
+                    LOG.warn("RollbackEngine: refusing inventory operation (id={}) — full item NBT payload missing", a.id());
+                    yield false;
+                }
+                yield mutator.tryRemoveFromPlayerInventory(a.actorUuid(), a.targetId(),
+                    Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+            }
+            case INVENTORY_WITHDRAW -> {
+                if (a.actorUuid() == null) {
+                    LOG.warn("RollbackEngine: refusing INVENTORY_WITHDRAW (id={}) — actor UUID missing", a.id());
+                    yield false;
+                }
+                if (a.itemNbt() == null) {
+                    LOG.warn("RollbackEngine: refusing inventory operation (id={}) — full item NBT payload missing", a.id());
+                    yield false;
+                }
+                yield mutator.tryAddToPlayerInventory(a.actorUuid(), a.targetId(),
+                    Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
             }
             case ITEM_CRAFT -> {
                 LOG.warn("RollbackEngine: refusing to roll back ITEM_CRAFT (id={}) — inventory state required", a.id());
@@ -1232,9 +1422,29 @@ public final class RollbackEngine {
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — source position not tracked", a.type(), a.id());
                 yield false;
             }
-            case INVENTORY_DEPOSIT, INVENTORY_WITHDRAW -> {
-                LOG.warn("RollbackEngine: refusing to restore {} (id={}) — player inventory mutation out of scope", a.type(), a.id());
-                yield false;
+            case INVENTORY_DEPOSIT -> {
+                if (a.actorUuid() == null) {
+                    LOG.warn("RollbackEngine: refusing to restore INVENTORY_DEPOSIT (id={}) — actor UUID missing", a.id());
+                    yield false;
+                }
+                if (a.itemNbt() == null) {
+                    LOG.warn("RollbackEngine: refusing inventory operation (id={}) — full item NBT payload missing", a.id());
+                    yield false;
+                }
+                yield mutator.tryAddToPlayerInventory(a.actorUuid(), a.targetId(),
+                    Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+            }
+            case INVENTORY_WITHDRAW -> {
+                if (a.actorUuid() == null) {
+                    LOG.warn("RollbackEngine: refusing to restore INVENTORY_WITHDRAW (id={}) — actor UUID missing", a.id());
+                    yield false;
+                }
+                if (a.itemNbt() == null) {
+                    LOG.warn("RollbackEngine: refusing inventory operation (id={}) — full item NBT payload missing", a.id());
+                    yield false;
+                }
+                yield mutator.tryRemoveFromPlayerInventory(a.actorUuid(), a.targetId(),
+                    Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
             }
             case ITEM_CRAFT -> {
                 LOG.warn("RollbackEngine: refusing to restore ITEM_CRAFT (id={}) — inventory state required", a.id());
@@ -1308,14 +1518,15 @@ public final class RollbackEngine {
                  BUCKET_EMPTY, BUCKET_FILL, ENTITY_CHANGE_BLOCK,
                  HOPPER_PUSH, HOPPER_PULL,
                  HANGING_PLACE, HANGING_BREAK,
-                 STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> true;
+                 STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW,
+                 INVENTORY_DEPOSIT, INVENTORY_WITHDRAW -> true;
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE,
                  DISPENSE, PISTON_EXTEND, PISTON_RETRACT,
                  ITEM_DROP, ITEM_PICKUP,
                  FORM, SPREAD,
-                 INVENTORY_DEPOSIT, INVENTORY_WITHDRAW, ITEM_CRAFT,
+                 ITEM_CRAFT,
                  ENTITY_SPAWN, ENTITY_INTERACT,
                  CHUNK_POPULATE, CLICK -> false;
         };

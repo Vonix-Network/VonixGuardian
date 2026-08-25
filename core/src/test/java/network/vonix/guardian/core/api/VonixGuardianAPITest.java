@@ -139,10 +139,28 @@ class VonixGuardianAPITest {
     void apiVersion_and_testAPI_are_stable() {
         VonixGuardianAPI api = guardian.api();
         assertThat(api.apiVersion()).isEqualTo(1);
+        assertThat(api.APIVersion()).isEqualTo(1);
+        assertThat(api.isEnabled()).isTrue();
         assertThat(api.pluginVersion()).isEqualTo(GuardianAPI.PLUGIN_VERSION);
         assertThat(api.testAPI()).isTrue();
         // Latching: repeat should return same instance.
         assertThat(guardian.api()).isSameAs(api);
+    }
+
+    @Test
+    void directContainerLogging_preservesSignedDeltaAndRejectsZero() {
+        VonixGuardianAPI api = guardian.api();
+        UUID user = UUID.randomUUID();
+
+        assertThat(api.logContainerTransaction(user, "Alice", "minecraft:overworld",
+                1, 2, 3, "minecraft:diamond", 0, "test")).isFalse();
+        assertThat(api.logContainerTransaction(user, "Alice", "minecraft:overworld",
+                1, 2, 3, "minecraft:diamond", 5, "test")).isTrue();
+        assertThat(api.logContainerTransaction(user, "Alice", "minecraft:overworld",
+                1, 2, 3, "minecraft:diamond", -3, "test")).isTrue();
+        assertThatThrownBy(() -> api.logContainerTransaction(user, "Alice", "minecraft:overworld",
+                1, 2, 3, "minecraft:diamond", Integer.MIN_VALUE, "test"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

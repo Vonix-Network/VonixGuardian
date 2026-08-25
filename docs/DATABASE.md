@@ -1,7 +1,7 @@
 # VonixGuardian — Database Reference
 
-**Version:** 1.0.0
-**Schema version:** 2 (see `vg_schema_version`)
+**Version:** 1.4.1
+**Schema version:** 8 (see `vg_schema_version`)
 **Source of truth:** `core/src/main/java/network/vonix/guardian/core/storage/Schema.java`
 
 This document describes the on-disk schema VonixGuardian uses across its three
@@ -14,9 +14,8 @@ that operators most often need.
 ## 1. Overview
 
 VonixGuardian persists everything it tracks in a small, denormalised JDBC schema
-made up of **eight database objects** (3 entity tables, 4 indexes on the main
-action table, and 2 rollback-audit tables, plus a tiny schema-version table —
-eight first-class objects in total):
+made up of the following database objects (entity tables, indexes, rollback-audit
+tables, v8 repair/outbox tables, plus schema-version):
 
 | # | Object                       | Kind   | Purpose |
 |---|------------------------------|--------|---------|
@@ -83,11 +82,21 @@ chat line etc. lands here as one row.
 | `x`           | `INTEGER`       | `NOT NULL`                        |
 | `y`           | `INTEGER`       | `NOT NULL`                        |
 | `z`           | `INTEGER`       | `NOT NULL`                        |
-| `target`      | `VARCHAR(192)`  | `NOT NULL` (block id / item / arg)|
+| `target`      | `VARCHAR(4096)` | `NOT NULL` (block id / item / arg; widened in v3) |
 | `meta`        | `TEXT`          | `NULL` (JSON sidecar)             |
 | `amount`      | `INTEGER`       | `NOT NULL DEFAULT 1`              |
 | `rolled_back` | `TINYINT`/`SMALLINT` | `NOT NULL DEFAULT 0` (boolean) |
 | `source_tag`  | `VARCHAR(64)`   | `NULL` (plugin tag, e.g. `mcMMO`) |
+| `sign_side`   | `VARCHAR(8)`    | `NULL` (v4; sign front/back)      |
+| `sign_dye_color` | `VARCHAR(16)` | `NULL` (v4)                       |
+| `sign_waxed`  | `BOOLEAN`       | `NULL` (v4)                       |
+| `old_block_state` | `TEXT`      | `NULL` (v5 NBT fidelity)          |
+| `new_block_state` | `TEXT`      | `NULL` (v5)                       |
+| `block_entity_nbt` | `BLOB`/`BYTEA`/`LONGBLOB` | `NULL` (v5)          |
+| `item_nbt`    | `BLOB`/`BYTEA`/`LONGBLOB` | `NULL` (v5; required for inventory rollback) |
+| `entity_nbt`  | `BLOB`/`BYTEA`/`LONGBLOB` | `NULL` (v5)          |
+| `pair_id`     | `BIGINT`        | `NULL` (v6; fire/break or inventory replacement correlation) |
+| `inventory_slot` | `INTEGER`    | `NULL` (v7; exact player-inventory slot; non-inventory rows stay NULL) |
 
 Indexes (declared by `Schema.ddlFor`):
 
@@ -97,6 +106,7 @@ Indexes (declared by `Schema.ddlFor`):
 | `vg_actions_user_t`  | `(user_id, ts)`               | per-user history (`/vg lookup u:`)|
 | `vg_actions_type_t`  | `(type, ts)`                  | per-type filters                  |
 | `vg_actions_ts`      | `(ts)`                        | time scans, purge, retention      |
+| `vg_actions_pair`    | `(pair_id)`                   | v6 sibling lookup for paired rollback |
 
 The foreign-key references to `vg_users` and `vg_worlds` are **logical**, not
 declared as `FOREIGN KEY` constraints — VonixGuardian manages the IDs
@@ -135,7 +145,34 @@ Index: `vg_rollback_batches_ts ON (ts)`.
 | `version`    | `INTEGER` | **PRIMARY KEY**       |
 | `applied_at` | `BIGINT`  | `NOT NULL` (epoch ms) |
 
-Currently holds a single row: `version = 2`.
+Currently holds a single row: `version = 8`. Fresh installs apply v1–v8 through `Schema` + `MigrationRunner`. Existing databases step through additive migrations `V3WidenActionTarget`, `V4SignMetadata`, `V5NbtFidelity`, `V6PairId`, `V7InventorySlot`, and `V8RepairAndOutbox`.
+
+### 2.7 `vg_repair_required` — uncompensated rollback state (v8)
+
+Durable evidence that a rollback/restore mutation may remain applied after
+compensation failed. Operators must inspect these rows; the condition is not
+log-only.
+
+| Column      | Type      | Constraints           |
+|-------------|-----------|-----------------------|
+| `action_id` | `INTEGER` | **PRIMARY KEY**       |
+| `pair_id`   | `BIGINT`  | `NULL`                |
+| `batch_id`  | `INTEGER` | `NULL`                |
+| `reason`    | `TEXT`    | `NOT NULL`            |
+| `ts`        | `BIGINT`  | `NOT NULL`            |
+
+### 2.8 `vg_sink_outbox` — JDBC/JSONL dual-write staging (v8)
+
+At most one row (`id = 1`). Inserted in the same JDBC transaction as
+`vg_actions` so a JSONL failure retries without duplicating audit rows.
+
+| Column       | Type      | Constraints           |
+|--------------|-----------|-----------------------|
+| `id`         | `INTEGER` | **PRIMARY KEY**       |
+| `payload`    | `BLOB`    | `NOT NULL`            |
+| `created_ts` | `BIGINT`  | `NOT NULL`            |
+
+Inventory identity replacements persist two `vg_actions` rows that share `pair_id` and the same `inventory_slot`. JDBC `insertBatch` is transactional, so a sink flush that contains both halves commits both or neither. Quarantine journal frames are V3 (slot + pair id); a replacement pair is appended as one concatenated write.
 
 ### 2.7 ER diagram
 
@@ -166,6 +203,16 @@ erDiagram
         INTEGER amount
         SMALLINT rolled_back
         VARCHAR source_tag
+        VARCHAR sign_side
+        VARCHAR sign_dye_color
+        BOOLEAN sign_waxed
+        TEXT old_block_state
+        TEXT new_block_state
+        BLOB block_entity_nbt
+        BLOB item_nbt
+        BLOB entity_nbt
+        BIGINT pair_id
+        INTEGER inventory_slot
     }
     vg_rollback_batches {
         BIGINT id PK

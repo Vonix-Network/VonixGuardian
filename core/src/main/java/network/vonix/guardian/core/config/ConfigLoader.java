@@ -166,13 +166,13 @@ public final class ConfigLoader {
                 work.theme(), "en_us"
             );
         }
-        // v1.3.1 X1: backfill storage=Storage.defaults() (persistNbt=false, the safe
-        // pre-X1 behaviour) when the on-disk config predates the field. Absent JSON
-        // key → Gson gives null; we replace with the shipped default so validate()
-        // and downstream .storage() readers never see null. Operators who set an
-        // explicit storage.persistNbt=true keep their setting.
+        // v1.3.1 X1: backfill storage=Storage.defaults() (metadata-faithful
+        // persistNbt=true behaviour) when the on-disk config predates the field.
+        // Absent JSON key → Gson gives null; replace with the shipped safe default
+        // so validate() and downstream .storage() readers never see null. Operators who set an
+        // explicit storage.persistNbt value keep their setting.
         if (work.storage() == null) {
-            LOG.info("Backfilling storage=Storage.defaults() persistNbt=false (pre-v1.3.1 X1 config)");
+            LOG.info("Backfilling storage=Storage.defaults() persistNbt=true (pre-v1.3.1 X1 config)");
             work = new GuardianConfig(
                 work.database(), work.queue(), work.logFile(), work.actions(),
                 work.permissions(), work.lookup(), work.privacy(), work.purge(),

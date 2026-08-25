@@ -2,6 +2,7 @@ package network.vonix.guardian.core.queue;
 
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.event.InventoryReplacementPairs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
@@ -23,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
@@ -52,7 +54,11 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     static final long RETRY_BACKOFF_MS = 250L;
     private static final long DROP_LOG_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
 
-    private final ArrayBlockingQueue<Action> queue;
+    /**
+     * One slot per admission unit. A player-inventory replacement occupies a
+     * single slot so the worker cannot drain one half without the other.
+     */
+    private final ArrayBlockingQueue<QueuedWrite> queue;
     private final long flushIntervalMs;
     private final int batchSize;
     private final BatchSink sink;
@@ -128,6 +134,21 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private volatile boolean shutdown = false;
     private volatile boolean closed = false;
     private volatile boolean paused = false;
+    /** Set under {@link #admissionLock}; rejects {@link #offerWrite} during migrate-db. */
+    private volatile boolean admissionFrozen = false;
+    /**
+     * Actions currently held in the worker's local batch. Not visible via
+     * {@link #depth()}, which only reports the ring buffer.
+     */
+    private final AtomicInteger localBatchHeld = new AtomicInteger();
+    /** Non-zero while {@link BatchSink#flush} is running (normal or recovery). */
+    private final AtomicInteger sinkInFlight = new AtomicInteger();
+    /**
+     * False only when the worker is between loop iterations with an empty
+     * local batch and is about to wait. Combined with {@link #depth()} and
+     * {@link #sinkInFlight} this is the migrate-db idle barrier.
+     */
+    private final AtomicBoolean workerIdle = new AtomicBoolean(false);
 
     /**
      * @param maxSize         capacity of the underlying ring buffer; must be &gt; 0
@@ -190,7 +211,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         if (flushIntervalMs <= 0) {
             throw new IllegalArgumentException("flushIntervalMs must be > 0");
         }
-        this.queue = new ArrayBlockingQueue<>(maxSize);
+        this.queue = new ArrayBlockingQueue<QueuedWrite>(maxSize);
         this.flushIntervalMs = flushIntervalMs;
         this.batchSize = batchSize;
         this.sink = Objects.requireNonNull(sink, "sink");
@@ -234,25 +255,108 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     @Override
     public boolean submit(Action a) {
         Objects.requireNonNull(a, "action");
-        if (shutdown) {
-            // After shutdown signal we still try a best-effort offer so a racing producer
-            // doesn't silently lose data, but we never block.
+        recordSubmit(a);
+        boolean accepted = offerWrite(new QueuedWrite(a));
+        if (!accepted) {
+            recordDrop(a);
+            maybeLogHistogram();
+            return false;
         }
-        // v1.1.3-diag: count every submit at the producer moment (before the queue
-        // decides to accept or drop). This is the TRUE producer rate.
-        //
-        // v1.3.0 W2: pre-populated maps mean the hot path is a plain get(). We
-        // still fall back to computeIfAbsent for a truly out-of-band ActionType
-        // (impossible for shipped code — every submit path uses ActionType enum
-        // values) so ad-hoc synthetic actions in tests / future extensions still
-        // land in the histogram.
+        maybeLogHistogram();
+        return true;
+    }
+
+    @Override
+    public boolean submitPair(Action first, Action second) {
+        Objects.requireNonNull(first, "first");
+        Objects.requireNonNull(second, "second");
+        recordSubmit(first);
+        recordSubmit(second);
+        boolean accepted = offerWrite(new QueuedWrite(first, second));
+        if (!accepted) {
+            recordDrop(first);
+            recordDrop(second);
+            maybeLogHistogram();
+            return false;
+        }
+        maybeLogHistogram();
+        return true;
+    }
+
+    private boolean offerWrite(QueuedWrite write) {
+        synchronized (admissionLock) {
+            if (shutdown || closed || admissionFrozen) {
+                return false;
+            }
+            if (admissionProbe != null) {
+                admissionProbe.run();
+            }
+            return queue.offer(write);
+        }
+    }
+
+    /**
+     * Couple a maintenance transition to admission: after this returns true,
+     * no producer can enqueue. Returns false if admission is already frozen
+     * or the queue is shutting down.
+     */
+    public boolean freezeAdmission() {
+        synchronized (admissionLock) {
+            if (shutdown || closed || admissionFrozen) {
+                return false;
+            }
+            admissionFrozen = true;
+            return true;
+        }
+    }
+
+    public void unfreezeAdmission() {
+        synchronized (admissionLock) {
+            admissionFrozen = false;
+        }
+    }
+
+    public boolean isAdmissionFrozen() {
+        return admissionFrozen;
+    }
+
+    /**
+     * Wait until the ring buffer, worker local batch, and in-flight sink
+     * transaction are all idle. Callers must freeze admission first so the
+     * idle observation cannot race a new offer.
+     */
+    public boolean awaitIdle(long timeoutMs) {
+        long deadline = System.nanoTime() + Math.max(0L, timeoutMs) * 1_000_000L;
+        while (true) {
+            if (isPipelineIdle()) {
+                return true;
+            }
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
+            try {
+                Thread.sleep(25L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+    }
+
+    boolean isPipelineIdle() {
+        return queue.isEmpty()
+                && localBatchHeld.get() == 0
+                && sinkInFlight.get() == 0
+                && workerIdle.get();
+    }
+
+    private void recordSubmit(Action a) {
         String typeKey = a.type() == null ? UNKNOWN_TYPE_KEY : a.type().name();
         LongAdder submittedCounter = submittedByType.get(typeKey);
         if (submittedCounter == null) {
             submittedCounter = submittedByType.computeIfAbsent(typeKey, k -> new LongAdder());
         }
         submittedCounter.increment();
-        // v1.3.0 W4: sliding-window rate meter — per-type + aggregate allocation rate.
         long nowNs = System.nanoTime();
         RateBuckets rateBuckets = submitRateByType.get(typeKey);
         if (rateBuckets == null) {
@@ -260,32 +364,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         rateBuckets.tick(nowNs);
         aggregateRate.tick(nowNs);
-        boolean accepted;
-        synchronized (admissionLock) {
-            if (shutdown || closed) {
-                accepted = false;
-            } else {
-                // Test-only probe runs inside the same admission boundary as
-                // offer(), allowing a deterministic late-producer regression.
-                if (admissionProbe != null) {
-                    admissionProbe.run();
-                }
-                accepted = queue.offer(a);
-            }
+    }
+
+    private void recordDrop(Action a) {
+        long total = dropped.incrementAndGet();
+        String typeKey = a.type() == null ? UNKNOWN_TYPE_KEY : a.type().name();
+        LongAdder droppedCounter = droppedByType.get(typeKey);
+        if (droppedCounter == null) {
+            droppedCounter = droppedByType.computeIfAbsent(typeKey, k -> new LongAdder());
         }
-        if (!accepted) {
-            long total = dropped.incrementAndGet();
-            LongAdder droppedCounter = droppedByType.get(typeKey);
-            if (droppedCounter == null) {
-                droppedCounter = droppedByType.computeIfAbsent(typeKey, k -> new LongAdder());
-            }
-            droppedCounter.increment();
-            maybeLogDrop(total);
-            maybeLogHistogram();
-            return false;
-        }
-        maybeLogHistogram();
-        return true;
+        droppedCounter.increment();
+        maybeLogDrop(total);
     }
 
     @Override
@@ -313,9 +402,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         if (worker.isAlive()) {
             LOG.warn(MARKER, "Worker thread still alive after drainAndFlush({} ms); abandoning queued tail without concurrent sink writes",
                     timeoutMs);
-            List<Action> abandoned = new ArrayList<>(queue.size());
-            queue.drainTo(abandoned);
-            permanentlyDrop(abandoned, "drain timeout while worker still alive");
+            permanentlyDrop(drainQueuedActions(), "drain timeout while worker still alive");
             synchronized (admissionLock) {
                 closed = true;
             }
@@ -326,9 +413,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         // before notifying the termination listener. Never call the sink here:
         // the listener may already have closed DAO/log resources.
         if (!queue.isEmpty()) {
-            List<Action> abandoned = new ArrayList<>(queue.size());
-            queue.drainTo(abandoned);
-            permanentlyDrop(abandoned, "worker terminated before final queue drain");
+            permanentlyDrop(drainQueuedActions(), "worker terminated before final queue drain");
         }
         synchronized (admissionLock) {
             closed = true;
@@ -492,7 +577,11 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      * @since 1.2.6
      */
     public List<Action> pendingSnapshot() {
-        return List.copyOf(queue);
+        List<Action> out = new ArrayList<>();
+        for (QueuedWrite write : queue) {
+            write.appendTo(out);
+        }
+        return List.copyOf(out);
     }
 
     @Override
@@ -558,14 +647,29 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 // intuition. shutdown always overrides paused so drainAndFlush()
                 // still completes.
                 if (paused && !shutdown) {
+                    if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
+                        workerIdle.set(true);
+                    }
                     try { Thread.sleep(pollMs); } catch (InterruptedException ignored) {}
                     if (shutdown) break;
                     continue;
                 }
-                Action head = queue.poll(pollMs, TimeUnit.MILLISECONDS);
+                if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
+                    workerIdle.set(true);
+                }
+                QueuedWrite head = queue.poll(pollMs, TimeUnit.MILLISECONDS);
                 if (head != null) {
-                    batch.add(head);
-                    queue.drainTo(batch, batchSize - batch.size());
+                    workerIdle.set(false);
+                    head.appendTo(batch);
+                    int remaining = Math.max(0, batchSize - batch.size());
+                    if (remaining > 0) {
+                        List<QueuedWrite> extra = new ArrayList<>(remaining);
+                        queue.drainTo(extra, remaining);
+                        for (QueuedWrite write : extra) {
+                            write.appendTo(batch);
+                        }
+                    }
+                    localBatchHeld.set(batch.size());
                 }
                 if (head == null && !shutdown) processDueRecovery();
                 boolean windowExpired = (System.nanoTime() - lastFlushNs) >= flushIntervalNs;
@@ -578,13 +682,18 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                     if (shutdown) {
                         Thread.interrupted();
                     }
+                    workerIdle.set(false);
                     flushWithRetry(new ArrayList<>(batch));
                     batch.clear();
+                    localBatchHeld.set(0);
                     lastFlushNs = System.nanoTime();
                 } else if (batch.isEmpty() && windowExpired) {
                     // Reset the window so an idle queue doesn't perpetually report
                     // "windowExpired" the moment the next action arrives.
                     lastFlushNs = System.nanoTime();
+                }
+                if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
+                    workerIdle.set(true);
                 }
                 } catch (InterruptedException ie) {
                 // The finally block owns local-batch cleanup. Keeping this
@@ -647,18 +756,25 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         Thread.interrupted();
         if (!batch.isEmpty()) {
             try {
+                localBatchHeld.set(batch.size());
                 flushWithRetry(new ArrayList<>(batch));
             } finally {
                 batch.clear();
+                localBatchHeld.set(0);
             }
         }
         if (!queue.isEmpty()) {
-            List<Action> tail = new ArrayList<>(queue.size());
-            queue.drainTo(tail);
+            List<Action> tail = drainQueuedActions();
             if (!tail.isEmpty()) {
-                flushWithRetry(tail);
+                localBatchHeld.set(tail.size());
+                try {
+                    flushWithRetry(tail);
+                } finally {
+                    localBatchHeld.set(0);
+                }
             }
         }
+        workerIdle.set(true);
     }
 
     private void flushWithRetry(List<Action> batch) {
@@ -700,7 +816,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 return null;
             }
             try {
-                sink.flush(view);
+                invokeSink(view);
                 return null;
             } catch (Exception ex) {
                 last = ex;
@@ -737,13 +853,32 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             permanentlyDrop(batch, "isolated poison action after " + MAX_SINK_RETRIES + " failed sink attempts");
             return;
         }
+        if (batch.size() == 2 && InventoryReplacementPairs.isPair(batch.get(0), batch.get(1))) {
+            permanentlyDrop(batch, "isolated inventory replacement pair after " + MAX_SINK_RETRIES + " failed sink attempts");
+            return;
+        }
 
-        int mid = batch.size() / 2;
+        int mid = pairSafeSplit(batch);
         LOG.warn(MARKER,
                 "Batch of {} action(s) failed after {} attempts with a row-specific error; bisecting into {} and {} action(s)",
                 batch.size(), MAX_SINK_RETRIES, mid, batch.size() - mid);
         probeOrSplit(new ArrayList<>(batch.subList(0, mid)), deadlineNs);
         probeOrSplit(new ArrayList<>(batch.subList(mid, batch.size())), deadlineNs);
+    }
+
+    /** Never bisect a WITHDRAW/DEPOSIT replacement across the split point. */
+    private static int pairSafeSplit(List<Action> batch) {
+        int mid = batch.size() / 2;
+        if (mid > 0 && mid < batch.size()
+                && InventoryReplacementPairs.isPair(batch.get(mid - 1), batch.get(mid))) {
+            if (mid + 1 < batch.size()) {
+                return mid + 1;
+            }
+            if (mid - 1 > 0) {
+                return mid - 1;
+            }
+        }
+        return mid;
     }
 
     /** Cheap child probe used only after the root batch already exhausted the normal retry path. */
@@ -756,7 +891,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             return;
         }
         try {
-            sink.flush(Collections.unmodifiableList(batch));
+            invokeSink(Collections.unmodifiableList(batch));
         } catch (Exception ex) {
             if (!isLikelyRowSpecificFailure(ex)) {
                 permanentlyDrop(batch, "non-row-specific sink failure during poison probe: " + ex);
@@ -790,24 +925,51 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 "Quarantining {} action(s) after sink failure: {} (total failed={})",
                 batch.size(), reason, total);
         if (quarantineStore == null) return;
-        for (Action action : batch) {
+        List<Action> remaining = new ArrayList<>(batch);
+        while (!remaining.isEmpty()) {
+            Action action = remaining.remove(0);
+            Action sibling = InventoryReplacementPairs.siblingOf(action, remaining);
+            List<Action> group = sibling == null ? List.of(action) : List.of(action, sibling);
+            if (sibling != null) {
+                remaining.remove(sibling);
+            }
             try {
-                long sequence = quarantineStore.append(action);
-                if (sequence < 0L) {
-                    quarantineOverflow.incrementAndGet();
-                    quarantineRetentionLimitReached.set(true);
-                    LOG.error(MARKER, "Durable quarantine full; action id={} cannot be retained", action.id());
+                List<Long> sequences = group.size() == 1
+                        ? singletonSequence(quarantineStore.append(group.get(0)))
+                        : quarantineStore.appendGroup(group);
+                if (sequences.size() != group.size()) {
+                    for (Action dropped : group) {
+                        quarantineOverflow.incrementAndGet();
+                        quarantineRetentionLimitReached.set(true);
+                        LOG.error(MARKER, "Durable quarantine full; action id={} cannot be retained", dropped.id());
+                    }
                     continue;
                 }
                 synchronized (recovery) {
-                    recovery.put(sequence, new RecoveryItem(sequence, action, 0,
-                            System.nanoTime() + TimeUnit.SECONDS.toNanos(1L), false, false));
+                    for (int i = 0; i < group.size(); i++) {
+                        recovery.put(sequences.get(i), new RecoveryItem(sequences.get(i), group.get(i), 0,
+                                System.nanoTime() + TimeUnit.SECONDS.toNanos(1L), false, false));
+                    }
                 }
             } catch (IOException e) {
-                quarantineWriteFailures.incrementAndGet();
+                quarantineWriteFailures.addAndGet(group.size());
                 LOG.error(MARKER, "Durable quarantine write failed for action id={}", action.id(), e);
             }
         }
+    }
+
+    private static List<Long> singletonSequence(long sequence) {
+        return sequence < 0L ? List.of() : List.of(sequence);
+    }
+
+    private List<Action> drainQueuedActions() {
+        List<QueuedWrite> raw = new ArrayList<>(queue.size());
+        queue.drainTo(raw);
+        List<Action> out = new ArrayList<>();
+        for (QueuedWrite write : raw) {
+            write.appendTo(out);
+        }
+        return out;
     }
 
     private boolean processDueRecovery() {
@@ -820,13 +982,75 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         if (item == null) return false;
 
+        if (InventoryReplacementPairs.isMember(item.action)) {
+            return processPairedRecovery(item);
+        }
+        return processSingletonRecovery(item);
+    }
+
+    /**
+     * Inventory replacement members never reflush as a singleton. Group
+     * sink-success and ACK are one journal frame so a crash cannot retire
+     * only one half.
+     */
+    private boolean processPairedRecovery(RecoveryItem item) {
+        RecoveryItem sibling = inventoryPairSibling(item);
+        if (sibling == null) {
+            IllegalStateException missing = new IllegalStateException(
+                    "incomplete inventory replacement pair; refusing singleton retirement or reflush id="
+                            + item.action.id() + " pairId=" + item.action.pairId());
+            LOG.error(MARKER, "Quarantine recovery retained incomplete pair member id={} pairId={} for repair",
+                    item.action.id(), item.action.pairId());
+            deferRecovery(item, missing);
+            return true;
+        }
+
+        Exception last = null;
+        boolean needsFlush = !item.sinkSucceeded && !sibling.sinkSucceeded;
+        if (needsFlush) {
+            boolean flushed = false;
+            for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
+                try {
+                    invokeSink(List.of(item.action, sibling.action));
+                    flushed = true;
+                    break;
+                } catch (Exception failure) {
+                    last = failure;
+                    if (attempt < MAX_SINK_RETRIES) {
+                        try { Thread.sleep(RETRY_BACKOFF_MS); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!flushed) {
+                deferRecovery(item, last);
+                deferRecovery(sibling, last);
+                return true;
+            }
+        } else if (item.sinkSucceeded != sibling.sinkSucceeded) {
+            IllegalStateException mixed = new IllegalStateException(
+                    "mixed sink-success state for inventory replacement pair; retaining both for repair pairId="
+                            + item.action.pairId());
+            LOG.error(MARKER,
+                    "Quarantine recovery retained pair id={} with mixed sink-success markers for repair",
+                    item.action.pairId());
+            deferRecovery(item, mixed);
+            deferRecovery(sibling, mixed);
+            return true;
+        }
+        return retireRecoveredGroup(List.of(item, sibling));
+    }
+
+    private boolean processSingletonRecovery(RecoveryItem item) {
         Exception last = null;
         boolean sinkSucceeded = item.sinkSucceeded;
-        boolean markerDurable = item.markerDurable;
         if (!sinkSucceeded) {
             for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
                 try {
-                    sink.flush(List.of(item.action));
+                    invokeSink(List.of(item.action));
                     sinkSucceeded = true;
                     break;
                 } catch (Exception failure) {
@@ -841,62 +1065,161 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 }
             }
         }
-
         if (sinkSucceeded) {
-            // Persist durable sink-success before attempting ACK so a crash
-            // between sink and ACK never re-flushes on restart.
-            // sinkSucceeded (in-memory, skip reflush) is independent of
-            // markerDurable (journal SINK_SUCCEEDED persisted). After a
-            // marker failure keep sinkSucceeded=true but markerDurable=false
-            // and retry the marker on every due pass before ACK.
-            if (quarantineStore != null && !markerDurable) {
-                try {
-                    quarantineStore.markSinkSucceeded(item.sequence);
-                    markerDurable = true;
-                } catch (Exception markerFailure) {
-                    long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
-                    synchronized (recovery) {
-                        recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
-                                item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
-                                true, false));
-                    }
-                    LOG.warn(MARKER,
-                            "Quarantine sink-success marker deferred for action id={} after successful sink recovery: {}",
-                            item.action.id(), markerFailure.toString());
-                    return true;
-                }
-            }
-            // ACK only after the durable marker is confirmed. Never re-flush a
-            // row that already reached the sink just because journal retirement failed.
-            Exception ackFailure = null;
-            for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
-                try {
-                    if (quarantineStore != null) quarantineStore.acknowledge(item.sequence);
-                    synchronized (recovery) { recovery.remove(item.sequence); }
-                    recoveredFromQuarantine.incrementAndGet();
-                    return true;
-                } catch (Exception failure) {
-                    ackFailure = failure;
-                    if (attempt < MAX_SINK_RETRIES) {
-                        try { Thread.sleep(RETRY_BACKOFF_MS); }
-                        catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                    }
-                }
-            }
-            long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
-            synchronized (recovery) {
-                recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
-                        item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
-                        true, true));
-            }
-            LOG.warn(MARKER, "Quarantine ACK deferred for action id={} after successful sink recovery: {}",
-                    item.action.id(), ackFailure == null ? "interrupted" : ackFailure.toString());
+            return retireRecovered(item, item.markerDurable);
+        }
+        deferRecovery(item, last);
+        return true;
+    }
+
+    private void invokeSink(List<Action> batch) throws Exception {
+        sinkInFlight.incrementAndGet();
+        workerIdle.set(false);
+        try {
+            sink.flush(batch);
+        } finally {
+            sinkInFlight.decrementAndGet();
+        }
+    }
+
+    /**
+     * Durable group marker then group ACK. Failure after the marker leaves
+     * both members sink-succeeded so the next pass never reflushs.
+     */
+    private boolean retireRecoveredGroup(List<RecoveryItem> items) {
+        if (items.isEmpty()) {
             return true;
         }
+        if (items.size() == 1) {
+            return retireRecovered(items.get(0), items.get(0).markerDurable);
+        }
+        List<Long> sequences = new ArrayList<>(items.size());
+        boolean allMarkersDurable = true;
+        for (RecoveryItem item : items) {
+            sequences.add(item.sequence);
+            if (!item.markerDurable) {
+                allMarkersDurable = false;
+            }
+        }
+        if (quarantineStore != null && !allMarkersDurable) {
+            try {
+                quarantineStore.markSinkSucceededGroup(sequences);
+            } catch (Exception markerFailure) {
+                long delaySeconds = Math.min(60L, 1L << Math.min(6, items.get(0).attempts + 1));
+                long next = System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds);
+                synchronized (recovery) {
+                    for (RecoveryItem item : items) {
+                        recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                                item.attempts + 1, next, true, false));
+                    }
+                }
+                LOG.warn(MARKER,
+                        "Quarantine group sink-success marker deferred for pair id={} after successful sink recovery: {}",
+                        items.get(0).action.pairId(), markerFailure.toString());
+                return false;
+            }
+        }
+        Exception ackFailure = null;
+        for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
+            try {
+                if (quarantineStore != null) {
+                    quarantineStore.acknowledgeGroup(sequences);
+                }
+                synchronized (recovery) {
+                    for (RecoveryItem item : items) {
+                        recovery.remove(item.sequence);
+                    }
+                }
+                recoveredFromQuarantine.addAndGet(items.size());
+                return true;
+            } catch (Exception failure) {
+                ackFailure = failure;
+                if (attempt < MAX_SINK_RETRIES) {
+                    try { Thread.sleep(RETRY_BACKOFF_MS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        long delaySeconds = Math.min(60L, 1L << Math.min(6, items.get(0).attempts + 1));
+        long next = System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds);
+        synchronized (recovery) {
+            for (RecoveryItem item : items) {
+                recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                        item.attempts + 1, next, true, true));
+            }
+        }
+        LOG.warn(MARKER, "Quarantine group ACK deferred for pair id={} after successful sink recovery: {}",
+                items.get(0).action.pairId(), ackFailure == null ? "interrupted" : ackFailure.toString());
+        return false;
+    }
 
+    private RecoveryItem inventoryPairSibling(RecoveryItem item) {
+        if (!InventoryReplacementPairs.isMember(item.action)) {
+            return null;
+        }
+        synchronized (recovery) {
+            for (RecoveryItem candidate : recovery.values()) {
+                if (candidate.sequence != item.sequence
+                        && InventoryReplacementPairs.isPair(item.action, candidate.action)) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** @return {@code false} when retirement is deferred and the caller should stop */
+    private boolean retireRecovered(RecoveryItem item, boolean markerDurable) {
+        if (quarantineStore != null && !markerDurable) {
+            try {
+                quarantineStore.markSinkSucceeded(item.sequence);
+                markerDurable = true;
+            } catch (Exception markerFailure) {
+                long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
+                synchronized (recovery) {
+                    recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                            item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
+                            true, false));
+                }
+                LOG.warn(MARKER,
+                        "Quarantine sink-success marker deferred for action id={} after successful sink recovery: {}",
+                        item.action.id(), markerFailure.toString());
+                return false;
+            }
+        }
+        Exception ackFailure = null;
+        for (int attempt = 1; attempt <= MAX_SINK_RETRIES; attempt++) {
+            try {
+                if (quarantineStore != null) quarantineStore.acknowledge(item.sequence);
+                synchronized (recovery) { recovery.remove(item.sequence); }
+                recoveredFromQuarantine.incrementAndGet();
+                return true;
+            } catch (Exception failure) {
+                ackFailure = failure;
+                if (attempt < MAX_SINK_RETRIES) {
+                    try { Thread.sleep(RETRY_BACKOFF_MS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
+        synchronized (recovery) {
+            recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
+                    item.attempts + 1, System.nanoTime() + TimeUnit.SECONDS.toNanos(delaySeconds),
+                    true, true));
+        }
+        LOG.warn(MARKER, "Quarantine ACK deferred for action id={} after successful sink recovery: {}",
+                item.action.id(), ackFailure == null ? "interrupted" : ackFailure.toString());
+        return false;
+    }
+
+    private void deferRecovery(RecoveryItem item, Exception last) {
         long delaySeconds = Math.min(60L, 1L << Math.min(6, item.attempts + 1));
         synchronized (recovery) {
             recovery.put(item.sequence, new RecoveryItem(item.sequence, item.action,
@@ -905,7 +1228,6 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         LOG.warn(MARKER, "Quarantine recovery deferred for action id={} after retries: {}",
                 item.action.id(), last == null ? "interrupted" : last.toString());
-        return true;
     }
 
     private long recoveryWaitMillis() {
@@ -925,6 +1247,32 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      */
     private record RecoveryItem(long sequence, Action action, int attempts, long nextRetryNs,
                                 boolean sinkSucceeded, boolean markerDurable) {}
+
+    /**
+     * One bounded queue slot. Singles carry one action; inventory replacements
+     * carry both halves so poll/drain cannot split them.
+     */
+    static final class QueuedWrite {
+        final Action first;
+        final Action second;
+
+        QueuedWrite(Action first) {
+            this.first = Objects.requireNonNull(first, "first");
+            this.second = null;
+        }
+
+        QueuedWrite(Action first, Action second) {
+            this.first = Objects.requireNonNull(first, "first");
+            this.second = Objects.requireNonNull(second, "second");
+        }
+
+        void appendTo(List<Action> out) {
+            out.add(first);
+            if (second != null) {
+                out.add(second);
+            }
+        }
+    }
 
     private static boolean isLikelyRowSpecificFailure(Throwable t) {
         for (Throwable cur = t; cur != null; cur = cur.getCause()) {

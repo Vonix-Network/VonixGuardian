@@ -377,11 +377,73 @@ public interface EventSubmitter {
 
     /** Convenience for player-inventory deposit (slot delta &gt; 0). */
     void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
-                                int x, int y, int z, String itemId, int amount, String sourceTag);
+                                 int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    /** NBT-preserving overload; legacy implementors may retain the no-NBT path. */
+    default void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z, String itemId, int amount,
+                                        String sourceTag, byte[] itemNbt) {
+        submitInventoryDeposit(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /** Slot-aware player-inventory deposit overload. */
+    default void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                         int x, int y, int z, String itemId, int amount,
+                                         String sourceTag, Integer inventorySlot) {
+        submitInventoryDeposit(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /** Slot-aware NBT-preserving player-inventory deposit overload. */
+    default void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                         int x, int y, int z, String itemId, int amount,
+                                         String sourceTag, byte[] itemNbt, Integer inventorySlot) {
+        submitInventoryDeposit(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag, itemNbt);
+    }
 
     /** Convenience for player-inventory withdraw (slot delta &lt; 0). */
     void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
                                  int x, int y, int z, String itemId, int amount, String sourceTag);
+
+    /** NBT-preserving overload; legacy implementors may retain the no-NBT path. */
+    default void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                         int x, int y, int z, String itemId, int amount,
+                                         String sourceTag, byte[] itemNbt) {
+        submitInventoryWithdraw(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /** Slot-aware player-inventory withdraw overload. */
+    default void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                          int x, int y, int z, String itemId, int amount,
+                                          String sourceTag, Integer inventorySlot) {
+        submitInventoryWithdraw(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+    }
+
+    /** Slot-aware NBT-preserving player-inventory withdraw overload. */
+    default void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                          int x, int y, int z, String itemId, int amount,
+                                          String sourceTag, byte[] itemNbt, Integer inventorySlot) {
+        submitInventoryWithdraw(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag, itemNbt);
+    }
+
+    /**
+     * Player-inventory identity replacement: WITHDRAW(old) then DEPOSIT(new).
+     *
+     * <p>The default is sequential and is not pair-atomic. {@code Guardian}
+     * overrides with a shared {@code pair_id} and a single queue admission so
+     * saturation, gating, shutdown, or sink failure cannot persist only one
+     * half. Fakes that only implement the void {@code submit} surface keep
+     * compiling.</p>
+     */
+    default void submitInventoryReplacement(UUID actorUuid, String actorName, String worldId,
+                                            int x, int y, int z,
+                                            String withdrawItemId, int withdrawAmount, byte[] withdrawNbt,
+                                            String depositItemId, int depositAmount, byte[] depositNbt,
+                                            Integer inventorySlot) {
+        submitInventoryWithdraw(actorUuid, actorName, worldId, x, y, z,
+                withdrawItemId, withdrawAmount, null, withdrawNbt, inventorySlot);
+        submitInventoryDeposit(actorUuid, actorName, worldId, x, y, z,
+                depositItemId, depositAmount, null, depositNbt, inventorySlot);
+    }
 
     /** Convenience for hopper push (item moved into a container). */
     void submitHopperPush(UUID actorUuid, String actorName, String worldId,

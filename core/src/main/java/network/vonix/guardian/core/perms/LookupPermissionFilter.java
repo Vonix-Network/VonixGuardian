@@ -104,11 +104,12 @@ public final class LookupPermissionFilter {
     }
 
     /**
-     * Fetches a page in visible-row coordinates. Raw DAO pages are streamed
-     * from the beginning of the result set until the requested visible offset
-     * and page are satisfied, so denied rows never consume visible slots.
-     * Scanning is bounded; any rows returned after the bound are deliberately
-     * not exposed by this call.
+     * Fetches a page in visible-row coordinates. Permitted action types are
+     * applied SQL-side. Page 2+ uses a bounded first batch followed by
+     * {@code (ts,id)} keyset continuation instead of a deep OFFSET; older
+     * implementations fall back to the bounded OFFSET path. Denied types
+     * still cannot occupy visible slots. Scanning is bounded; a skip at or
+     * beyond {@value #MAX_RAW_ROWS_SCANNED} fails closed.
      */
     public static VisiblePage visiblePage(
             GuardianDao dao,
@@ -156,22 +157,52 @@ public final class LookupPermissionFilter {
         }
 
         long visibleSkip = (long) (page - 1) * pageSize;
+        // SQL-side type restriction means denied types never occupy result
+        // slots. For page 1 the visible skip is therefore a raw skip. For
+        // deeper pages, walk from the first batch with a (ts,id) keyset so a
+        // large page number does not force the database to discard every
+        // preceding row through OFFSET. Older/mock DAOs may return null from
+        // the keyset method; restart once through the bounded OFFSET fallback.
+        if (visibleSkip >= MAX_RAW_ROWS_SCANNED || visibleSkip > Integer.MAX_VALUE) {
+            return new VisiblePage(List.of(), false, 0, false);
+        }
         long targetLong = (long) pageSize + (prefetchNext ? 1L : 0L);
         int targetRows = targetLong >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) targetLong;
-        int rawOffset = 0;
-        int scanned = 0;
+        // There is no caller-supplied cursor in the page-number API. Use one
+        // zero-origin keyset anchor only for page 2; deeper pages must use a
+        // single bounded OFFSET rather than repeatedly scanning from row zero.
+        boolean seekMode = page == 2;
+        boolean keysetUnavailable = false;
+        long remainingSkip = seekMode ? visibleSkip : 0L;
+        int rawOffset = seekMode ? 0 : (int) visibleSkip;
+        Action cursor = null;
+        int scanned = seekMode ? 0 : rawOffset;
         List<Action> out = new ArrayList<>(Math.min(targetRows, RAW_PAGE_SIZE));
         while (scanned < MAX_RAW_ROWS_SCANNED && out.size() < targetRows) {
             int stillNeed = targetRows - out.size();
-            long wantLong = stillNeed + visibleSkip;
-            int want = wantLong >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) wantLong;
-            int fetchLimit = Math.min(RAW_PAGE_SIZE, Math.min(want, MAX_RAW_ROWS_SCANNED - scanned));
+            int fetchLimit = Math.min(RAW_PAGE_SIZE, Math.min(stillNeed, MAX_RAW_ROWS_SCANNED - scanned));
             if (fetchLimit < 1) {
                 break;
             }
             // Display projection: lookup formatting never reads NBT payloads.
             // Rollback/restore keep using GuardianDao.queryPage (full columns).
-            GuardianDao.QueryPage rawPage = dao.queryPageForDisplay(pageFilter, rawOffset, fetchLimit);
+            GuardianDao.QueryPage rawPage;
+            if (seekMode && !keysetUnavailable && cursor != null) {
+                rawPage = dao.queryPageForDisplayAfter(
+                        pageFilter, cursor.timestamp(), cursor.id(), fetchLimit);
+                if (rawPage == null) {
+                    // Contract-safe fallback for non-JDBC implementations.
+                    keysetUnavailable = true;
+                    remainingSkip = 0L;
+                    rawOffset = (int) visibleSkip;
+                    cursor = null;
+                    out.clear();
+                    scanned = (int) visibleSkip;
+                    continue;
+                }
+            } else {
+                rawPage = dao.queryPageForDisplay(pageFilter, rawOffset, fetchLimit);
+            }
             List<Action> raw = rawPage.rows();
             if (raw.isEmpty()) {
                 return pageResult(out, pageSize, true, scanned);
@@ -184,22 +215,26 @@ public final class LookupPermissionFilter {
                 return pageResult(out, pageSize, false, scanned);
             }
             scanned += raw.size();
-            if (rawOffset > Integer.MAX_VALUE - raw.size()) {
-                return pageResult(out, pageSize, false, scanned);
+            if (seekMode && !keysetUnavailable) {
+                cursor = raw.get(raw.size() - 1);
+            } else {
+                if (rawOffset > Integer.MAX_VALUE - raw.size()) {
+                    return pageResult(out, pageSize, false, scanned);
+                }
+                rawOffset += raw.size();
             }
-            rawOffset += raw.size();
 
             for (Action action : raw) {
                 if (visibleTypes != null && !visibleTypes.contains(action.type())) {
                     continue;
                 }
-                if (visibleSkip > 0L) {
-                    visibleSkip--;
-                } else {
-                    out.add(action);
-                    if (out.size() == targetRows) {
-                        return pageResult(out, pageSize, true, scanned);
-                    }
+                if (remainingSkip > 0L) {
+                    remainingSkip--;
+                    continue;
+                }
+                out.add(action);
+                if (out.size() == targetRows) {
+                    return pageResult(out, pageSize, true, scanned);
                 }
             }
             if (rawPage.truncated()) {

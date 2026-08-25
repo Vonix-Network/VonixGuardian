@@ -11,15 +11,15 @@ import java.util.Objects;
  */
 public record WorldMutationResult(long actionId, Status status, Throwable failure) {
 
-    public enum Status { APPLIED, SKIPPED, FAILED }
+    public enum Status { APPLIED, SKIPPED, FAILED, REPAIR_REQUIRED }
 
     public WorldMutationResult {
         Objects.requireNonNull(status, "status");
-        if (status == Status.FAILED && failure == null) {
-            throw new IllegalArgumentException("FAILED requires failure");
+        if ((status == Status.FAILED || status == Status.REPAIR_REQUIRED) && failure == null) {
+            throw new IllegalArgumentException(status + " requires failure");
         }
-        if (status != Status.FAILED && failure != null) {
-            throw new IllegalArgumentException("Only FAILED may carry failure");
+        if (status != Status.FAILED && status != Status.REPAIR_REQUIRED && failure != null) {
+            throw new IllegalArgumentException("Only FAILED or REPAIR_REQUIRED may carry failure");
         }
     }
 
@@ -33,6 +33,15 @@ public record WorldMutationResult(long actionId, Status status, Throwable failur
 
     public static WorldMutationResult failed(long actionId, Throwable failure) {
         return new WorldMutationResult(actionId, Status.FAILED,
+            Objects.requireNonNull(failure, "failure"));
+    }
+
+    /**
+     * World mutation remains applied (or unknown) after compensation failed.
+     * Callers must persist this; it is not a log-only condition.
+     */
+    public static WorldMutationResult repairRequired(long actionId, Throwable failure) {
+        return new WorldMutationResult(actionId, Status.REPAIR_REQUIRED,
             Objects.requireNonNull(failure, "failure"));
     }
 }

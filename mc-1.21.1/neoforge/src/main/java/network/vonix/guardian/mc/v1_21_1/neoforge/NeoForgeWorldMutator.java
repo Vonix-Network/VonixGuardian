@@ -13,6 +13,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -32,6 +33,7 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.Optional;
 
 /**
@@ -168,6 +170,38 @@ public final class NeoForgeWorldMutator implements WorldMutator {
             return remaining == 0;
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "removeFromContainer failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                            String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+        try {
+            ServerPlayer player = playerUuid == null ? null : server.getPlayerList().getPlayer(playerUuid);
+            if (player == null || inventorySlot == null || inventorySlot < 0 || inventorySlot >= player.getInventory().getContainerSize()) return false;
+            ItemStack stack = decodeItemStack(itemId, amount, itemNbt);
+            return stack != null && tryAddAtSlot(player.getInventory(), inventorySlot, stack);
+        } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+            throw e;
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "addToPlayerInventory failed for {}", playerUuid, t);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+        try {
+            ServerPlayer player = playerUuid == null ? null : server.getPlayerList().getPlayer(playerUuid);
+            if (player == null || inventorySlot == null || inventorySlot < 0 || inventorySlot >= player.getInventory().getContainerSize()) return false;
+            ItemStack wanted = decodeItemStack(itemId, amount, itemNbt);
+            return wanted != null && tryRemoveAtSlot(player.getInventory(), inventorySlot, wanted, Math.max(1, amount));
+        } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+            throw e;
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "removeFromPlayerInventory failed for {}", playerUuid, t);
             return false;
         }
     }
@@ -425,6 +459,146 @@ public final class NeoForgeWorldMutator implements WorldMutator {
         if (rl == null) return null;
         ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, rl);
         return server.getLevel(key);
+    }
+
+    private ItemStack decodeItemStack(String itemId, int amount, byte[] itemNbt) {
+        if (itemId == null) return null;
+        ResourceLocation itemRl = ResourceLocation.tryParse(itemId);
+        if (itemRl == null) return null;
+        Item requested = BuiltInRegistries.ITEM.get(itemRl);
+        if (requested == null || !itemRl.equals(BuiltInRegistries.ITEM.getKey(requested))) return null;
+        ItemStack stack;
+        if (itemNbt == null || itemNbt.length == 0) {
+            stack = new ItemStack(requested, Math.max(1, amount));
+        } else {
+            CompoundTag tag = decodeNbt(itemNbt);
+            if (tag == null) return null;
+            try {
+                stack = ItemStack.parseOptional(server.registryAccess(), tag);
+            } catch (Throwable t) {
+                return null;
+            }
+            if (stack == null || stack.isEmpty()
+                    || !itemRl.equals(BuiltInRegistries.ITEM.getKey(stack.getItem()))) return null;
+            stack.setCount(Math.max(1, amount));
+        }
+        return stack;
+    }
+
+    private static boolean tryRemove(Container c, ItemStack wanted, int amount) {
+        int available = 0;
+        for (int i = 0; i < c.getContainerSize(); i++) {
+            ItemStack cur = c.getItem(i);
+            if (!cur.isEmpty() && ItemStack.isSameItemSameComponents(cur, wanted)) {
+                available += cur.getCount();
+                if (available >= amount) break;
+            }
+        }
+        if (available < amount) return false;
+        int remaining = amount;
+        for (int i = 0; i < c.getContainerSize() && remaining > 0; i++) {
+            ItemStack cur = c.getItem(i);
+            if (cur.isEmpty() || !ItemStack.isSameItemSameComponents(cur, wanted)) continue;
+            int take = Math.min(remaining, cur.getCount());
+            cur.shrink(take);
+            remaining -= take;
+            if (cur.isEmpty()) c.setItem(i, ItemStack.EMPTY);
+        }
+        c.setChanged();
+        return remaining == 0;
+    }
+
+    private static boolean tryAddAtSlot(Container c, int slot, ItemStack stack) {
+        if (slot < 0 || slot >= c.getContainerSize() || stack == null || stack.isEmpty()) return false;
+        ItemStack current = c.getItem(slot);
+        int max = Math.min(stack.getMaxStackSize(), c.getMaxStackSize());
+        if (current.isEmpty()) {
+            if (stack.getCount() > max) return false;
+            ItemStack previous = ItemStack.EMPTY;
+            try {
+                c.setItem(slot, stack.copy());
+                c.setChanged();
+                return true;
+            } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+                throw e;
+            } catch (Throwable t) {
+                restoreExactSlotOrThrow(c, slot, previous, t);
+                return false;
+            }
+        }
+        if (!ItemStack.isSameItemSameComponents(current, stack)) return false;
+        int space = Math.min(current.getMaxStackSize(), c.getMaxStackSize()) - current.getCount();
+        if (space < stack.getCount()) return false;
+        ItemStack previous = current.copy();
+        try {
+            current.grow(stack.getCount());
+            c.setChanged();
+            return true;
+        } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+            throw e;
+        } catch (Throwable t) {
+            restoreExactSlotOrThrow(c, slot, previous, t);
+            return false;
+        }
+    }
+
+    private static boolean tryRemoveAtSlot(Container c, int slot, ItemStack wanted, int amount) {
+        if (slot < 0 || slot >= c.getContainerSize() || wanted == null || wanted.isEmpty() || amount <= 0) return false;
+        ItemStack current = c.getItem(slot);
+        if (current.isEmpty() || !ItemStack.isSameItemSameComponents(current, wanted) || current.getCount() < amount) return false;
+        ItemStack previous = current.copy();
+        try {
+            current.shrink(amount);
+            if (current.isEmpty()) c.setItem(slot, ItemStack.EMPTY);
+            c.setChanged();
+            return true;
+        } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+            throw e;
+        } catch (Throwable t) {
+            restoreExactSlotOrThrow(c, slot, previous, t);
+            return false;
+        }
+    }
+
+
+    private static void restoreExactSlotOrThrow(Container c, int slot, ItemStack previous, Throwable mutateFailure) {
+        Throwable restoreFailure = null;
+        boolean restored = false;
+        try {
+            c.setItem(slot, previous);
+            c.setChanged();
+            ItemStack now = c.getItem(slot);
+            restored = exactSlotStacksMatch(now, previous);
+        } catch (Throwable t) {
+            restoreFailure = t;
+        }
+        if (!restored) {
+            LOG.error(Guardian.MARKER, "exact-slot compensation failed at slot={}; world may remain mutated", slot, mutateFailure);
+            throw new network.vonix.guardian.core.rollback.UncompensatedSlotMutationException(slot, mutateFailure, restoreFailure);
+        }
+    }
+
+    private static boolean exactSlotStacksMatch(ItemStack a, ItemStack b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        if (a.isEmpty() && b.isEmpty()) return true;
+        if (a.isEmpty() || b.isEmpty()) return false;
+        if (a.getCount() != b.getCount()) return false;
+        return ItemStack.isSameItemSameComponents(a, b);
+    }
+
+    private static boolean tryInsertComplete(Container c, ItemStack stack) {
+        int capacity = 0;
+        for (int i = 0; i < c.getContainerSize(); i++) {
+            ItemStack cur = c.getItem(i);
+            if (cur.isEmpty()) {
+                capacity += Math.min(stack.getMaxStackSize(), c.getMaxStackSize());
+            } else if (ItemStack.isSameItemSameComponents(cur, stack)) {
+                capacity += Math.max(0, Math.min(cur.getMaxStackSize(), c.getMaxStackSize()) - cur.getCount());
+            }
+            if (capacity >= stack.getCount()) return tryInsert(c, stack);
+        }
+        return false;
     }
 
     private static boolean tryInsert(Container c, ItemStack stack) {

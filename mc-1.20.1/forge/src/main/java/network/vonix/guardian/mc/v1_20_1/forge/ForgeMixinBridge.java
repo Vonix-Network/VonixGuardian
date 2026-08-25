@@ -42,6 +42,12 @@ public final class ForgeMixinBridge {
         return g == null ? null : g.submitter();
     }
 
+    private static boolean persistNbt() {
+        Guardian g = VonixGuardianForge.guardian();
+        return g != null && g.config() != null && g.config().storage() != null
+                && g.config().storage().persistNbt();
+    }
+
     private static String worldKey(Level level) {
         try {
             return level.dimension().location().toString();
@@ -65,6 +71,67 @@ public final class ForgeMixinBridge {
             return rl != null ? rl.toString() : "minecraft:air";
         } catch (Throwable t) {
             return "minecraft:air";
+        }
+    }
+
+    /** CoreProtect-parity producer for one player-inventory slot mutation. */
+    public static boolean inventoryMetadataChanged(Player player, ItemStack before, ItemStack after) {
+        try {
+            if (player == null || before == null || after == null || !persistNbt()
+                    || before.isEmpty() || after.isEmpty()) return false;
+            byte[] beforeNbt = NbtCapture.itemStackComparison(before);
+            byte[] afterNbt = NbtCapture.itemStackComparison(after);
+            return !java.util.Arrays.equals(beforeNbt, afterNbt);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static void playerInventorySlotChange(Player player, ItemStack before, ItemStack after, Integer slot) {
+        try {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer)
+                    || before == null || after == null || player.level() == null) return;
+            String beforeId = before.isEmpty() ? null : itemId(before);
+            String afterId = after.isEmpty() ? null : itemId(after);
+            boolean nbtOn = persistNbt();
+            byte[] beforeNbt = nbtOn && !before.isEmpty() ? NbtCapture.itemStack(before) : null;
+            byte[] afterNbt = nbtOn && !after.isEmpty() ? NbtCapture.itemStack(after) : null;
+            byte[] beforeComparisonNbt = nbtOn && !before.isEmpty() ? NbtCapture.itemStackComparison(before) : null;
+            byte[] afterComparisonNbt = nbtOn && !after.isEmpty() ? NbtCapture.itemStackComparison(after) : null;
+            java.util.List<network.vonix.guardian.core.event.InventoryDelta> deltas =
+                    network.vonix.guardian.core.event.InventoryDelta.betweenAll(
+                            beforeId, before.isEmpty() ? 0 : before.getCount(),
+                            afterId, after.isEmpty() ? 0 : after.getCount(), beforeComparisonNbt, afterComparisonNbt);
+            if (deltas.isEmpty()) return;
+            EventSubmitter s = sub();
+            if (s == null) return;
+            BlockPos pos = player.blockPosition();
+            String world = worldKey(player.level());
+            if (network.vonix.guardian.core.event.InventoryReplacementPairs.isReplacement(deltas)) {
+                s.submitInventoryReplacement(player.getUUID(), player.getName().getString(), world,
+                        pos.getX(), pos.getY(), pos.getZ(),
+                        deltas.get(0).itemId(), deltas.get(0).amount(), beforeNbt,
+                        deltas.get(1).itemId(), deltas.get(1).amount(), afterNbt,
+                        slot);
+                return;
+            }
+            for (network.vonix.guardian.core.event.InventoryDelta delta : deltas) {
+                byte[] itemNbt = delta.kind() == network.vonix.guardian.core.event.InventoryDelta.Kind.DEPOSIT
+                        ? afterNbt : beforeNbt;
+                if (delta.kind() == network.vonix.guardian.core.event.InventoryDelta.Kind.DEPOSIT) {
+                    if (itemNbt != null) s.submitInventoryDeposit(player.getUUID(), player.getName().getString(), world,
+                            pos.getX(), pos.getY(), pos.getZ(), delta.itemId(), delta.amount(), null, itemNbt, slot);
+                    else s.submitInventoryDeposit(player.getUUID(), player.getName().getString(), world,
+                            pos.getX(), pos.getY(), pos.getZ(), delta.itemId(), delta.amount(), null, slot);
+                } else if (delta.kind() == network.vonix.guardian.core.event.InventoryDelta.Kind.WITHDRAW) {
+                    if (itemNbt != null) s.submitInventoryWithdraw(player.getUUID(), player.getName().getString(), world,
+                            pos.getX(), pos.getY(), pos.getZ(), delta.itemId(), delta.amount(), null, itemNbt, slot);
+                    else s.submitInventoryWithdraw(player.getUUID(), player.getName().getString(), world,
+                            pos.getX(), pos.getY(), pos.getZ(), delta.itemId(), delta.amount(), null, slot);
+                }
+            }
+        } catch (Throwable t) {
+            warn("playerInventorySlotChange", t);
         }
     }
 

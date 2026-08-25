@@ -68,6 +68,9 @@ class ActionTypeTest {
             .hasMessageContaining("999");
         assertThatThrownBy(() -> ActionType.byId(0))
             .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ActionType.byId(-1))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("-1");
     }
 
     @Test

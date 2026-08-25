@@ -61,6 +61,33 @@ class PairIdPersistenceTest {
     }
 
     @Test
+    void inventory_slot_round_trips_through_full_and_display_projections() throws Exception {
+        SqliteDao dao = new SqliteDao("jdbc:sqlite::memory:");
+        dao.init();
+        Action action = new network.vonix.guardian.core.action.ActionBuilder()
+                .type(ActionType.INVENTORY_DEPOSIT)
+                .actorUuid(UUID.fromString("00000000-0000-0000-0000-000000000077"))
+                .actorName("Player")
+                .worldId("minecraft:overworld")
+                .position(1, 64, 2)
+                .targetId("minecraft:diamond")
+                .amount(3)
+                .itemNbt(new byte[] {1, 2, 3})
+                .inventorySlot(7)
+                .build();
+        dao.insertBatch(List.of(action));
+
+        Action full = dao.query(QueryFilter.empty(), 0, 2).get(0);
+        assertThat(full.inventorySlot()).isEqualTo(7);
+        assertThat(full.itemNbt()).containsExactly(1, 2, 3);
+
+        Action display = dao.queryPageForDisplay(QueryFilter.empty(), 0, 2).rows().get(0);
+        assertThat(display.inventorySlot()).isEqualTo(7);
+        assertThat(display.itemNbt()).isNull();
+        dao.close();
+    }
+
+    @Test
     void unpaired_null_and_zero_are_not_siblings() throws Exception {
         SqliteDao dao = new SqliteDao("jdbc:sqlite::memory:");
         dao.init();

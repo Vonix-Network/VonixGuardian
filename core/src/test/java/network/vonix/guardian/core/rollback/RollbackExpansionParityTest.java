@@ -64,8 +64,6 @@ class RollbackExpansionParityTest {
             ActionType.DISPENSE,
             ActionType.PISTON_EXTEND,
             ActionType.PISTON_RETRACT,
-            ActionType.INVENTORY_DEPOSIT,
-            ActionType.INVENTORY_WITHDRAW,
             ActionType.ITEM_DROP,
             ActionType.ITEM_PICKUP,
             ActionType.ITEM_CRAFT,

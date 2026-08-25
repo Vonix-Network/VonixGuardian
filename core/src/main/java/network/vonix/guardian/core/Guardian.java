@@ -33,6 +33,7 @@ import network.vonix.guardian.core.rollback.RollbackEngine;
 import network.vonix.guardian.core.rollback.UndoStack;
 import network.vonix.guardian.core.rollback.WorldMutator;
 import network.vonix.guardian.core.storage.GuardianDao;
+import network.vonix.guardian.core.storage.IdempotentAuditSink;
 import network.vonix.guardian.core.storage.StorageFactory;
 import network.vonix.guardian.core.theme.Theme;
 import network.vonix.guardian.core.theme.ThemeRegistry;
@@ -236,20 +237,17 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 LOG.warn(MARKER, "Deferred DAO close raised", e);
             }
         };
+        IdempotentAuditSink auditSink = new IdempotentAuditSink(dao, logHolder);
+        try {
+            auditSink.recoverPending();
+        } catch (Exception pendingFailure) {
+            LOG.warn(MARKER, "Pending JDBC/JSONL outbox replay failed; queue will retry", pendingFailure);
+        }
         BatchedAsyncWriteQueue queue = new BatchedAsyncWriteQueue(
                 config.queue().maxSize(),
                 config.queue().flushIntervalMs(),
                 config.queue().batchSize(),
-                batch -> {
-                    dao.insertBatch(batch);
-                    JsonLinesLogFile lf = logHolder.get();
-                    if (lf != null) {
-                        for (Action a : batch) {
-                            lf.append(a);
-                        }
-                        lf.flush();
-                    }
-                },
+                auditSink,
                 tf,
                 dataDir.resolve("config").resolve("vonixguardian").resolve("queue-quarantine.bin"),
                 closeDownstream);
@@ -438,17 +436,22 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
      * maintenance writer is already active.
      */
     public boolean beginMaintenanceWriteBlock(String reason) {
-        boolean entered = maintenanceWriteBlock.compareAndSet(false, true);
-        if (entered) {
-            maintenanceWriteBlockReason = reason == null || reason.isBlank() ? "maintenance" : reason;
-            LOG.warn(MARKER, "Audit writes blocked for maintenance: {}", maintenanceWriteBlockReason);
+        if (!maintenanceWriteBlock.compareAndSet(false, true)) {
+            return false;
         }
-        return entered;
+        if (!queue.freezeAdmission()) {
+            maintenanceWriteBlock.set(false);
+            return false;
+        }
+        maintenanceWriteBlockReason = reason == null || reason.isBlank() ? "maintenance" : reason;
+        LOG.warn(MARKER, "Audit writes blocked for maintenance: {}", maintenanceWriteBlockReason);
+        return true;
     }
 
     /** Leave a maintenance write-block entered by {@link #beginMaintenanceWriteBlock(String)}. */
     public void endMaintenanceWriteBlock(String reason) {
         if (maintenanceWriteBlock.compareAndSet(true, false)) {
+            queue.unfreezeAdmission();
             LOG.warn(MARKER, "Audit writes unblocked after maintenance: {}", reason != null ? reason : maintenanceWriteBlockReason);
             maintenanceWriteBlockReason = null;
         }
@@ -460,24 +463,14 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     /**
-     * Wait for the async queue to become empty without closing it. Must only be
-     * called off the server thread; command cells invoke it from their worker
-     * pool. Returns false on timeout/interruption.
+     * Wait for the async pipeline to become idle without closing it: bounded
+     * queue empty, worker local batch empty, and no in-flight sink
+     * transaction. Must only be called off the server thread after
+     * {@link #beginMaintenanceWriteBlock(String)}. Returns false on
+     * timeout/interruption.
      */
     public boolean awaitQueueDrained(long timeoutMs) {
-        long deadline = System.nanoTime() + Math.max(0L, timeoutMs) * 1_000_000L;
-        while (queue.depth() > 0) {
-            if (System.nanoTime() >= deadline) {
-                return false;
-            }
-            try {
-                Thread.sleep(25L);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return true;
+        return queue.awaitIdle(timeoutMs);
     }
 
     /**
@@ -967,6 +960,31 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         return queue.submit(a);
     }
 
+    /**
+     * Admit both halves of an inventory replacement or neither. Gating,
+     * maintenance write-block, shutdown, and bounded-queue saturation cannot
+     * persist only WITHDRAW(old) or only DEPOSIT(new).
+     */
+    public boolean submitAcceptedPair(Action first, Action second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        first = CommandPayloadSanitizer.sanitizeForPersistence(first);
+        second = CommandPayloadSanitizer.sanitizeForPersistence(second);
+        if (maintenanceWriteBlock.get()) {
+            gated.addAndGet(2);
+            return false;
+        }
+        boolean firstOk = gate.shouldLog(first);
+        boolean secondOk = gate.shouldLog(second);
+        if (!firstOk || !secondOk) {
+            gated.addAndGet(2);
+            return false;
+        }
+        submitted.addAndGet(2);
+        return queue.submitPair(first, second);
+    }
+
     @Override
     public void submitBlockBreak(UUID actorUuid, String actorName, String worldId,
                                  int x, int y, int z, String blockId, String sourceTag) {
@@ -1241,10 +1259,113 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     @Override
+    public void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                       int x, int y, int z, String itemId, int amount,
+                                       String sourceTag, Integer inventorySlot) {
+        submit(seed(ActionType.INVENTORY_DEPOSIT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .inventorySlot(inventorySlot).build());
+    }
+
+    @Override
+    public void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                       int x, int y, int z, String itemId, int amount,
+                                       String sourceTag, byte[] itemNbt) {
+        if (!persistNbt() || itemNbt == null) {
+            submitInventoryDeposit(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.INVENTORY_DEPOSIT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt).build());
+    }
+
+    @Override
+    public void submitInventoryDeposit(UUID actorUuid, String actorName, String worldId,
+                                       int x, int y, int z, String itemId, int amount,
+                                       String sourceTag, byte[] itemNbt, Integer inventorySlot) {
+        if (!persistNbt() || itemNbt == null) {
+            submitInventoryDeposit(actorUuid, actorName, worldId, x, y, z, itemId, amount,
+                    sourceTag, inventorySlot);
+            return;
+        }
+        submit(seed(ActionType.INVENTORY_DEPOSIT, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt).inventorySlot(inventorySlot).build());
+    }
+
+    @Override
+    public void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z, String itemId, int amount,
+                                        String sourceTag, Integer inventorySlot) {
+        submit(seed(ActionType.INVENTORY_WITHDRAW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .inventorySlot(inventorySlot).build());
+    }
+
+    @Override
     public void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
                                         int x, int y, int z, String itemId, int amount, String sourceTag) {
         submit(seed(ActionType.INVENTORY_WITHDRAW, actorUuid, actorName, worldId)
                 .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z, String itemId, int amount,
+                                        String sourceTag, byte[] itemNbt) {
+        if (!persistNbt() || itemNbt == null) {
+            submitInventoryWithdraw(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
+            return;
+        }
+        submit(seed(ActionType.INVENTORY_WITHDRAW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt).build());
+    }
+
+    @Override
+    public void submitInventoryWithdraw(UUID actorUuid, String actorName, String worldId,
+                                        int x, int y, int z, String itemId, int amount,
+                                        String sourceTag, byte[] itemNbt, Integer inventorySlot) {
+        if (!persistNbt() || itemNbt == null) {
+            submitInventoryWithdraw(actorUuid, actorName, worldId, x, y, z, itemId, amount,
+                    sourceTag, inventorySlot);
+            return;
+        }
+        submit(seed(ActionType.INVENTORY_WITHDRAW, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(itemNbt).inventorySlot(inventorySlot).build());
+    }
+
+    @Override
+    public void submitInventoryReplacement(UUID actorUuid, String actorName, String worldId,
+                                           int x, int y, int z,
+                                           String withdrawItemId, int withdrawAmount, byte[] withdrawNbt,
+                                           String depositItemId, int depositAmount, byte[] depositNbt,
+                                           Integer inventorySlot) {
+        long pairId = network.vonix.guardian.core.event.InventoryReplacementPairs.nextPairId();
+        long timestamp = System.currentTimeMillis();
+        byte[] withdrawPayload = persistNbt() ? withdrawNbt : null;
+        byte[] depositPayload = persistNbt() ? depositNbt : null;
+        Action withdraw = seed(ActionType.INVENTORY_WITHDRAW, actorUuid, actorName, worldId)
+                .timestamp(timestamp)
+                .position(x, y, z)
+                .targetId(withdrawItemId)
+                .amount(withdrawAmount)
+                .itemNbt(withdrawPayload)
+                .inventorySlot(inventorySlot)
+                .pairId(pairId)
+                .build();
+        Action deposit = seed(ActionType.INVENTORY_DEPOSIT, actorUuid, actorName, worldId)
+                .timestamp(timestamp)
+                .position(x, y, z)
+                .targetId(depositItemId)
+                .amount(depositAmount)
+                .itemNbt(depositPayload)
+                .inventorySlot(inventorySlot)
+                .pairId(pairId)
+                .build();
+        submitAcceptedPair(withdraw, deposit);
     }
 
     @Override

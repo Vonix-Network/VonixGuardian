@@ -151,6 +151,156 @@ class RollbackEngineTest {
     }
 
     @Test
+    void rollbackInventoryDepositRemovesFromActorAndWithdrawAddsToActor() throws Exception {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000027");
+        Action deposit = action(actor, 5L, 100L, ActionType.INVENTORY_DEPOSIT,
+            "w", 0, 0, 0, "minecraft:diamond", "legacy-meta", 5, false);
+        Action withdraw = action(actor, 6L, 100L, ActionType.INVENTORY_WITHDRAW,
+            "w", 0, 0, 0, "minecraft:diamond", "legacy-meta", 3, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(deposit, withdraw));
+
+        engine.rollback(filter, false);
+
+        assertThat(mutator.calls).containsExactlyInAnyOrder(
+            "removePlayer|" + actor + "|minecraft:diamond|5|legacy-meta|1|5",
+            "addPlayer|" + actor + "|minecraft:diamond|3|legacy-meta|1|5"
+        );
+    }
+
+    @Test
+    void rollbackInventoryReplacementIsPairAtomicWhenSecondHalfFails() throws Exception {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000029");
+        long pair = 404L;
+        Action withdraw = pairedInventory(actor, 9L, 100L, ActionType.INVENTORY_WITHDRAW,
+                "minecraft:diamond", 2, pair, 4);
+        Action deposit = pairedInventory(actor, 10L, 100L, ActionType.INVENTORY_DEPOSIT,
+                "minecraft:emerald", 1, pair, 4);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(withdraw, deposit));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(90L);
+        RecordingMutator failingAdd = new RecordingMutator() {
+            @Override
+            public boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                   String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+                calls.add("addPlayer|" + playerUuid + "|" + itemId + "|" + amount + "|"
+                        + targetMeta + "|" + (itemNbt == null ? 0 : itemNbt.length) + "|" + inventorySlot);
+                return false;
+            }
+        };
+        RollbackEngine failing = new RollbackEngine(dao, failingAdd, Runnable::run);
+
+        assertThatThrownBy(() -> failing.rollbackAsync(filter, false).toCompletableFuture().join())
+                .hasCauseInstanceOf(RollbackMutationException.class);
+        assertThat(failingAdd.calls).containsExactly(
+                "removePlayer|" + actor + "|minecraft:emerald|1|null|1|4",
+                "addPlayer|" + actor + "|minecraft:diamond|2|null|1|4",
+                "addPlayer|" + actor + "|minecraft:emerald|1|null|1|4"
+        );
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
+    @Test
+    void rollbackRefusesLoneInventoryPairMember() throws Exception {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000030");
+        Action withdraw = pairedInventory(actor, 11L, 100L, ActionType.INVENTORY_WITHDRAW,
+                "minecraft:diamond", 2, 405L, 4);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(withdraw));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(91L);
+
+        assertThatThrownBy(() -> engine.rollbackAsync(filter, false).toCompletableFuture().join())
+                .hasCauseInstanceOf(RollbackMutationException.class);
+        assertThat(mutator.calls).isEmpty();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
+    @Test
+    void compensationFailurePersistsRepairRequiredAndLeavesWorldHalfMutated() throws Exception {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000031");
+        long pair = 406L;
+        Action withdraw = pairedInventory(actor, 12L, 100L, ActionType.INVENTORY_WITHDRAW,
+                "minecraft:diamond", 2, pair, 4);
+        Action deposit = pairedInventory(actor, 13L, 100L, ActionType.INVENTORY_DEPOSIT,
+                "minecraft:emerald", 1, pair, 4);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(withdraw, deposit));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(92L);
+        when(dao.markRepairRequired(any())).thenReturn(2);
+        java.util.concurrent.atomic.AtomicReference<String> slot =
+                new java.util.concurrent.atomic.AtomicReference<>("minecraft:emerald");
+        RecordingMutator world = new RecordingMutator() {
+            @Override
+            public boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                         String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+                super.tryRemoveFromPlayerInventory(playerUuid, itemId, amount, targetMeta, itemNbt, inventorySlot);
+                slot.set(null);
+                return true;
+            }
+
+            @Override
+            public boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                    String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+                super.tryAddToPlayerInventory(playerUuid, itemId, amount, targetMeta, itemNbt, inventorySlot);
+                return false;
+            }
+        };
+        RollbackEngine failing = new RollbackEngine(dao, world, Runnable::run);
+
+        assertThatThrownBy(() -> failing.rollbackAsync(filter, false).toCompletableFuture().join())
+                .hasCauseInstanceOf(RollbackMutationException.class);
+        assertThat(slot.get())
+                .as("compensation failure must not hide a half-mutated slot")
+                .isNull();
+        verify(dao).markRepairRequired(argThat(rows -> rows.size() == 2
+                && rows.stream().anyMatch(r -> r.actionId() == 12L)
+                && rows.stream().anyMatch(r -> r.actionId() == 13L)));
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
+    @Test
+    void uncompensatedSlotMutationIsRepairRequired() throws Exception {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000032");
+        Action deposit = action(actor, 14L, 100L, ActionType.INVENTORY_DEPOSIT,
+                "w", 0, 0, 0, "minecraft:diamond", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(deposit));
+        when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(93L);
+        when(dao.markRepairRequired(any())).thenReturn(1);
+        RecordingMutator world = new RecordingMutator() {
+            @Override
+            public boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                         String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+                super.tryRemoveFromPlayerInventory(playerUuid, itemId, amount, targetMeta, itemNbt, inventorySlot);
+                throw new UncompensatedSlotMutationException(4,
+                        new IllegalStateException("setChanged"),
+                        new IllegalStateException("restore"));
+            }
+        };
+        RollbackEngine failing = new RollbackEngine(dao, world, Runnable::run);
+
+        assertThatThrownBy(() -> failing.rollbackAsync(filter, false).toCompletableFuture().join())
+                .hasCauseInstanceOf(RollbackMutationException.class);
+        verify(dao).markRepairRequired(argThat(rows -> rows.size() == 1 && rows.get(0).actionId() == 14L));
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void restoreInventoryDepositAddsAndWithdrawRemovesFromActor() throws Exception {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000028");
+        Action deposit = action(actor, 7L, 100L, ActionType.INVENTORY_DEPOSIT,
+            "w", 0, 0, 0, "minecraft:diamond", "legacy-meta", 5, true);
+        Action withdraw = action(actor, 8L, 100L, ActionType.INVENTORY_WITHDRAW,
+            "w", 0, 0, 0, "minecraft:diamond", "legacy-meta", 3, true);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(deposit, withdraw));
+
+        engine.restore(filter, false);
+
+        assertThat(mutator.calls).containsExactlyInAnyOrder(
+            "addPlayer|" + actor + "|minecraft:diamond|5|legacy-meta|1|5",
+            "removePlayer|" + actor + "|minecraft:diamond|3|legacy-meta|1|5"
+        );
+    }
+
+    @Test
     void itemDropAndPickupAreAuditOnlyUntilItemEntityIdentityIsTracked() throws Exception {
         Action drop = action(71L, 100L, ActionType.ITEM_DROP,
             "w", 9, 64, 9, "minecraft:diamond", null, 3, false);
@@ -683,6 +833,30 @@ class RollbackEngineTest {
 
     // ------------------------------------------------------------- helpers
 
+    private static Action pairedInventory(UUID actor, long id, long ts, ActionType type,
+                                          String itemId, int amount, Long pairId, Integer slot) {
+        return new Action(
+            id, ts, type,
+            actor, "Player",
+            "w", 0, 0, 0,
+            itemId, null, amount, false, null,
+            null, null, null, null, null, null, new byte[]{1}, null, pairId, slot
+        );
+    }
+
+    private static Action action(UUID actor, long id, long ts, ActionType type,
+                                 String world, int x, int y, int z,
+                                 String targetId, String meta, int amount,
+                                 boolean rolledBack) {
+        return new Action(
+            id, ts, type,
+            actor, "Player",
+            world, x, y, z,
+            targetId, meta, amount, rolledBack,
+            null, null, null, null, null, null, null, new byte[]{1}, null, null, 5
+        );
+    }
+
     private static Action action(long id, long ts, ActionType type,
                                  String world, int x, int y, int z,
                                  String targetId, String meta, int amount,
@@ -719,6 +893,22 @@ class RollbackEngineTest {
         @Override
         public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
             calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);            return true;
+        }
+
+        @Override
+        public boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                     String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+            calls.add("removePlayer|" + playerUuid + "|" + itemId + "|" + amount + "|"
+                + targetMeta + "|" + (itemNbt == null ? 0 : itemNbt.length) + "|" + inventorySlot);
+            return true;
+        }
+
+        @Override
+        public boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+            calls.add("addPlayer|" + playerUuid + "|" + itemId + "|" + amount + "|"
+                + targetMeta + "|" + (itemNbt == null ? 0 : itemNbt.length) + "|" + inventorySlot);
+            return true;
         }
 
         @Override
