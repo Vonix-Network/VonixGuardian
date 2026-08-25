@@ -641,6 +641,53 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void idleBarrierCannotObserveEmptyQueueBeforeWorkerPublishesPollState() throws Exception {
+        CapturingSink sink = new CapturingSink(1);
+        CountDownLatch pollEntered = new CountDownLatch(1);
+        CountDownLatch releasePoll = new CountDownLatch(1);
+        Runnable pollProbe = () -> {
+            pollEntered.countDown();
+            try {
+                assertThat(releasePoll.await(3, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(ex);
+            }
+        };
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                16, 25L, 1, sink, DAEMON, (QuarantineStore) null,
+                null, null, null, pollProbe);
+        AtomicBoolean idle = new AtomicBoolean();
+        CountDownLatch idleReturned = new CountDownLatch(1);
+        Thread waiter = new Thread(() -> {
+            try {
+                idle.set(q.awaitIdle(2_000L));
+            } finally {
+                idleReturned.countDown();
+            }
+        }, "vg-poll-state-waiter");
+        try {
+            assertThat(q.submit(action(779))).isTrue();
+            assertThat(pollEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(q.freezeAdmission()).isTrue();
+            waiter.start();
+            assertThat(idleReturned.await(150, TimeUnit.MILLISECONDS))
+                    .as("idle observation must wait for the worker poll handoff")
+                    .isFalse();
+            releasePoll.countDown();
+            assertThat(sink.latch.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(idleReturned.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(idle).isTrue();
+        } finally {
+            releasePoll.countDown();
+            if (waiter.isAlive()) {
+                waiter.join(2_000L);
+            }
+            q.close();
+        }
+    }
+
+    @Test
     void idleBarrierRechecksRecoveryAfterWorkerQuarantineRace() throws Exception {
         Path journal = Files.createTempFile("vg-idle-recovery-race", ".bin");
         CountDownLatch probeEntered = new CountDownLatch(1);

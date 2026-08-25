@@ -66,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quarantine recovery entries before copying the source snapshot, not only
   `queue.depth()`. The idle check revalidates recovery after worker-state
   observation so a concurrent quarantine cannot produce a stale idle result.
+  Queue removal and worker-state publication are also serialized with idle
+  inspection so an admitted action cannot disappear between `poll()` and its
+  non-idle state publication.
 - **Forge server directory.** 1.18.2/1.19.2/1.20.1 Forge bootstraps resolve
   Mojmap/SRG `getServerDirectory` or `FMLPaths.GAMEDIR` and fail closed
   instead of silently using cwd.

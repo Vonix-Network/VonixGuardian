@@ -67,7 +67,14 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final Runnable admissionProbe;
     /** Package-private deterministic seam used only by idle-barrier regression tests. */
     private final Runnable idleObservationProbe;
+    /** Package-private deterministic seam used only by poll-handoff regression tests. */
+    private final Runnable pollObservationProbe;
     private final Object admissionLock = new Object();
+    /**
+     * Serializes queue removal with worker-state publication and idle snapshots.
+     * The worker holds this only across its bounded poll and batch handoff.
+     */
+    private final Object pipelineStateLock = new Object();
     private final CountDownLatch workerTerminated = new CountDownLatch(1);
     private final AtomicBoolean terminationNotified = new AtomicBoolean();
     private final Map<Long, RecoveryItem> recovery = new LinkedHashMap<>();
@@ -212,6 +219,14 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                            BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
                            Runnable terminationListener, Runnable admissionProbe,
                            Runnable idleObservationProbe) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore,
+                terminationListener, admissionProbe, idleObservationProbe, null);
+    }
+
+    BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                           BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
+                           Runnable terminationListener, Runnable admissionProbe,
+                           Runnable idleObservationProbe, Runnable pollObservationProbe) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize must be > 0");
         }
@@ -229,6 +244,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         this.terminationListener = terminationListener == null ? () -> { } : terminationListener;
         this.admissionProbe = admissionProbe;
         this.idleObservationProbe = idleObservationProbe;
+        this.pollObservationProbe = pollObservationProbe;
         if (quarantineStore != null) {
             long firstRetry = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
             for (QuarantineStore.Entry entry : quarantineStore.entries()) {
@@ -375,10 +391,12 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     }
 
     private boolean isWorkerStateIdle() {
-        return queue.isEmpty()
-                && localBatchHeld.get() == 0
-                && sinkInFlight.get() == 0
-                && workerIdle.get();
+        synchronized (pipelineStateLock) {
+            return queue.isEmpty()
+                    && localBatchHeld.get() == 0
+                    && sinkInFlight.get() == 0
+                    && workerIdle.get();
+        }
     }
 
     private void recordSubmit(Action a) {
@@ -685,22 +703,28 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                     if (shutdown) break;
                     continue;
                 }
-                if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
-                    workerIdle.set(true);
-                }
-                QueuedWrite head = queue.poll(pollMs, TimeUnit.MILLISECONDS);
-                if (head != null) {
-                    workerIdle.set(false);
-                    head.appendTo(batch);
-                    int remaining = Math.max(0, batchSize - batch.size());
-                    if (remaining > 0) {
-                        List<QueuedWrite> extra = new ArrayList<>(remaining);
-                        queue.drainTo(extra, remaining);
-                        for (QueuedWrite write : extra) {
-                            write.appendTo(batch);
-                        }
+                QueuedWrite head;
+                synchronized (pipelineStateLock) {
+                    if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
+                        workerIdle.set(true);
                     }
-                    localBatchHeld.set(batch.size());
+                    head = queue.poll(pollMs, TimeUnit.MILLISECONDS);
+                    if (head != null && pollObservationProbe != null) {
+                        pollObservationProbe.run();
+                    }
+                    if (head != null) {
+                        workerIdle.set(false);
+                        head.appendTo(batch);
+                        int remaining = Math.max(0, batchSize - batch.size());
+                        if (remaining > 0) {
+                            List<QueuedWrite> extra = new ArrayList<>(remaining);
+                            queue.drainTo(extra, remaining);
+                            for (QueuedWrite write : extra) {
+                                write.appendTo(batch);
+                            }
+                        }
+                        localBatchHeld.set(batch.size());
+                    }
                 }
                 if (head == null && !shutdown) processDueRecovery();
                 boolean windowExpired = (System.nanoTime() - lastFlushNs) >= flushIntervalNs;
