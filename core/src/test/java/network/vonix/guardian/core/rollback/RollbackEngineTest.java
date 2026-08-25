@@ -251,6 +251,7 @@ class RollbackEngineTest {
                 .as("compensation failure must not hide a half-mutated slot")
                 .isNull();
         verify(dao).markRepairRequired(argThat(rows -> rows.size() == 2
+                && rows.stream().allMatch(r -> r.pairId() != null && r.pairId() == pair)
                 && rows.stream().anyMatch(r -> r.actionId() == 12L)
                 && rows.stream().anyMatch(r -> r.actionId() == 13L)));
         verify(dao, never()).markRolledBack(any(), anyBoolean());

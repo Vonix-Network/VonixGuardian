@@ -438,7 +438,7 @@ public final class RollbackEngine {
             String reason = outcome.failure() == null
                     ? "uncompensated world mutation"
                     : outcome.failure().toString();
-            rows.add(new GuardianDao.RepairRequired(outcome.actionId(), null, batchId, reason, now));
+            rows.add(new GuardianDao.RepairRequired(outcome.actionId(), outcome.pairId(), batchId, reason, now));
         }
         try {
             int persisted = dao.markRepairRequired(rows);
@@ -1076,7 +1076,7 @@ public final class RollbackEngine {
             Throwable cause = firstResult.failure() != null ? firstResult.failure()
                 : new IllegalStateException("inventory pair first half not applied: " + firstResult.status());
             if (firstResult.status() == WorldMutationResult.Status.REPAIR_REQUIRED) {
-                return List.of(firstResult, WorldMutationResult.repairRequired(second.id(),
+                return List.of(firstResult, WorldMutationResult.repairRequired(second.id(), second.pairId(),
                     new IllegalStateException("inventory pair mate repair-required for action id=" + first.id(), cause)));
             }
             WorldMutationResult firstOut = firstResult.status() == WorldMutationResult.Status.FAILED
@@ -1104,9 +1104,9 @@ public final class RollbackEngine {
             LOG.error("RollbackEngine: inventory pair compensation failed for action id={} after mate id={}; "
                     + "persisting repair-required (world may remain half-mutated)",
                     first.id(), second.id());
-            WorldMutationResult firstRepair = WorldMutationResult.repairRequired(first.id(), repair);
+            WorldMutationResult firstRepair = WorldMutationResult.repairRequired(first.id(), first.pairId(), repair);
             WorldMutationResult secondRepair = secondResult.status() == WorldMutationResult.Status.REPAIR_REQUIRED
-                    ? secondResult : WorldMutationResult.repairRequired(second.id(), repair);
+                    ? secondResult : WorldMutationResult.repairRequired(second.id(), second.pairId(), repair);
             return List.of(firstRepair, secondRepair);
         }
         return List.of(firstResult, secondResult);
@@ -1143,7 +1143,7 @@ public final class RollbackEngine {
             LOG.error("RollbackEngine: uncompensated exact-slot mutation for action id={} type={}; "
                     + "persisting repair-required",
                     action.id(), action.type(), failure);
-            return WorldMutationResult.repairRequired(action.id(), failure);
+            return WorldMutationResult.repairRequired(action.id(), action.pairId(), failure);
         } catch (Throwable failure) {
             LOG.warn("RollbackEngine: mutation failed for action id={} type={} ({})",
                 action.id(), action.type(), failure.toString());

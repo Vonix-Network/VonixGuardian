@@ -9,9 +9,14 @@ import java.util.Objects;
  * on the server-thread executor. Enqueueing the task is not an applied
  * outcome.</p>
  */
-public record WorldMutationResult(long actionId, Status status, Throwable failure) {
+public record WorldMutationResult(long actionId, Status status, Throwable failure, Long pairId) {
 
     public enum Status { APPLIED, SKIPPED, FAILED, REPAIR_REQUIRED }
+
+    /** Source-compatible constructor for non-paired outcomes. */
+    public WorldMutationResult(long actionId, Status status, Throwable failure) {
+        this(actionId, status, failure, null);
+    }
 
     public WorldMutationResult {
         Objects.requireNonNull(status, "status");
@@ -20,6 +25,9 @@ public record WorldMutationResult(long actionId, Status status, Throwable failur
         }
         if (status != Status.FAILED && status != Status.REPAIR_REQUIRED && failure != null) {
             throw new IllegalArgumentException("Only FAILED or REPAIR_REQUIRED may carry failure");
+        }
+        if (pairId != null && pairId == 0L) {
+            throw new IllegalArgumentException("pairId must be non-zero when present");
         }
     }
 
@@ -41,7 +49,15 @@ public record WorldMutationResult(long actionId, Status status, Throwable failur
      * Callers must persist this; it is not a log-only condition.
      */
     public static WorldMutationResult repairRequired(long actionId, Throwable failure) {
+        return repairRequired(actionId, null, failure);
+    }
+
+    /**
+     * World mutation remains applied (or unknown) after compensation failed,
+     * retaining the durable inventory-pair correlation when available.
+     */
+    public static WorldMutationResult repairRequired(long actionId, Long pairId, Throwable failure) {
         return new WorldMutationResult(actionId, Status.REPAIR_REQUIRED,
-            Objects.requireNonNull(failure, "failure"));
+            Objects.requireNonNull(failure, "failure"), pairId);
     }
 }
