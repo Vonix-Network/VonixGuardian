@@ -54,6 +54,10 @@ public final class MysqlDao extends AbstractJdbcDao {
         hc.addDataSourceProperty("prepStmtCacheSize", "250");
         hc.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
         hc.addDataSourceProperty("useServerPrepStmts", "true");
+        // v1.4.3 — a blocked MySQL response must not hold a Forge lifecycle
+        // thread forever. Hikari's connectionTimeout only bounds pool checkout;
+        // Connector/J socketTimeout bounds reads after a query was sent.
+        MysqlBootstrapPolicy.apply(hc);
         this.ds = new HikariDataSource(hc);
     }
 

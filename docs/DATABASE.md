@@ -1,6 +1,6 @@
 # VonixGuardian — Database Reference
 
-**Version:** 1.4.1
+**Version:** 1.4.3
 **Schema version:** 8 (see `vg_schema_version`)
 **Source of truth:** `core/src/main/java/network/vonix/guardian/core/storage/Schema.java`
 

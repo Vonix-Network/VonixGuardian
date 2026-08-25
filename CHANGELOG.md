@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [1.4.3] - 2026-08-25
+
+### Fixed
+
+- **Forge startup watchdog hang during MySQL schema bootstrap.** Forge 1.18.2 now initializes Guardian off the Minecraft server thread, so a blocked MySQL response cannot consume the server tick and trigger `ServerHangWatchdog`.
+- **Bounded MySQL bootstrap I/O.** Connector/J `connectTimeout` and `socketTimeout` are set to 15 seconds for the MySQL pool, causing a blocked database response to fail closed instead of hanging indefinitely.
+
+### Verification
+
+- Added regression coverage for off-thread blocking bootstrap execution and bounded MySQL timeout properties.
+
+## [1.4.2] - 2026-08-25
+
+### Fixed
+
+- **MySQL v5→v6 schema boot migration.** Existing MySQL installations whose `vg_actions` table predates `pair_id` now recognize MySQL error 1072 (`Key column 'pair_id' doesn't exist in table`) while creating the pre-migration index, allowing the registered `V6PairId` migration to add the column and index before Guardian completes boot and registers `/vg`.
+
+### Verification
+
+- Added regression coverage for the exact MySQL missing-key-column error message.
+
 ## [1.4.1] - 2026-08-25
 
 ### Added

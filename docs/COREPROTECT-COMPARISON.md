@@ -1,6 +1,6 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-**Current candidate (r59 release successor, 2026-08-25):** VonixGuardian 1.4.1 at the successor commit pinned by Hermes evidence on baseline `505cee04099152d7144b241c69140b4e9204cd9a`, with the r58 changelog-continuity repair added: all remote releases have dedicated sections, `[Unreleased]` is first, release dates are descending, and the split `Changed` category is consolidated. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
+**Current patch candidate (2026-08-25):** VonixGuardian 1.4.3, retaining the 1.4.2 MySQL v5→v6 `pair_id` migration fix and moving Forge 1.18.2 Guardian bootstrap off the server thread with bounded Connector/J network timeouts to prevent a blocked MySQL response from tripping ServerHangWatchdog. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
 
 This matrix describes the versioned source candidate and its committed evidence boundary. The candidate pin, source manifest, artifact manifest, and Terra verdict are external Hermes evidence records and are not tracked in this repository.
 
