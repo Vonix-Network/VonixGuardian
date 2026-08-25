@@ -5,6 +5,10 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_No unreleased changes._
+
 ## [1.4.1] - 2026-08-25
 
 ### Added
@@ -90,9 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CoreProtect comparison/gap docs now pin the public `PlayPro/CoreProtect`
   `v24.0` tag (`b5f534fd2c735c6f094cda8ca50a66324e81b048`) with retrieved
   archive SHA-256 values instead of a mutable local checkout path.
-
-### Changed (continued)
-
 - **Keyset rollback paging.** Sequential rollback/restore scans after the first
   page seek on `(ts, id)` instead of `OFFSET`, so later pages do not restrip
   already-consumed rows. Mocks and older DAOs that return `null` from
@@ -114,11 +115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ties), a multi-page rollback keyset scan, later-page lookup round-trip
   counts, and a matched-workload pagination harness that records SQL shape
   rather than claiming a production speedup.
-
-## [Unreleased]
-
-_No unreleased changes._
-
 ## [1.4.0] - 2026-08-23
 
 ### Changed
@@ -202,6 +198,14 @@ _No unreleased changes._
 - This release contains no quantitative performance claim. Matched repeated
   before/after runtime profiling is still required before asserting an
   improvement.
+
+## [1.3.12-rc.1] - 2026-08-15
+
+### Changed
+
+- Published the `VG-LOOKUP-RELEASE-P4` prerelease candidate for the 1.3.12
+  lookup release line. The subsequent stable `1.3.12` section records the
+  finalized release; this prerelease remains documented for tag continuity.
 
 ## [1.3.11] - 2026-08-08
 
@@ -1557,6 +1561,26 @@ All these were present before the bump:
   result is `completed=true` and the DB remains healthy and queryable.
 
 
+## [1.1.7] — 2026-07-01
+
+### Added
+
+- **Wave-3 CoreProtect parity surface.** Added hot-swappable `/vg reload`,
+  functional `/vg undo`, chunked resumable `/vg migrate-db`, automatic purge,
+  decimal/range time syntax, real `#optimize` dispatch, Maven publishing
+  wiring, and the WorldEdit integration design record.
+- **Configuration and permission coverage.** Added per-world overrides,
+  CoreProtect-compatible `blacklist.txt`, child permission nodes with
+  per-node operator fallback, and silent permission-filtered result rows.
+- **Public API and schema coverage.** Added the typed `VonixGuardianAPI`,
+  result records, `hasPlaced`/`hasRemoved` probes, the EventHook/PreLogEvent
+  bridge, and schema v3→v4 sign metadata for front/back, dye, and wax state.
+
+### Verification
+
+- The tagged release notes report green core builds with more than 155 tests
+  and clean Forge/NeoForge release builds for the supported cells listed there.
+
 ## [1.1.6] — 2026-07-01
 
 **Wave-2 nightshift: 6 parallel subagent audits + fixes.** Fixes for the CRITICAL RollbackPlan silent-default (14 handlers restored), the CRITICAL Berk truncation storm (target column widened to 4096 chars), and 5 HIGH-severity wiring/parity issues surfaced by the Wave-1 CP-comparison + adversarial audit. See docs/COREPROTECT-COMPARISON.md and docs/WAVE-AUDIT-1.1.5.md for the underlying analysis.
@@ -2194,6 +2218,29 @@ Every jar verified to: load mod manifest, boot Guardian engine, initialise SQLit
 - WorldEdit soft-dep region lookup via pure reflection.
 - MySQL / PostgreSQL live integration smoke-test (code path wired but never exercised against a real DB).
 - Forge/NeoForge `shaded` configuration decoupling (currently relies on Minecraft re-exporting slf4j; not broken today, less defensive than the Fabric pattern).
+
+## [1.0.0] — 2026-06-27
+
+### Added
+
+- **First production-grade stable release.** All eight supported jars were
+  live-boot validated across NeoForge 1.21.1, Forge 1.18.2/1.19.2/1.20.1,
+  and Fabric 1.18.2/1.19.2/1.20.1/1.21.1, with SQLite, the `/vg` command tree,
+  and the CoreProtect-compatible audit/rollback surface operational.
+
+### Fixed
+
+- Corrected the v0.1.0 production blockers: SQLite JNI packaging, JPMS API
+  leakage, command-registration timing, and Forge `mods.toml` schema/range
+  mismatches.
+- Hardened dispatcher lifecycle reset, JarInJar directory guarding, SLF4J
+  exclusion, and atomic shadow-archive replacement after code review.
+
+### Verification
+
+- The release tag records all eight jars as live-boot validated with SQLite
+  schema initialization, command registration, and no JPMS/JNI or shaded-
+  library leakage failures.
 
 ## [0.1.0] — 2026-06-27
 
