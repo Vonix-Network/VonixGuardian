@@ -12,6 +12,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -88,30 +89,8 @@ public final class IdempotentAuditSink implements BatchSink {
         log.flushOrThrow();
     }
 
-    static boolean sameBatch(List<Action> left, List<Action> right) {
-        if (left.size() != right.size()) {
-            return false;
-        }
-        for (int i = 0; i < left.size(); i++) {
-            if (identityKey(left.get(i)) != identityKey(right.get(i))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    static long identityKey(Action a) {
-        long h = a.timestamp();
-        h = 31 * h + a.type().id();
-        h = 31 * h + a.x();
-        h = 31 * h + a.y();
-        h = 31 * h + a.z();
-        h = 31 * h + a.amount();
-        h = 31 * h + (a.pairId() == null ? 0 : a.pairId());
-        h = 31 * h + (a.inventorySlot() == null ? -1 : a.inventorySlot());
-        h = 31 * h + (a.targetId() == null ? 0 : a.targetId().hashCode());
-        h = 31 * h + (a.actorUuid() == null ? 0 : a.actorUuid().hashCode());
-        return h;
+    static boolean sameBatch(List<Action> left, List<Action> right) throws IOException {
+        return Arrays.equals(encode(left), encode(right));
     }
 
     static byte[] encode(List<Action> batch) throws IOException {

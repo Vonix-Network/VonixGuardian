@@ -67,9 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Forge server directory.** 1.18.2/1.19.2/1.20.1 Forge bootstraps resolve
   Mojmap/SRG `getServerDirectory` or `FMLPaths.GAMEDIR` and fail closed
   instead of silently using cwd.
-- **JDBC then JSONL.** `IdempotentAuditSink` stages JSONL payload in
-  `vg_sink_outbox` in the same JDBC transaction as `insertBatch`; JSONL
-  failure retries without duplicating `vg_actions` rows.
+- **JDBC then JSONL retry identity.** Pending outbox batches now compare their
+  complete canonical encoded payload instead of a partial field hash, so a
+  non-identical current batch cannot be acknowledged and dropped as a retry.
+- **Runtime artifact documentation hygiene.** Translation guidance is retained
+  under `docs/I18N.md` and is no longer packaged as a runtime `lang/README.md`
+  resource.
 - **NeoForge 26.1 mixin refmap packaging.** `vg-neoforge.mixins.json` declared
   `vg-neoforge.refmap.json`; the release archive now includes the named:named
   identity refmap required on Mojmap runtime.
