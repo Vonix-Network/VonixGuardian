@@ -641,6 +641,55 @@ class BatchedAsyncWriteQueueTest {
     }
 
     @Test
+    void idleBarrierRechecksRecoveryAfterWorkerQuarantineRace() throws Exception {
+        Path journal = Files.createTempFile("vg-idle-recovery-race", ".bin");
+        CountDownLatch probeEntered = new CountDownLatch(1);
+        CountDownLatch releaseProbe = new CountDownLatch(1);
+        Runnable idleProbe = () -> {
+            probeEntered.countDown();
+            try {
+                assertThat(releaseProbe.await(3, TimeUnit.SECONDS)).isTrue();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(ex);
+            }
+        };
+        AlwaysFailingSink sink = new AlwaysFailingSink();
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                16, 25L, 1, sink, DAEMON, new QuarantineStore(journal, 8, 1_000_000L),
+                null, null, idleProbe);
+        AtomicBoolean idle = new AtomicBoolean();
+        Thread waiter = new Thread(() -> idle.set(q.isPipelineIdle()), "vg-idle-race-waiter");
+        try {
+            q.setPaused(true);
+            assertThat(q.submit(action(778))).isTrue();
+            assertThat(q.freezeAdmission()).isTrue();
+            waiter.start();
+            assertThat(probeEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            q.setPaused(false);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4L);
+            while (q.quarantined() == 0L && System.nanoTime() < deadline) {
+                Thread.sleep(10L);
+            }
+            assertThat(q.quarantined())
+                    .as("normal sink failure must add durable recovery while idle check is paused")
+                    .isEqualTo(1L);
+            releaseProbe.countDown();
+            waiter.join(2_000L);
+            assertThat(waiter.isAlive()).isFalse();
+            assertThat(idle)
+                    .as("idle barrier must recheck recovery after the worker quarantines a batch")
+                    .isFalse();
+        } finally {
+            releaseProbe.countDown();
+            if (waiter.isAlive()) {
+                waiter.join(2_000L);
+            }
+            q.close();
+        }
+    }
+
+    @Test
     void freezeAdmissionDoesNotReportIdleWhileDurableRecoveryRemainsPending() throws Exception {
         Path journal = Files.createTempFile("vg-migrate-recovery-idle", ".bin");
         QuarantineStore store = new QuarantineStore(journal, 8, 1_000_000L);

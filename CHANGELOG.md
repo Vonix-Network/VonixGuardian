@@ -64,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **migrate-db snapshot barrier.** Maintenance write-block now freezes queue
   admission and waits for local batch, in-flight sink work, and durable
   quarantine recovery entries before copying the source snapshot, not only
-  `queue.depth()`.
+  `queue.depth()`. The idle check revalidates recovery after worker-state
+  observation so a concurrent quarantine cannot produce a stale idle result.
 - **Forge server directory.** 1.18.2/1.19.2/1.20.1 Forge bootstraps resolve
   Mojmap/SRG `getServerDirectory` or `FMLPaths.GAMEDIR` and fail closed
   instead of silently using cwd.

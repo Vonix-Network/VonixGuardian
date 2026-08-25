@@ -65,6 +65,8 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final QuarantineStore quarantineStore;
     private final Runnable terminationListener;
     private final Runnable admissionProbe;
+    /** Package-private deterministic seam used only by idle-barrier regression tests. */
+    private final Runnable idleObservationProbe;
     private final Object admissionLock = new Object();
     private final CountDownLatch workerTerminated = new CountDownLatch(1);
     private final AtomicBoolean terminationNotified = new AtomicBoolean();
@@ -159,13 +161,13 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      */
     public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                                   BatchSink sink, ThreadFactory tf) {
-        this(maxSize, flushIntervalMs, batchSize, sink, tf, (QuarantineStore) null, null);
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, (QuarantineStore) null, null, null, null);
     }
 
     /** Production constructor with a durable local quarantine journal. */
     public BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                                   BatchSink sink, ThreadFactory tf, Path quarantinePath) {
-        this(maxSize, flushIntervalMs, batchSize, sink, tf, openQuarantine(quarantinePath), null);
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, openQuarantine(quarantinePath), null, null, null);
     }
 
     /**
@@ -179,7 +181,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                                   BatchSink sink, ThreadFactory tf, Path quarantinePath,
                                   Runnable terminationListener) {
         this(maxSize, flushIntervalMs, batchSize, sink, tf,
-                openQuarantine(quarantinePath), terminationListener);
+                openQuarantine(quarantinePath), terminationListener, null, null);
     }
 
     /**
@@ -189,19 +191,27 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
      */
     BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                            BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore) {
-        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore, null);
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore, null, null, null);
     }
 
     BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                            BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
                            Runnable terminationListener) {
         this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore,
-                terminationListener, null);
+                terminationListener, null, null);
     }
 
     BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
                            BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
                            Runnable terminationListener, Runnable admissionProbe) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore,
+                terminationListener, admissionProbe, null);
+    }
+
+    BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                           BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
+                           Runnable terminationListener, Runnable admissionProbe,
+                           Runnable idleObservationProbe) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize must be > 0");
         }
@@ -218,6 +228,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         this.quarantineStore = quarantineStore;
         this.terminationListener = terminationListener == null ? () -> { } : terminationListener;
         this.admissionProbe = admissionProbe;
+        this.idleObservationProbe = idleObservationProbe;
         if (quarantineStore != null) {
             long firstRetry = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
             for (QuarantineStore.Entry entry : quarantineStore.entries()) {
@@ -349,11 +360,25 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         synchronized (recovery) {
             recoveryIdle = recovery.isEmpty();
         }
+        if (idleObservationProbe != null) {
+            idleObservationProbe.run();
+        }
+        if (!recoveryIdle || !isWorkerStateIdle()) {
+            return false;
+        }
+        // A normal batch can quarantine between the first recovery read and the
+        // worker-state check. Re-enter the recovery monitor and revalidate both
+        // views so migrate-db cannot accept a stale mixed snapshot.
+        synchronized (recovery) {
+            return recovery.isEmpty() && isWorkerStateIdle();
+        }
+    }
+
+    private boolean isWorkerStateIdle() {
         return queue.isEmpty()
                 && localBatchHeld.get() == 0
                 && sinkInFlight.get() == 0
-                && workerIdle.get()
-                && recoveryIdle;
+                && workerIdle.get();
     }
 
     private void recordSubmit(Action a) {
