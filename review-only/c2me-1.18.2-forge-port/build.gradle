@@ -1,0 +1,253 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net' }
+        maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '5.1.+', changing: true
+        classpath 'org.spongepowered:mixingradle:0.7-SNAPSHOT'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'eclipse'
+apply plugin: 'maven-publish'
+apply plugin: 'org.spongepowered.mixin'
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+version = project.mod_version
+group = project.maven_group
+archivesBaseName = "${project.archives_base_name}-mc${project.minecraft_version}"
+
+println('Java: ' + System.getProperty('java.version') + ' JVM: ' + System.getProperty('java.vm.version') + '(' + System.getProperty('java.vendor') + ') Arch: ' + System.getProperty('os.arch'))
+
+minecraft {
+    mappings channel: 'official', version: project.minecraft_version
+    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            args '-mixin.config=threadedhorizons.mixins.json'
+            args '-mixin.config=threadedhorizons-asm.mixins.json'
+            args '-mixin.config=threadedhorizons-compat.mixins.json'
+            args '-mixin.config=threadedhorizons.client.mixins.json'
+            mods {
+                threadedhorizons {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        server {
+            workingDirectory project.file('run-server')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            args '-mixin.config=threadedhorizons.mixins.json'
+            args '-mixin.config=threadedhorizons-asm.mixins.json'
+            args '-mixin.config=threadedhorizons-compat.mixins.json'
+            mods {
+                threadedhorizons {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+configurations {
+    embed
+    implementation.extendsFrom(embed)
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.minecraftforge.net' }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
+
+    embed "com.ibm.async:asyncutil:${async_util_version}"
+    embed "org.threadly:threadly:${threadly_version}"
+    compileOnly "com.electronwill.night-config:toml:${night_config_version}"
+
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
+}
+
+mixin {
+    add sourceSets.main, 'threadedhorizons.refmap.json'
+    config 'threadedhorizons.mixins.json'
+    config 'threadedhorizons-asm.mixins.json'
+    config 'threadedhorizons-compat.mixins.json'
+    config 'threadedhorizons.client.mixins.json'
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('META-INF/mods.toml') {
+        expand 'version': project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach { compileTask ->
+    // ForgeGradle creates transient _compileJava_N tasks while remapping userdev.
+    // Only the project compile must carry extra compiler flags.
+    if (compileTask.name.startsWith('_')) {
+        return
+    }
+    options.encoding = 'UTF-8'
+    options.release = 17
+    options.compilerArgs += ['-Xmaxerrs', '2000', '-Xmaxwarns', '2000']
+}
+
+/**
+ * ForgeGradle 5 materializes the official-mapped Forge/Minecraft compile jar
+ * under build/fg_cache while the project is configured. `clean` then deletes
+ * that directory, so compileJava and Mixin AP would compile against a
+ * resolved-but-missing classpath. After clean, ask the Artifactural
+ * GradleRepositoryAdapter (MinecraftUserRepo) to generate the same artifact
+ * again at the same path. Do not skip clean or pre-seed build/.
+ */
+tasks.register('ensureMappedMinecraft') {
+    group = 'forgegradle'
+    description = 'Regenerate the ForgeGradle official-mapped Minecraft/Forge jar after clean.'
+    dependsOn 'downloadMcpConfig', 'extractSrg', 'createMcpToSrg'
+    mustRunAfter 'clean'
+    doLast {
+        def compileTask = tasks.named('compileJava').get()
+        def missing = compileTask.classpath.files.findAll { File f ->
+            f.path.contains("${File.separator}build${File.separator}") && !f.isFile()
+        }
+        if (missing.isEmpty()) {
+            logger.lifecycle('Forge/Minecraft compile classpath files are present after clean.')
+            return
+        }
+        logger.lifecycle("Forge/Minecraft compile classpath missing ${missing.size()} file(s) after clean; regenerating via ForgeGradle userdev repo.")
+        missing.each { logger.lifecycle("  missing: ${it}") }
+
+        def adapters = repositories.findAll { repo ->
+            repo.getClass().name == 'net.minecraftforge.artifactural.gradle.GradleRepositoryAdapter'
+        }
+        if (adapters.isEmpty()) {
+            throw new GradleException('ForgeGradle Artifactural repository adapter was not attached')
+        }
+        adapters.each { repo ->
+            logger.lifecycle("Artifactural repo: name=${repo.name} display=${repo.displayName}")
+        }
+
+        def Identifier = Class.forName('net.minecraftforge.artifactural.base.artifact.SimpleArtifactIdentifier')
+        def forgeDep = configurations.minecraft.dependencies.find { it.name == 'forge' }
+        if (forgeDep == null) {
+            throw new GradleException('minecraft configuration has no forge dependency')
+        }
+        def versions = [forgeDep.version] as LinkedHashSet
+        adapters.each { adapter ->
+            versions.each { ver ->
+                ['pom', 'jar'].each { ext ->
+                    def id = Identifier.getConstructor(String, String, String, String, String)
+                            .newInstance('net.minecraftforge', 'forge', ver, '', ext)
+                    def generated = adapter.getArtifact(id)
+                    logger.lifecycle("getArtifact ${adapter.name} forge:${ver}:${ext} -> ${generated}")
+                }
+            }
+        }
+
+        def stillMissing = compileTask.classpath.files.findAll { File f ->
+            f.path.contains("${File.separator}build${File.separator}") && !f.isFile()
+        }
+        if (!stillMissing.isEmpty()) {
+            throw new GradleException("Failed to regenerate Forge/Minecraft compile classpath: ${stillMissing}")
+        }
+        logger.lifecycle('Regenerated Forge/Minecraft compile classpath for compileJava and Mixin AP.')
+    }
+}
+
+tasks.named('compileJava') {
+    dependsOn 'ensureMappedMinecraft'
+}
+
+tasks.named('compileTestJava') {
+    dependsOn 'ensureMappedMinecraft'
+}
+
+tasks.register('completionScan') {
+    group = 'verification'
+    description = 'Fail if active completion markers remain in source.'
+    doLast {
+        def result = exec {
+            commandLine 'python3', "${rootDir}/test-support/scan_completion.py", "${rootDir}/src"
+            ignoreExitValue = true
+        }
+        if (result.exitValue != 0) {
+            throw new GradleException("completion scan failed with exit ${result.exitValue}")
+        }
+    }
+}
+
+test {
+    useJUnitPlatform()
+    dependsOn 'ensureMappedMinecraft'
+    finalizedBy 'completionScan'
+    systemProperty 'network.vonix.threadedhorizons.configDir', "${buildDir}/th-test-config"
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+        showStandardStreams = false
+    }
+    reports {
+        junitXml.required = true
+        html.required = true
+    }
+    ignoreFailures = false
+}
+
+tasks.named('createMcpToSrg') {
+    mustRunAfter 'clean'
+}
+
+jar {
+    manifest {
+        attributes([
+                'Specification-Title'     : 'threadedhorizons',
+                'Specification-Vendor'    : 'Vonix',
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : 'Threaded Horizons',
+                'Implementation-Version'  : project.version,
+                'Implementation-Vendor'   : 'Vonix',
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                'MixinConfigs'            : 'threadedhorizons.mixins.json,threadedhorizons-asm.mixins.json,threadedhorizons-compat.mixins.json,threadedhorizons.client.mixins.json',
+                'MixinConnector'          : 'network.vonix.threadedhorizons.ThreadedHorizonsMixinConnector'
+        ])
+    }
+    from {
+        configurations.embed.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    from('LICENSE')
+    from('NOTICE.md')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'module-info.class'
+    archiveClassifier.set('')
+    finalizedBy 'reobfJar'
+}
+
+reobf {
+    jar { }
+}
+
+tasks.named('build') {
+    dependsOn reobfJar
+}
