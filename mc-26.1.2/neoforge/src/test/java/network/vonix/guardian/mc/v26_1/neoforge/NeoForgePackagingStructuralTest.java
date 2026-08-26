@@ -24,7 +24,7 @@ final class NeoForgePackagingStructuralTest {
         Path working = Path.of(System.getProperty("user.dir"));
         return Files.isDirectory(working.resolve("src/main"))
             ? working
-            : working.resolve("mc-26.1/neoforge");
+            : working.resolve("mc-26.1.2/neoforge");
     }
 
     @Test

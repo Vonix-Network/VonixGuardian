@@ -98,7 +98,7 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1192 :mc-1.19.2:fabric:build :mc-1.19.2:forge:build
 ./gradlew -PbuildProfile=mc1201 :mc-1.20.1:fabric:build :mc-1.20.1:forge:build
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
-./gradlew -PbuildProfile=mc261  :mc-26.1:neoforge:build
+./gradlew -PbuildProfile=mc2612  :mc-26.1.2:neoforge:build
 ```
 
 Produces 9 jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries

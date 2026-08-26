@@ -37,9 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   survives persistence and process restart. Existing unpaired rows stay
   `NULL`. Inventory replacements reuse the same column (schema v7 still owns
   `inventory_slot`).
-- **Official 26.1.2 NeoForge lane.** The `mc-26.1/neoforge` cell is included
+- **Official 26.1.2 NeoForge lane.** The `mc-26.1.2/neoforge` cell is included
   in the repository build/release matrices and README alongside the existing
-  eight cells, with its required Java 25 toolchain and `mc261` build profile.
+  eight cells, with its required Java 25 toolchain and `mc2612` build profile.
 - **Operator-labeled inspector output.** Block inspection lines now use
   explicit `ago | actor | verb | kind=target | at (x, y, z)` fields and identify
   the world in the header, so registry IDs remain readable when copied from

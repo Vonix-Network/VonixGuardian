@@ -1,7 +1,7 @@
 /*
- * VonixGuardian — mc-26.1 :neoforge
+ * VonixGuardian — mc-26.1.2 :neoforge
  *
- * NeoForge 26.1.2.x loader module for MC 26.1 / BMC6. Bundles `core` + shared common code + sqlite-jdbc
+ * NeoForge 26.1.2.x loader module for MC 26.1.2 / BMC6. Bundles `core` + shared common code + sqlite-jdbc
  * (the default DB driver) via Shadow into a single drop-in jar.
  *
  * MySQL/Postgres drivers are NOT shaded — operators using those backends drop
@@ -222,7 +222,7 @@ tasks.named('build') {
 tasks.register('verifyProductionMappings') {
     dependsOn 'shadowJar'
     doLast {
-        File artifact = layout.buildDirectory.file("libs/${archivesBaseName}-${project.version}.jar").get().asFile
+        File artifact = tasks.named('shadowJar').get().archiveFile.get().asFile
         if (!artifact.isFile()) throw new GradleException("Missing NeoForge production artifact: ${artifact}")
         String listing = ['jar', 'tf', artifact.absolutePath].execute().text
         if (!listing.contains('network/vonix/guardian/mc/v26_1/neoforge/NeoForgeWorldMutator.class')) throw new GradleException("Missing NeoForge mutator in ${artifact}")

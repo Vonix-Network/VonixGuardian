@@ -21,7 +21,7 @@ class PlayerInventoryMixinStructuralTest {
             "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/mixin/PlayerInventoryMixin.java",
             "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/mixin/PlayerInventoryMixin.java",
             "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/mixin/PlayerInventoryMixin.java",
-            "mc-26.1/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/mixin/PlayerInventoryMixin.java"
+            "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/mixin/PlayerInventoryMixin.java"
     );
 
     @Test

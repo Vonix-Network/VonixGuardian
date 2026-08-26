@@ -15,7 +15,7 @@ class PreviewCommandLifecycleStructuralTest {
             "mc-1.19.2/fabric", "mc-1.19.2/forge",
             "mc-1.20.1/fabric", "mc-1.20.1/forge",
             "mc-1.21.1/fabric", "mc-1.21.1/neoforge",
-            "mc-26.1/neoforge");
+            "mc-26.1.2/neoforge");
 
     @Test
     void previewApplyPeeksThenConsumesOnlyInsideAdmittedWorker() throws Exception {
