@@ -39,23 +39,23 @@ import static org.mockito.Mockito.when;
  */
 class NbtDecodeFailureFallbackTest {
 
-    private static final List<String> LOADER_MUTATORS = List.of(
-            "mc-1.18.2/fabric/src/main/java/network/vonix/guardian/mc/v1_18_2/fabric/FabricWorldMutator.java",
-            "mc-1.18.2/forge/src/main/java/network/vonix/guardian/mc/v1_18_2/forge/ForgeWorldMutator.java",
-            "mc-1.19.2/fabric/src/main/java/network/vonix/guardian/mc/v1_19_2/fabric/FabricWorldMutator.java",
-            "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge/ForgeWorldMutator.java",
-            "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/fabric/FabricWorldMutator.java",
-            "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/ForgeWorldMutator.java",
+    /** Requested cells: 1.21.1 Fabric, 1.21.1 NeoForge, 26.1.2 NeoForge. */
+    private static final List<String> REQUESTED_LOADER_MUTATORS = List.of(
             "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricWorldMutator.java",
-            "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeWorldMutator.java"
+            "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeWorldMutator.java",
+            "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/NeoForgeWorldMutator.java"
     );
 
     @Test
     void every_loader_decodes_block_nbt_before_setBlock_and_checks_entity_type_before_spawn() throws Exception {
         Path root = repoRoot();
-        org.junit.jupiter.api.Assumptions.assumeTrue(root != null);
-        for (String rel : LOADER_MUTATORS) {
-            String source = Files.readString(root.resolve(rel));
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
+        assertThat(Files.isDirectory(root.resolve("mc-26.1.2/fabric"))).isFalse();
+        assertThat(Files.isDirectory(root.resolve("mc-1.21.1/forge"))).isFalse();
+        for (String rel : REQUESTED_LOADER_MUTATORS) {
+            Path path = root.resolve(rel);
+            assertThat(path).as("requested cell mutator: %s", rel).exists();
+            String source = Files.readString(path);
             int set = source.indexOf("boolean placed = level.setBlock");
             int decode = source.indexOf("decodedBlockEntityNbt = decodeNbt");
             int decodeGuard = source.indexOf("if (decodedBlockEntityNbt == null) return false", decode);
@@ -71,9 +71,15 @@ class NbtDecodeFailureFallbackTest {
     }
 
     private static Path repoRoot() {
-        Path p = Path.of("").toAbsolutePath().normalize();
-        while (p != null && !Files.isDirectory(p.resolve(".git"))) p = p.getParent();
-        return p;
+        Path here = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        for (Path p = here; p != null; p = p.getParent()) {
+            if (Files.exists(p.resolve("settings.gradle"))
+                    && Files.exists(p.resolve("mc-1.21.1/fabric"))
+                    && Files.exists(p.resolve("mc-26.1.2/neoforge"))) {
+                return p;
+            }
+        }
+        return null;
     }
 
     private GuardianDao dao;
