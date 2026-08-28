@@ -84,6 +84,9 @@ public final class Schema {
     /** MySQL error code for "Duplicate key name" (ER_DUP_KEYNAME). */
     private static final int MYSQL_ERR_DUP_KEYNAME = 1061;
 
+    /** MySQL error code for a key referencing a missing column (ER_KEY_COLUMN_DOES_NOT_EXITS). */
+    private static final int MYSQL_ERR_KEY_COLUMN_DOES_NOT_EXIST = 1072;
+
     /**
      * Create all tables + indexes for the given dialect, then stamp the schema_version
      * table. Safe to call repeatedly.
@@ -221,11 +224,17 @@ public final class Schema {
     }
 
     private static boolean isMissingPairIdColumn(SQLException e) {
+        if (e.getErrorCode() == MYSQL_ERR_KEY_COLUMN_DOES_NOT_EXIST) {
+            return true;
+        }
         String m = e.getMessage();
         if (m == null) return false;
         String lower = m.toLowerCase();
-        return lower.contains("no such column") && lower.contains("pair_id")
-            || lower.contains("unknown column") && lower.contains("pair_id");
+        return lower.contains("pair_id")
+            && (lower.contains("no such column")
+                || lower.contains("unknown column")
+                || lower.contains("doesn't exist")
+                || lower.contains("does not exist"));
     }
 
     private static String pk(Dialect d) {
