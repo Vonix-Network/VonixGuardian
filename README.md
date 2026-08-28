@@ -11,9 +11,9 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current embedded mod version:** 1.4.1 · **Common repository line:** `2.0.0-common.1` (prerelease). See [`docs/COMMON-V2-REPOSITORY.md`](docs/COMMON-V2-REPOSITORY.md) for the one-repository/all-version contract.
+> **Current embedded mod version:** `2.0.0-common.1` (prerelease) · **Common repository line:** `2.0.0`. See [`docs/COMMON-V2-REPOSITORY.md`](docs/COMMON-V2-REPOSITORY.md) for the one-repository/all-version contract.
 
-## Feature surface (v1.4.1)
+## Feature surface (`2.0.0-common.1`, derived from the v1.4.1 feature line)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 

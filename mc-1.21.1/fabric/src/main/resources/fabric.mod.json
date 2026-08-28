@@ -37,7 +37,7 @@
   },
   "jars": [
     {
-      "file": "META-INF/jars/core-1.4.1.jar"
+      "file": "META-INF/jars/core-2.0.0-common.1.jar"
     }
   ]
 }

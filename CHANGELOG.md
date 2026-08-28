@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0-common.1] - 2026-08-28
 
-Common-generation repository snapshot. This prerelease starts the shared repository/layout line at `2.0.0` without rewriting VonixGuardian's embedded `1.4.1` version or historical release tags.
+Common-generation repository release. This prerelease starts the shared repository/layout and embedded version line at `2.0.0` without rewriting historical release tags.
 
 ### Added
 
@@ -17,6 +17,7 @@ Common-generation repository snapshot. This prerelease starts the shared reposit
 ### Verification boundary
 
 - Static build/package/parity evidence passed for the accepted source snapshot, including schema/pair-ID compatibility tests. Live Minecraft activation, deployment, restart, and production database migration were not performed.
+- All nine primary artifacts use the exact embedded version `2.0.0-common.1`; the bundled Fabric core dependency names were updated to match.
 
 ## [1.4.1] - 2026-08-25
 
