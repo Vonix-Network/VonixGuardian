@@ -1,8 +1,8 @@
 # VonixGuardian 2.0.0 common-generation repository
 
-This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0** and is published as the prerelease label **`2.0.0-common.1`**.
+This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0** and is published as the stable release label **`2.0.0`**.
 
-`2.0.0-common.1` is the embedded prerelease version for every supported lane and identifies the first common-generation release line beginning at `2.0.0`. Existing historical releases, including `v1.0.0`, remain immutable.
+`2.0.0` is the embedded stable release version for every supported lane and identifies the first common-generation release line beginning at `2.0.0`. Existing historical releases, including `v1.0.0`, remain immutable.
 
 ## One repository, all supported Minecraft lanes
 
@@ -18,8 +18,8 @@ The root `core/` module contains the storage, queue, audit, query, rollback, sch
 
 ## Release status
 
-- GitHub release automation: `.github/workflows/release.yml` builds all nine lanes on `v*` tags and creates a prerelease after every matrix job passes; it does not deploy, activate, restart, or migrate a server/database.
-- Embedded project version: **`2.0.0-common.1`** for every supported lane.
+- GitHub release automation: `.github/workflows/release.yml` builds all nine lanes on `v*` tags and creates a stable release after every matrix job passes; it does not deploy, activate, restart, or migrate a server/database.
+- Embedded project version: **`2.0.0`** for every supported lane.
 - CI gate: the tag-triggered workflow must provide fresh build/package evidence for this versioned successor; earlier R14 evidence does not cover the metadata/workflow changes.
 - Live Minecraft activation, deployment, server restart, and production database migration were **not performed** for this source snapshot.
 - Database configuration examples are documentation placeholders. Never commit real JDBC URLs, usernames, passwords, or connection strings.

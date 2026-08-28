@@ -11,9 +11,9 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current embedded mod version:** `2.0.0-common.1` (prerelease) · **Common repository line:** `2.0.0`. See [`docs/COMMON-V2-REPOSITORY.md`](docs/COMMON-V2-REPOSITORY.md) for the one-repository/all-version contract.
+> **Current embedded mod version:** `2.0.0` (stable release) · **Common repository line:** `2.0.0`. See [`docs/COMMON-V2-REPOSITORY.md`](docs/COMMON-V2-REPOSITORY.md) for the one-repository/all-version contract.
 
-## Feature surface (`2.0.0-common.1`, derived from the v1.4.1 feature line)
+## Feature surface (`2.0.0`, derived from the v1.4.1 feature line)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -181,7 +181,7 @@ MIT. See [LICENSE](LICENSE). Inspired by CoreProtect (Artistic-2.0, separate cod
 - [docs/API.md](docs/API.md) — public Java API for third-party mods (soft-dep reflection pattern, `EventSubmitter`).
 - [docs/MODDED-ATTRIBUTION.md](docs/MODDED-ATTRIBUTION.md) — universal griefing-attribution chain (the differentiating feature).
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — environment setup, IDE config, adding an `ActionType`, CI overview.
-- [docs/COMMON-V2-REPOSITORY.md](docs/COMMON-V2-REPOSITORY.md) — the `2.0.0-common.1` five-lane repository layout, release boundary, and build expectations.
+- [docs/COMMON-V2-REPOSITORY.md](docs/COMMON-V2-REPOSITORY.md) — the `2.0.0` five-lane repository layout, release boundary, and build expectations.
 - [SHARED-CONTRACTS.md](SHARED-CONTRACTS.md) — internal type contracts.
 - [SHARED-LOADER-CONTRACTS.md](SHARED-LOADER-CONTRACTS.md) — loader-glue contracts.
 - [LIBRARY-PACKAGING.md](LIBRARY-PACKAGING.md) — JarInJar and loader packaging strategy.
