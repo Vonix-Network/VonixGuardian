@@ -16,7 +16,7 @@ Common-generation repository release. This prerelease starts the shared reposito
 
 ### Verification boundary
 
-- Static build/package/parity evidence passed for the accepted source snapshot, including schema/pair-ID compatibility tests. Live Minecraft activation, deployment, restart, and production database migration were not performed.
+- The tag-triggered CI workflow is the source of build/package evidence for this release. Earlier R14 static evidence is not reused after the embedded version metadata change.
 - All nine primary artifacts use the exact embedded version `2.0.0-common.1`; the bundled Fabric core dependency names were updated to match.
 
 ## [1.4.1] - 2026-08-25
