@@ -17,6 +17,7 @@ Common-generation repository release. This prerelease starts the shared reposito
 ### Verification boundary
 
 - The tag-triggered CI workflow is the source of build/package evidence for this release. Earlier R14 static evidence is not reused after the embedded version metadata change.
+- The 26.1.2 NeoForge CI lane uses Java 25 with Gradle 9.2.0; older lanes retain their Java 17/21 and Gradle 8.10.2 matrix.
 - All nine primary artifacts use the exact embedded version `2.0.0-common.1`; the bundled Fabric core dependency names were updated to match.
 
 ## [1.4.1] - 2026-08-25
