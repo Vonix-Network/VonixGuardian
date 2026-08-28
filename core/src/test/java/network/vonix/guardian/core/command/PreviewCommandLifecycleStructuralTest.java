@@ -51,9 +51,24 @@ class PreviewCommandLifecycleStructuralTest {
     }
 
     private static Path findCommands(Path cell) throws Exception {
-        try (var files = Files.walk(cell)) {
-            return files.filter(p -> p.getFileName().toString().equals("GuardianCommands.java"))
-                    .findFirst().orElseThrow();
+        Path found = named(cell, "GuardianCommands.java");
+        if (found != null) {
+            return found;
+        }
+        Path versionCommon = cell.getParent().resolve("common");
+        found = named(versionCommon, "GuardianCommands.java");
+        if (found != null) {
+            return found;
+        }
+        throw new AssertionError("GuardianCommands.java missing for " + cell);
+    }
+
+    private static Path named(Path root, String fileName) throws Exception {
+        if (!Files.isDirectory(root)) {
+            return null;
+        }
+        try (var files = Files.walk(root)) {
+            return files.filter(p -> p.getFileName().toString().equals(fileName)).findFirst().orElse(null);
         }
     }
 }

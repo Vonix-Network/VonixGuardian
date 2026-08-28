@@ -1,0 +1,47 @@
+/*
+ * VonixGuardian — mc-26.1.2 :common
+ *
+ * Mojmap-only compilation units consumed by 26.1.2 NeoForge. There is no
+ * Fabric 26.1.2 cell. Loaders compile these sources against their own
+ * Minecraft classpath via sourceSets; this module does not apply NeoForge APIs.
+ */
+
+plugins {
+    id 'java-library'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+dependencies {
+    compileOnly project(':core')
+    compileOnly libs.slf4j.api
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+    // net.minecraft is supplied by consuming loaders, not this module.
+    enabled = false
+}
+
+tasks.register('verifyCommonSources') {
+    def src = file('src/main/java/network/vonix/guardian/mc/v26_1/common')
+    inputs.dir(src)
+    doLast {
+        if (!src.directory) {
+            throw new GradleException("missing 26.1.2 common sources at ${src}")
+        }
+        def files = src.listFiles({ f -> f.name.endsWith('.java') } as FileFilter)
+        if (files == null || files.length == 0) {
+            throw new GradleException("26.1.2 common source set is empty")
+        }
+    }
+}
+
+tasks.named('jar') {
+    dependsOn 'verifyCommonSources'
+    from sourceSets.main.allSource
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}

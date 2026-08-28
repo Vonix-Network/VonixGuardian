@@ -21,6 +21,14 @@ java {
     withSourcesJar()
 }
 
+sourceSets {
+    main {
+        java {
+            srcDir project(':mc-26.1.2:common').file('src/main/java')
+        }
+    }
+}
+
 neoForge {
     version = '26.1.2.93'
 
@@ -61,6 +69,7 @@ dependencies {
     // sqlite-jdbc has JNI native code; relocating Java classes breaks JNI symbol lookup.
     // Ship it as a JarInJar nested jar (NeoForge's official multi-mod-conflict resolution).
     shaded project(':core')
+    compileOnly project(':mc-26.1.2:common')
     // MDG 26.1 removed additionalRuntimeClasspath; core is on implementation via shaded extendsFrom
     // ModDevGradle dev runs only load dependencies that are mods/libraries on
     shaded(libs.hikaricp) {
@@ -116,6 +125,10 @@ test {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 25
+}
+
+tasks.named('compileJava') {
+    dependsOn ':mc-26.1.2:common:jar'
 }
 
 tasks.named('processResources') {

@@ -47,6 +47,15 @@ class FabricPackagingStructuralTest {
                     .doesNotContain("shadowJar")
                     .doesNotContain("archiveClassifier")
                     .doesNotContain("relocate 'org.sqlite'");
+            if (cell.startsWith("mc-1.21.1/")) {
+                assertThat(text).as(cell + " nested-core metadata")
+                        .contains("\"id\": \"vonixguardian-core\"")
+                        .contains("coreWithFabricMetadata")
+                        .contains("fabric.mod.json")
+                        .contains("srcDir project(':mc-1.21.1:common').file('src/main/java')")
+                        .contains("network/vonix/guardian/mc/v1_21_1/fabric/api/LocationalInventory.class")
+                        .contains("network/vonix/guardian/mc/v1_21_1/fabric/mixin/LocationalInventory.class");
+            }
         }
     }
 

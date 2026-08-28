@@ -17,6 +17,14 @@ java {
     withSourcesJar()
 }
 
+sourceSets {
+    main {
+        java {
+            srcDir project(':mc-1.21.1:common').file('src/main/java')
+        }
+    }
+}
+
 loom {
     serverOnlyMinecraftJar()
     runs {
@@ -49,6 +57,7 @@ dependencies {
     // Compile-only mirrors keep loader source compilation independent of the
     // nested-jar runtime layout. The loader provides slf4j-api at runtime.
     compileOnly project(':core')
+    compileOnly project(':mc-1.21.1:common')
     compileOnly libs.sqlite.jdbc
     compileOnly libs.mysql.connector
     compileOnly libs.postgresql
@@ -60,6 +69,10 @@ dependencies {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 21
+}
+
+tasks.named('compileJava') {
+    dependsOn ':mc-1.21.1:common:jar'
 }
 
 tasks.named('processResources') {
@@ -82,7 +95,32 @@ tasks.register('embedCoreJarInJar') {
         File artifact = tasks.named('remapJar').get().archiveFile.get().asFile
         File coreJar = project(':core').tasks.named('jar').get().archiveFile.get().asFile
         File tmp = new File(artifact.parentFile, artifact.name + '.core.tmp')
+        File coreWithFabricMetadata = new File(artifact.parentFile, coreJar.name + '.fabric.tmp')
         String entryName = "META-INF/jars/${coreJar.name}"
+        String coreFabricMetadata = """{
+  "schemaVersion": 1,
+  "id": "vonixguardian-core",
+  "version": "${project.version}",
+  "name": "VonixGuardian Core",
+  "environment": "server",
+  "depends": {
+    "java": ">=17"
+  }
+}
+"""
+        new java.util.zip.ZipOutputStream(coreWithFabricMetadata.newOutputStream()).withCloseable { coreOut ->
+            new java.util.zip.ZipFile(coreJar).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    if (entry.name == 'fabric.mod.json') return
+                    coreOut.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(coreOut) }
+                    coreOut.closeEntry()
+                }
+            }
+            coreOut.putNextEntry(new java.util.zip.ZipEntry('fabric.mod.json'))
+            coreOut.write(coreFabricMetadata.getBytes('UTF-8'))
+            coreOut.closeEntry()
+        }
         new java.util.zip.ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
             new java.util.zip.ZipFile(artifact).withCloseable { zf ->
                 zf.entries().each { entry ->
@@ -93,9 +131,10 @@ tasks.register('embedCoreJarInJar') {
                 }
             }
             out.putNextEntry(new java.util.zip.ZipEntry(entryName))
-            coreJar.withInputStream { it.transferTo(out) }
+            coreWithFabricMetadata.withInputStream { it.transferTo(out) }
             out.closeEntry()
         }
+        coreWithFabricMetadata.delete()
         java.nio.file.Files.move(tmp.toPath(), artifact.toPath(),
             java.nio.file.StandardCopyOption.REPLACE_EXISTING,
             java.nio.file.StandardCopyOption.ATOMIC_MOVE)
@@ -121,6 +160,21 @@ tasks.register('verifyJarInJarPackaging') {
         }.files
         assert outerJdbcClasses.empty
         assert zipTree(artifact).matching { include 'META-INF/services/java.sql.Driver' }.files.empty
+
+        File nestedCoreJar = zipTree(artifact).matching {
+            include "META-INF/jars/core-${project.version}.jar"
+        }.singleFile
+        def nestedCoreJson = zipTree(nestedCoreJar).matching { include 'fabric.mod.json' }.singleFile.text
+        assert nestedCoreJson.contains('"id": "vonixguardian-core"')
+        assert nestedCoreJson.contains("\"version\": \"${project.version}\"")
+
+        assert !zipTree(artifact).matching {
+            include 'network/vonix/guardian/mc/v1_21_1/fabric/api/LocationalInventory.class'
+        }.files.empty
+        assert zipTree(artifact).matching {
+            include 'network/vonix/guardian/mc/v1_21_1/fabric/mixin/LocationalInventory.class'
+        }.files.empty
+
         logger.lifecycle("Verified Fabric JarInJar artifact: ${artifact.name}")
     }
 }

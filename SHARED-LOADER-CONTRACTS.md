@@ -44,6 +44,31 @@ mc-<ver>/
         └── NeoForgeOpLookup.java
 ```
 
+### Native include-graph status
+
+`settings.gradle` includes `core` and `mc-<ver>/<loader>` for each requested cell. It also includes `mc-<ver>/common` **when that directory exists and contains `build.gradle`**.
+
+`mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
+
+Do not invent Fabric 26.1.2 or Forge 1.21.1 cells.
+
+### Loader-specific ActionType coverage (requested cells)
+
+Capture **mechanisms** differ by loader and must not be copied blindly:
+
+| Surface | 1.21.1 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge |
+|---|---|---|---|
+| Explosions, pistons, signs, item toss/pickup, craft, container slot, block-place-by-entity, living-destroy | Mixins (`ExplosionMixin`, `PistonMixin`, `SignChangeMixin`, `ItemTossMixin`, `ItemPickupMixin`, `CraftItemMixin`, `ContainerMixin`, `BlockPlaceMixin`, `LivingDestroyBlockMixin`) plus `FabricMixinBridge` | Event-bus adapters in `NeoForgeEvents` (`ExplosionEvent`, `PistonEvent`, item/container/chat/command handlers) | Same NeoForge event-bus adapters |
+| Environment griefing (fire, ice, leaves, liquid, lightning, ravager, silverfish, snow golem, TNT, hopper, fill/setblock, portal, falling block, dragon) | Mixins registered in `vg.mixins.json` | Mixins registered in `vg-neoforge.mixins.json` (includes `RavagerMixin`) | Same NeoForge mixin set |
+| Milk bucket empty | Fabric `BucketItemMixin` path only; no `MilkBucketItemMixin` | `MilkBucketItemMixin` (FillBucketEvent was removed upstream) | `MilkBucketItemMixin` |
+| Container position marker | `LocationalInventory` in `fabric.api` + `BaseContainerBlockEntityMixin` | Event-bus open/close snapshot; no LocationalInventory mixin | Same as 1.21.1 NeoForge |
+
+Sign edits (`ActionType.SIGN`) are produced on Fabric 1.21.1 via `SignChangeMixin`. NeoForge 1.21.1 and 26.1.2 have no `SignChangeEvent` (removed in 1.20+) and no sign mixin; that absence is preserved rather than copying the Fabric mixin onto NeoForge.
+
+`ActionType.USERNAME_CHANGE`, `STRUCTURE_GROW`, and `CHUNK_POPULATE` are lookup/rollback API types with no producer on the requested cells. Do not delete NeoForge event adapters or Fabric mixins to force identical files. Register or delete a mixin only when that cell's source and mixin JSON both prove it is stale.
+
+P1-G-003 (Gradle 8.10.2 root wrapper vs 26.1.2 ModDevGradle/Java 25) is disposition-only: do not globally bump the root wrapper.
+
 ---
 
 ## 2. Mod entrypoint contract (every loader)
@@ -357,6 +382,13 @@ public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock e) {
 - `ServerMessageEvents.CHAT_MESSAGE` for chat capture.
 - No direct block-place event before 1.21 — use a Mixin into `Level.setBlock` filtered by caller entity. Mixin target: `net.minecraft.world.level.Level`, method `setBlock(BlockPos,BlockState,int,int)`.
 - Java 21.
+
+### 26.1.2 NeoForge
+- Native NeoForge cell; there is no Fabric 26.1.2 or Forge 1.21.1 counterpart.
+- Mod entry: `@Mod("vonixguardian")` on `VonixGuardianNeoForge` with `(IEventBus, ModContainer)` constructor.
+- Lifecycle stays on the NeoForge runtime bus: `ServerAboutToStartEvent` → `NeoForgeBootstrap.onServerStarting`, `ServerStoppingEvent` → `NeoForgeBootstrap.onServerStopping`. Do not replace this with Fabric `SERVER_STARTING` / `SERVER_STOPPING`.
+- `RegisterCommandsEvent` for the command tree; `NeoForge.EVENT_BUS.register(NeoForgeEvents.class)` for capture.
+- Java 25 toolchain on this cell only. P1-G-003 (root wrapper Gradle 8.10.2 vs ModDevGradle 2.0.140 / Java 25) is disposition-only — do not globally bump `gradle/wrapper`.
 
 ### 1.20.1 Forge
 - Mod entry: `@Mod("vonixguardian")`.

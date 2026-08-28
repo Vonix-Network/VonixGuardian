@@ -2,14 +2,14 @@
  * Copyright (c) 2026 Vonix Network
  * Licensed under the MIT License.
  */
-package network.vonix.guardian.mc.v1_21_1.fabric.mixin;
+package network.vonix.guardian.mc.v1_21_1.fabric.api;
 
 import net.minecraft.core.BlockPos;
 import org.jetbrains.annotations.NotNull;
 
 /**
  * Marker interface applied to block-entity inventories by
- * {@link BaseContainerBlockEntityMixin}. Any code path holding a
+ * {@link network.vonix.guardian.mc.v1_21_1.fabric.mixin.BaseContainerBlockEntityMixin}. Any code path holding a
  * {@link net.minecraft.world.Container} can cast to {@code LocationalInventory}
  * to recover the on-world position of the backing block-entity.
  *

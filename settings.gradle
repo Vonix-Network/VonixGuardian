@@ -35,15 +35,33 @@ if (profile == 'core') profile = 'coreonly'
 // Pure-Java engine (no MC).
 include 'core'
 
+// Include mc-<version>/common when that module exists on disk.
+// Requested cells: mc-1.21.1/common (Fabric + NeoForge) and mc-26.1.2/common
+// (NeoForge only). Do not invent Fabric 26.1.2 or Forge 1.21.1 cells.
+def includedVersionCommons = [] as Set
+def includeVersionCommonIfPresent = { String version ->
+    if (!includedVersionCommons.add(version)) {
+        return
+    }
+    def commonDir = file("mc-${version}/common")
+    def buildFile = new File(commonDir, 'build.gradle')
+    if (commonDir.directory && buildFile.file) {
+        include ":mc-${version}:common"
+    }
+}
+
 if (profile == 'mc1211' || profile == 'all' || profile == 'forgeonly') {
     include ':mc-1.21.1:neoforge'
+    includeVersionCommonIfPresent('1.21.1')
 }
 if (profile == 'mc2612' || profile == 'all' || profile == 'forgeonly') {
     include ':mc-26.1.2:neoforge'
+    includeVersionCommonIfPresent('26.1.2')
 }
 
 if (profile == 'mc1211' || profile == 'all') {
     include ':mc-1.21.1:fabric'
+    includeVersionCommonIfPresent('1.21.1')
 }
 
 if (profile == 'mc1201' || profile == 'all' || profile == 'forgeonly') {

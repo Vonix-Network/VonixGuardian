@@ -23,9 +23,8 @@ class GuardianCommandsContractStructuralTest {
         "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/common/GuardianCommands.java",
         "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/common/GuardianCommands.java",
         "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/common/GuardianCommands.java",
-        "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/common/GuardianCommands.java",
-        "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/common/GuardianCommands.java",
-        "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/common/GuardianCommands.java"
+        "mc-1.21.1/common/src/main/java/network/vonix/guardian/mc/v1_21_1/common/GuardianCommands.java",
+        "mc-26.1.2/common/src/main/java/network/vonix/guardian/mc/v26_1/common/GuardianCommands.java"
     );
 
     @Test

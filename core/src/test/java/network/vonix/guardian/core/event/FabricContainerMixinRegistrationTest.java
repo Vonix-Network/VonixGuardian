@@ -64,14 +64,28 @@ class FabricContainerMixinRegistrationTest {
                        : "v1_21_1";
             Path src = root.resolve(cell + "/src/main/java/network/vonix/guardian/mc/" + ver
                     + "/fabric/mixin/BaseContainerBlockEntityMixin.java");
+            String locPackage = cell.startsWith("mc-1.21.1") ? "api" : "mixin";
             Path loc = root.resolve(cell + "/src/main/java/network/vonix/guardian/mc/" + ver
-                    + "/fabric/mixin/LocationalInventory.java");
+                    + "/fabric/" + locPackage + "/LocationalInventory.java");
             assumeTrue(Files.exists(root.resolve(cell + "/src/main/java")), "cell not present");
             assertThat(src).exists();
             assertThat(loc).exists();
             String bce = Files.readString(src);
             assertThat(bce).contains("@Mixin(BaseContainerBlockEntity.class)");
             assertThat(bce).contains("implements LocationalInventory");
+            if (cell.startsWith("mc-1.21.1")) {
+                assertThat(bce).contains("import network.vonix.guardian.mc.v1_21_1.fabric.api.LocationalInventory;");
+                assertThat(root.resolve(cell + "/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/mixin/LocationalInventory.java"))
+                        .doesNotExist();
+                String mixins = Files.readString(root.resolve(cell + "/src/main/resources/vg.mixins.json"));
+                assertThat(mixins)
+                        .contains("\"package\": \"network.vonix.guardian.mc.v1_21_1.fabric.mixin\"")
+                        .contains("\"BaseContainerBlockEntityMixin\"")
+                        .doesNotContain("\"LocationalInventory\"");
+                String locText = Files.readString(loc);
+                assertThat(locText).contains("package network.vonix.guardian.mc.v1_21_1.fabric.api;");
+                assertThat(locText).contains("network.vonix.guardian.mc.v1_21_1.fabric.mixin.BaseContainerBlockEntityMixin");
+            }
         }
     }
 
