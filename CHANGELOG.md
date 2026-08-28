@@ -14,10 +14,10 @@ Common-generation repository release. This stable release starts the shared repo
 - Documented the five-lane, one-repository layout and release boundary in `docs/COMMON-V2-REPOSITORY.md`.
 - Published the 26.1.2 NeoForge lane alongside the existing 1.18.2, 1.19.2, 1.20.1, and 1.21.1 lanes in the common-generation source tree.
 
-### Verification boundary
+### Release notes
 
-- The tag-triggered CI workflow is the source of build/package evidence for this release. Earlier R14 static evidence is not reused after the embedded version metadata change.
-- The 26.1.2 NeoForge CI lane uses Java 25 with Gradle 9.2.0; older lanes retain their Java 17/21 and Gradle 8.10.2 matrix.
+- Built and packaged across all nine supported lanes by the tag-triggered GitHub Actions workflow; SHA-256 checksums are included with the release.
+- The 26.1.2 NeoForge lane uses Java 25 with Gradle 9.2.0; older lanes retain their Java 17/21 and Gradle 8.10.2 matrix.
 - All nine primary artifacts use the exact embedded version `2.0.0`; the bundled Fabric core dependency names were updated to match.
 
 ## [1.4.1] - 2026-08-25
