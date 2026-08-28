@@ -5,6 +5,19 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-common.1] - 2026-08-28
+
+Common-generation repository snapshot. This prerelease starts the shared repository/layout line at `2.0.0` without rewriting VonixGuardian's embedded `1.4.1` version or historical release tags.
+
+### Added
+
+- Documented the five-lane, one-repository layout and release boundary in `docs/COMMON-V2-REPOSITORY.md`.
+- Published the 26.1.2 NeoForge lane alongside the existing 1.18.2, 1.19.2, 1.20.1, and 1.21.1 lanes in the common-generation source tree.
+
+### Verification boundary
+
+- Static build/package/parity evidence passed for the accepted source snapshot, including schema/pair-ID compatibility tests. Live Minecraft activation, deployment, restart, and production database migration were not performed.
+
 ## [1.4.1] - 2026-08-25
 
 ### Added

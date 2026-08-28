@@ -10,6 +10,8 @@
 Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
 
 > Built and maintained by [Vonix Network](https://vonix.network).
+>
+> **Current embedded mod version:** 1.4.1 · **Common repository line:** `2.0.0-common.1` (prerelease). See [`docs/COMMON-V2-REPOSITORY.md`](docs/COMMON-V2-REPOSITORY.md) for the one-repository/all-version contract.
 
 ## Feature surface (v1.4.1)
 
@@ -179,6 +181,7 @@ MIT. See [LICENSE](LICENSE). Inspired by CoreProtect (Artistic-2.0, separate cod
 - [docs/API.md](docs/API.md) — public Java API for third-party mods (soft-dep reflection pattern, `EventSubmitter`).
 - [docs/MODDED-ATTRIBUTION.md](docs/MODDED-ATTRIBUTION.md) — universal griefing-attribution chain (the differentiating feature).
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — environment setup, IDE config, adding an `ActionType`, CI overview.
+- [docs/COMMON-V2-REPOSITORY.md](docs/COMMON-V2-REPOSITORY.md) — the `2.0.0-common.1` five-lane repository layout, release boundary, and build expectations.
 - [SHARED-CONTRACTS.md](SHARED-CONTRACTS.md) — internal type contracts.
 - [SHARED-LOADER-CONTRACTS.md](SHARED-LOADER-CONTRACTS.md) — loader-glue contracts.
 - [LIBRARY-PACKAGING.md](LIBRARY-PACKAGING.md) — JarInJar and loader packaging strategy.
