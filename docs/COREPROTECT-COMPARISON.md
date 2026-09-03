@@ -1,6 +1,6 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-**Current common-generation stable release (`2.0.0`, derived from the v1.4.1 feature line, 2026-08-28):** VonixGuardian at the successor commit pinned by Hermes evidence, with the r58 changelog-continuity repair added: all remote releases have dedicated sections, `[Unreleased]` is first, release dates are descending, and the split `Changed` category is consolidated. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1.2). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
+**Current common-generation hotfix candidate (`2.0.1`, derived from the v1.4.1 feature line, 2026-09-03):** VonixGuardian at the successor commit pinned by Hermes evidence, with the r58 changelog-continuity repair added: all remote releases have dedicated sections, `[Unreleased]` is first, release dates are descending, and the split `Changed` category is consolidated. Nine loader cells (Fabric/Forge 1.18.2–1.20.1, Fabric/NeoForge 1.21.1, NeoForge 26.1.2). Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
 
 This matrix describes the versioned source candidate and its committed evidence boundary. The candidate pin, source manifest, artifact manifest, and Terra verdict are external Hermes evidence records and are not tracked in this repository.
 

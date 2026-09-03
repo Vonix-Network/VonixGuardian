@@ -5,6 +5,21 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-09-03
+
+Hotfix candidate for malformed actor identities that could leave quarantine recovery retrying a deterministic `vg_users.name` unique-key failure.
+
+### Fixed
+
+- Canonicalize Java-null, blank, and literal `null` actor names to the existing `#unknown` sentinel before shared-core user resolution.
+- Re-read once after a duplicate-key race instead of retrying the same deterministic user insert indefinitely; existing UUID lookup remains authoritative and conflicting historical rows are not rewritten.
+- Added SQLite regression coverage for legacy `name='null'` rows, malformed-name normalization, valid-name preservation, and bounded duplicate-key recovery.
+
+### Verification boundary
+
+- The fix is in shared `core` and is rebuilt into all nine supported loader/version cells in this candidate.
+- No live server, database, deployment, migration, publication, restart, or release effect is performed by this source candidate.
+
 ## [2.0.0] - 2026-08-28
 
 Common-generation repository release. This stable release starts the shared repository/layout and embedded version line at `2.0.0` without rewriting historical release tags.

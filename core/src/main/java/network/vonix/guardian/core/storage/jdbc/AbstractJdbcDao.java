@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
@@ -63,6 +64,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     /** name -> id, used for sentinels and uuid-less lookups; bounded admission. */
     private final ConcurrentHashMap<String, Integer> userIdByName = new ConcurrentHashMap<>();
     private static final int USER_ID_CACHE_CAP = 4096;
+    private static final String UNKNOWN_USER_NAME = "#unknown";
     /**
      * v1.3.1 X6 (P3-8): last time (ms) we issued an {@code UPDATE vg_users SET last_seen}
      * for each user id. Amortizes the write — resolveUserOn only issues the UPDATE when
@@ -402,7 +404,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     private static String nullSafeName(Action a) {
-        return a.actorName() != null ? a.actorName() : "#unknown";
+        return a.actorName() != null ? a.actorName() : UNKNOWN_USER_NAME;
     }
 
     // ------------------------------------------------------------------ SELECT
@@ -997,7 +999,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     private int resolveUserOn(Connection c, UUID uuid, String name) throws SQLException {
-        String resolveName = name != null ? name : "#unknown";
+        String resolveName = canonicalUserName(name);
         if (uuid != null) {
             Integer cached = userIdByUuid.get(uuid);
             if (cached != null) return cached;
@@ -1005,48 +1007,24 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             Integer cached = userIdByName.get(resolveName);
             if (cached != null) return cached;
         }
-        // SELECT first
-        Integer found = null;
-        if (uuid != null) {
-            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM vg_users WHERE uuid = ?")) {
-                ps.setString(1, uuid.toString());
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) found = rs.getInt(1);
-                }
-            }
-        }
-        if (found == null) {
-            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM vg_users WHERE name = ? AND uuid IS NULL")) {
-                ps.setString(1, resolveName);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) found = rs.getInt(1);
-                }
-            }
-        }
+        // SELECT first. A UUID hit remains authoritative; the name fallback only
+        // reuses an existing UUID-less row and never rewrites historical identity.
+        Integer found = findUserIdOn(c, uuid, resolveName);
         long now = System.currentTimeMillis();
         if (found == null) {
-            try (PreparedStatement ps = c.prepareStatement(
-                    "INSERT INTO vg_users(uuid, name, first_seen, last_seen) VALUES (?,?,?,?)",
-                    Statement.RETURN_GENERATED_KEYS)) {
-                if (uuid != null) ps.setString(1, uuid.toString());
-                else ps.setNull(1, java.sql.Types.VARCHAR);
-                ps.setString(2, resolveName);
-                ps.setLong(3, now);
-                ps.setLong(4, now);
-                ps.executeUpdate();
-                try (ResultSet keys = ps.getGeneratedKeys()) {
-                    if (keys.next()) found = keys.getInt(1);
+            try {
+                found = insertUserOn(c, uuid, resolveName, now);
+            } catch (SQLException ex) {
+                // A concurrent insert (or a pre-existing unique-key conflict) is
+                // safe to reconcile only by one bounded authoritative re-read.
+                // Never retry the same deterministic INSERT in a loop, and never
+                // mutate the conflicting historical row.
+                if (!isUniqueConstraintViolation(ex)) {
+                    throw ex;
                 }
-            }
-            if (found == null) {
-                // some drivers don't return keys via RETURN_GENERATED_KEYS for our PK type — fallback select.
-                try (PreparedStatement ps = c.prepareStatement(
-                        uuid != null ? "SELECT id FROM vg_users WHERE uuid = ?"
-                                     : "SELECT id FROM vg_users WHERE name = ? AND uuid IS NULL")) {
-                    ps.setString(1, uuid != null ? uuid.toString() : resolveName);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) found = rs.getInt(1);
-                    }
+                found = findUserIdOn(c, uuid, resolveName);
+                if (found == null) {
+                    throw ex;
                 }
             }
         } else {
@@ -1074,6 +1052,75 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             cacheIfWithinBound(userIdByName, resolveName, found, USER_ID_CACHE_CAP);
         }
         return found;
+    }
+
+    private static String canonicalUserName(String name) {
+        if (name == null || name.isBlank() || "null".equalsIgnoreCase(name.strip())) {
+            return UNKNOWN_USER_NAME;
+        }
+        return name;
+    }
+
+    private Integer findUserIdOn(Connection c, UUID uuid, String resolveName) throws SQLException {
+        Integer found = null;
+        if (uuid != null) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM vg_users WHERE uuid = ?")) {
+                ps.setString(1, uuid.toString());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) found = rs.getInt(1);
+                }
+            }
+        }
+        if (found == null) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM vg_users WHERE name = ? AND uuid IS NULL")) {
+                ps.setString(1, resolveName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) found = rs.getInt(1);
+                }
+            }
+        }
+        return found;
+    }
+
+    private Integer insertUserOn(Connection c, UUID uuid, String resolveName, long now) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "INSERT INTO vg_users(uuid, name, first_seen, last_seen) VALUES (?,?,?,?)",
+                Statement.RETURN_GENERATED_KEYS)) {
+            if (uuid != null) ps.setString(1, uuid.toString());
+            else ps.setNull(1, java.sql.Types.VARCHAR);
+            ps.setString(2, resolveName);
+            ps.setLong(3, now);
+            ps.setLong(4, now);
+            ps.executeUpdate();
+            try (ResultSet keys = ps.getGeneratedKeys()) {
+                if (keys.next()) return keys.getInt(1);
+            }
+        }
+        // Some drivers don't return keys via RETURN_GENERATED_KEYS for our PK
+        // type. This is also the single post-insert read when the insert won.
+        return findUserIdOn(c, uuid, resolveName);
+    }
+
+    private static boolean isUniqueConstraintViolation(SQLException ex) {
+        for (SQLException current = ex; current != null; current = current.getNextException()) {
+            String state = current.getSQLState();
+            if (state != null && state.startsWith("23")) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message == null) {
+                continue;
+            }
+            String lower = message.toLowerCase(Locale.ROOT);
+            if (lower.contains("duplicate entry")
+                    || lower.contains("duplicate key")
+                    || lower.contains("unique constraint")
+                    || lower.contains("unique violation")
+                    || lower.contains("constraint failed")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
