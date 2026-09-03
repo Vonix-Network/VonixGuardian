@@ -11,7 +11,7 @@ Hotfix candidate for malformed actor identities that could leave quarantine reco
 
 ### Fixed
 
-- Canonicalize Java-null, blank, and literal `null` actor names to the existing `#unknown` sentinel before shared-core user resolution.
+- Canonicalize Java-null, blank, and literal `null` actor names to the existing `#unknown` sentinel for UUID-less actions; UUID-bearing malformed identities use a deterministic `#unknown:<uuid>` alias so attribution remains distinct.
 - Re-read once after a duplicate-key race instead of retrying the same deterministic user insert indefinitely; existing UUID lookup remains authoritative and conflicting historical rows are not rewritten.
 - Added SQLite regression coverage for legacy `name='null'` rows, malformed-name normalization, valid-name preservation, and bounded duplicate-key recovery.
 

@@ -9,7 +9,7 @@
 - **Common-generation lineage:** begins at `2.0.0`
 - **Project role:** server-side audit, attribution, lookup, rollback, purge, and database utilities for modded Minecraft
 
-This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Only the lanes inside this repository share `2.0.0`.
+This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; this candidate advances every lane to `2.0.1`.
 
 ## Read first
 

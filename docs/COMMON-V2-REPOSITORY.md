@@ -2,7 +2,7 @@
 
 This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0** and this candidate is prepared as the hotfix label **`2.0.1`**.
 
-`2.0.0` is the embedded stable release version for every supported lane and identifies the first common-generation release line beginning at `2.0.0`. Existing historical releases, including `v1.0.0`, remain immutable.
+`2.0.0` was the embedded stable release version for every supported lane in the historical common-generation release and identifies the first common-generation release line beginning at `2.0.0`. This candidate advances the embedded version to `2.0.1`. Existing historical releases, including `v1.0.0`, remain immutable.
 
 ## One repository, all supported Minecraft lanes
 

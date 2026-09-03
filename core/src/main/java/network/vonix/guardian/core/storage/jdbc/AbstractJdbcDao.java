@@ -999,7 +999,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     private int resolveUserOn(Connection c, UUID uuid, String name) throws SQLException {
-        String resolveName = canonicalUserName(name);
+        String resolveName = persistedUserName(uuid, canonicalUserName(name));
         if (uuid != null) {
             Integer cached = userIdByUuid.get(uuid);
             if (cached != null) return cached;
@@ -1007,8 +1007,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             Integer cached = userIdByName.get(resolveName);
             if (cached != null) return cached;
         }
-        // SELECT first. A UUID hit remains authoritative; the name fallback only
-        // reuses an existing UUID-less row and never rewrites historical identity.
+        // SELECT first. A UUID hit remains authoritative. Only UUID-less lookups
+        // may reuse an existing UUID-less row; UUID-bearing identities must never
+        // collapse into the anonymous sentinel.
         Integer found = findUserIdOn(c, uuid, resolveName);
         long now = System.currentTimeMillis();
         if (found == null) {
@@ -1061,6 +1062,13 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         return name;
     }
 
+    private static String persistedUserName(UUID uuid, String canonicalName) {
+        if (uuid != null && UNKNOWN_USER_NAME.equals(canonicalName)) {
+            return UNKNOWN_USER_NAME + ":" + uuid;
+        }
+        return canonicalName;
+    }
+
     private Integer findUserIdOn(Connection c, UUID uuid, String resolveName) throws SQLException {
         Integer found = null;
         if (uuid != null) {
@@ -1071,7 +1079,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 }
             }
         }
-        if (found == null) {
+        if (uuid == null && found == null) {
             try (PreparedStatement ps = c.prepareStatement("SELECT id FROM vg_users WHERE name = ? AND uuid IS NULL")) {
                 ps.setString(1, resolveName);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -1101,10 +1109,11 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         return findUserIdOn(c, uuid, resolveName);
     }
 
-    private static boolean isUniqueConstraintViolation(SQLException ex) {
+    static boolean isUniqueConstraintViolation(SQLException ex) {
         for (SQLException current = ex; current != null; current = current.getNextException()) {
             String state = current.getSQLState();
-            if (state != null && state.startsWith("23")) {
+            int errorCode = current.getErrorCode();
+            if ("23505".equals(state) || errorCode == 1062 || errorCode == 1022) {
                 return true;
             }
             String message = current.getMessage();
@@ -1114,9 +1123,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             String lower = message.toLowerCase(Locale.ROOT);
             if (lower.contains("duplicate entry")
                     || lower.contains("duplicate key")
-                    || lower.contains("unique constraint")
+                    || lower.contains("unique constraint failed")
                     || lower.contains("unique violation")
-                    || lower.contains("constraint failed")) {
+                    || lower.contains("unique index")) {
                 return true;
             }
         }

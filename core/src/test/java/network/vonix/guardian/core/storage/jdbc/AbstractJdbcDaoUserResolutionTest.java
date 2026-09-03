@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
@@ -102,6 +103,43 @@ class AbstractJdbcDaoUserResolutionTest {
                 assertThat(rs.getString(2)).isEqualTo("#race");
             }
         }
+    }
+
+    @Test
+    void uuidBearingMalformedNameNeverReusesAnonymousSentinel() throws Exception {
+        int anonymousId = dao.resolveUser(null, null);
+        UUID uuid = UUID.randomUUID();
+
+        int uuidId = dao.resolveUser(uuid, "NULL");
+        assertThat(uuidId).isNotEqualTo(anonymousId);
+        assertThat(dao.resolveUser(uuid, "Alice")).isEqualTo(uuidId);
+
+        List<UserRow> users = readUsers();
+        assertThat(users).hasSize(2);
+        assertThat(users).filteredOn(user -> user.id() == anonymousId)
+                .singleElement()
+                .satisfies(user -> {
+                    assertThat(user.uuid()).isNull();
+                    assertThat(user.name()).isEqualTo("#unknown");
+                });
+        assertThat(users).filteredOn(user -> user.id() == uuidId)
+                .singleElement()
+                .satisfies(user -> {
+                    assertThat(user.uuid()).isEqualTo(uuid.toString());
+                    assertThat(user.name()).isEqualTo("#unknown:" + uuid);
+                });
+    }
+
+    @Test
+    void uniqueClassifierDoesNotTreatOtherIntegrityFailuresAsDuplicateRaces() {
+        assertThat(AbstractJdbcDao.isUniqueConstraintViolation(
+                new SQLException("FOREIGN KEY constraint failed", "23000", 1452))).isFalse();
+        assertThat(AbstractJdbcDao.isUniqueConstraintViolation(
+                new SQLException("UNIQUE constraint failed: vg_users.name", "23000", 19))).isTrue();
+        assertThat(AbstractJdbcDao.isUniqueConstraintViolation(
+                new SQLException("duplicate entry 'null' for key 'name'", "23000", 1062))).isTrue();
+        assertThat(AbstractJdbcDao.isUniqueConstraintViolation(
+                new SQLException("duplicate key", "23505", 0))).isTrue();
     }
 
     private int insertUser(UUID uuid, String name) throws Exception {
