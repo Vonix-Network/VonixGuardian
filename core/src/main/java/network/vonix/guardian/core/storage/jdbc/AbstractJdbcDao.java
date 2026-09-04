@@ -9,6 +9,7 @@ import network.vonix.guardian.core.storage.Schema;
 import network.vonix.guardian.core.storage.dbmigrate.RawJdbcAccess;
 import network.vonix.guardian.core.storage.migration.MigrationRunner;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -999,12 +1000,13 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     private int resolveUserOn(Connection c, UUID uuid, String name) throws SQLException {
-        String resolveName = persistedUserName(uuid, canonicalUserName(name));
+        String lookupName = canonicalUserName(name);
+        String resolveName = persistedUserName(uuid, lookupName);
         if (uuid != null) {
             Integer cached = userIdByUuid.get(uuid);
             if (cached != null) return cached;
         } else {
-            Integer cached = userIdByName.get(resolveName);
+            Integer cached = userIdByName.get(lookupName);
             if (cached != null) return cached;
         }
         // SELECT first. A UUID hit remains authoritative. Only UUID-less lookups
@@ -1024,6 +1026,23 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                     throw ex;
                 }
                 found = findUserIdOn(c, uuid, resolveName);
+                if (found == null && nameOccupiedOn(c, resolveName)) {
+                    String collisionName = collisionUserName(uuid, resolveName);
+                    if (!collisionName.equals(resolveName)) {
+                        try {
+                            found = insertUserOn(c, uuid, collisionName, now);
+                            resolveName = collisionName;
+                        } catch (SQLException aliasEx) {
+                            if (!isUniqueConstraintViolation(aliasEx)) {
+                                throw aliasEx;
+                            }
+                            found = findUserIdOn(c, uuid, collisionName);
+                            if (found != null) {
+                                resolveName = collisionName;
+                            }
+                        }
+                    }
+                }
                 if (found == null) {
                     throw ex;
                 }
@@ -1050,7 +1069,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         if (uuid != null) {
             cacheIfWithinBound(userIdByUuid, uuid, found, USER_ID_CACHE_CAP);
         } else {
-            cacheIfWithinBound(userIdByName, resolveName, found, USER_ID_CACHE_CAP);
+            cacheIfWithinBound(userIdByName, lookupName, found, USER_ID_CACHE_CAP);
         }
         return found;
     }
@@ -1067,6 +1086,24 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             return UNKNOWN_USER_NAME + ":" + uuid;
         }
         return canonicalName;
+    }
+
+    /**
+     * Return a deterministic name that cannot borrow a different identity's
+     * globally-unique display name. Valid names remain unchanged unless the
+     * database proves that the requested name is already occupied.
+     */
+    private static String collisionUserName(UUID uuid, String canonicalName) {
+        if (uuid == null) {
+            UUID stableName = UUID.nameUUIDFromBytes(canonicalName.getBytes(StandardCharsets.UTF_8));
+            return "#anonymous:" + stableName;
+        }
+        String suffix = "#" + uuid;
+        int prefixLength = Math.max(1, 64 - suffix.length());
+        String prefix = canonicalName.length() > prefixLength
+                ? canonicalName.substring(0, prefixLength)
+                : canonicalName;
+        return prefix + suffix;
     }
 
     private Integer findUserIdOn(Connection c, UUID uuid, String resolveName) throws SQLException {
@@ -1088,6 +1125,15 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             }
         }
         return found;
+    }
+
+    private boolean nameOccupiedOn(Connection c, String name) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT id FROM vg_users WHERE name = ?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
     }
 
     private Integer insertUserOn(Connection c, UUID uuid, String resolveName, long now) throws SQLException {

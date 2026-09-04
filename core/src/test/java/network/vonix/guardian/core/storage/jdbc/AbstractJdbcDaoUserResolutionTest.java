@@ -131,6 +131,55 @@ class AbstractJdbcDaoUserResolutionTest {
     }
 
     @Test
+    void validNameCollisionUsesStableUuidAliasAndDoesNotCreateRowsRepeatedly() throws Exception {
+        UUID historicalUuid = UUID.randomUUID();
+        UUID currentUuid = UUID.randomUUID();
+        int historicalId = insertUser(historicalUuid, "ItemFrame");
+
+        int currentId = dao.resolveUser(currentUuid, "ItemFrame");
+        assertThat(currentId).isNotEqualTo(historicalId);
+        assertThat(dao.resolveUser(currentUuid, "ItemFrame")).isEqualTo(currentId);
+
+        List<UserRow> users = readUsers();
+        assertThat(users).hasSize(2);
+        assertThat(users).filteredOn(user -> user.id() == historicalId)
+                .singleElement()
+                .satisfies(user -> {
+                    assertThat(user.uuid()).isEqualTo(historicalUuid.toString());
+                    assertThat(user.name()).isEqualTo("ItemFrame");
+                });
+        assertThat(users).filteredOn(user -> user.id() == currentId)
+                .singleElement()
+                .satisfies(user -> {
+                    assertThat(user.uuid()).isEqualTo(currentUuid.toString());
+                    assertThat(user.name()).startsWith("ItemFrame#");
+                    assertThat(user.name()).endsWith(currentUuid.toString());
+                });
+    }
+
+    @Test
+    void uuidlessValidNameCollisionUsesAnonymousAliasWithoutBorrowingUuidIdentity() throws Exception {
+        UUID historicalUuid = UUID.randomUUID();
+        int historicalId = insertUser(historicalUuid, "ItemFrame");
+
+        int anonymousId = dao.resolveUser(null, "ItemFrame");
+        assertThat(anonymousId).isNotEqualTo(historicalId);
+        assertThat(dao.resolveUser(null, "ItemFrame")).isEqualTo(anonymousId);
+
+        List<UserRow> users = readUsers();
+        assertThat(users).hasSize(2);
+        assertThat(users).filteredOn(user -> user.id() == historicalId)
+                .singleElement()
+                .satisfies(user -> assertThat(user.uuid()).isEqualTo(historicalUuid.toString()));
+        assertThat(users).filteredOn(user -> user.id() == anonymousId)
+                .singleElement()
+                .satisfies(user -> {
+                    assertThat(user.uuid()).isNull();
+                    assertThat(user.name()).startsWith("#anonymous:");
+                });
+    }
+
+    @Test
     void uniqueClassifierDoesNotTreatOtherIntegrityFailuresAsDuplicateRaces() {
         assertThat(AbstractJdbcDao.isUniqueConstraintViolation(
                 new SQLException("FOREIGN KEY constraint failed", "23000", 1452))).isFalse();

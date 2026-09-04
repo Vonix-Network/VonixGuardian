@@ -50,7 +50,7 @@ public final class GuardianAPI implements VonixGuardianAPI {
     public static final int API_VERSION = 1;
 
     /** Plugin display version — mirrors {@code gradle.properties#mod_version}. */
-    public static final String PLUGIN_VERSION = "2.0.1";
+    public static final String PLUGIN_VERSION = "2.0.2";
 
     private final Guardian guardian;
 

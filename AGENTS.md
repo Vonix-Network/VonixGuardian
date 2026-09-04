@@ -5,11 +5,11 @@
 - **Repository:** `Vonix-Network/VonixGuardian`
 - **Canonical checkout for this candidate:** `/root/work/mod-v2-common-migration-20260825/candidates-r14/guardian`
 - **Default branch:** `main`
-- **Project release:** **`2.0.1`** hotfix candidate
+- **Project release:** **`2.0.2`** successor hotfix candidate
 - **Common-generation lineage:** begins at `2.0.0`
 - **Project role:** server-side audit, attribution, lookup, rollback, purge, and database utilities for modded Minecraft
 
-This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; this candidate advances every lane to `2.0.1`.
+This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; this successor candidate advances every lane to `2.0.2`.
 
 ## Read first
 
@@ -35,8 +35,8 @@ The repository-level `core/` module owns loader-neutral storage, audit, rollback
 
 ## Version contract
 
-- Every Guardian lane uses the same embedded release version: **`2.0.1`** in this candidate.
-- The intended release tag and GitHub release title are **`v2.0.1`**.
+- Every Guardian lane uses the same embedded release version: **`2.0.2`** in this successor candidate.
+- The intended release tag and GitHub release title are **`v2.0.2`**.
 - Historical releases such as `v1.0.0`, `v1.4.1`, and `v1.4.3` remain immutable.
 - Keep root `gradle.properties`, `GuardianAPI.PLUGIN_VERSION`, Fabric nested-core metadata, NeoForge metadata expansion, tests, README, docs, and changelog aligned.
 - Do not add Minecraft or loader suffixes to the embedded public version; those belong in artifact names and the release matrix.
@@ -46,7 +46,7 @@ The repository-level `core/` module owns loader-neutral storage, audit, rollback
 The authoritative release workflow is `.github/workflows/release.yml`.
 
 - `workflow_dispatch` runs the nine-lane build matrix only; the release job is guarded to `refs/tags/v*` and must not publish a release for a branch dispatch.
-- Pushing `v2.0.1` runs all nine cells and publishes the GitHub release only after the matrix succeeds.
+- Pushing `v2.0.2` runs all nine cells and publishes the GitHub release only after the matrix succeeds.
 - 1.18.2–1.20.1 lanes use Java 17 with Gradle 8.10.2.
 - 1.21.1 lanes use Java 21 with Gradle 8.10.2.
 - 26.1.2 NeoForge uses Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for that lane.
@@ -74,7 +74,7 @@ Do not infer release readiness from a core-only build. The full nine-cell CI mat
 
 ## Packaging rules
 
-- Preserve the loader-specific metadata and exact `2.0.1` expansion.
+- Preserve the loader-specific metadata and exact `2.0.2` expansion.
 - Keep Fabric nested core JAR names synchronized with the core artifact version.
 - Keep NeoForge 26.1.2 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
 - Exclude module descriptors and signature files only where the existing packaging contract requires it.
@@ -149,10 +149,10 @@ Stop and report on:
 
 ## Completion checklist
 
-- [ ] Root AGENTS, README, docs, and changelog agree on Guardian `2.0.1`.
+- [ ] Root AGENTS, README, docs, and changelog agree on Guardian `2.0.2`.
 - [ ] All five version directories remain in this repository.
-- [ ] All nine loader cells embed `2.0.1`.
+- [ ] All nine loader cells embed `2.0.2`.
 - [ ] Manual CI dispatch cannot publish a release.
 - [ ] CI build-only matrix passes 9/9.
-- [ ] `v2.0.1` release assets and hashes read back remotely.
+- [ ] `v2.0.2` release assets and hashes read back remotely.
 - [ ] No live deployment, restart, or production migration is claimed without evidence.

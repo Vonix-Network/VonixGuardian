@@ -5,6 +5,22 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-09-04
+
+Successor hotfix candidate for valid actor-name collisions against the globally unique `vg_users.name` key.
+
+### Fixed
+
+- Preserve a valid actor name when it is not already occupied, while assigning a deterministic collision alias when another UUID-bearing or UUID-less identity already owns that name.
+- Keep existing UUID lookup authoritative and leave conflicting historical rows unchanged.
+- Cache UUID-less collision resolutions by their original canonical name so repeated `ItemFrame`-style actions do not repeat the same failed insert attempt.
+- Added SQLite regression coverage for repeated UUID-bearing and UUID-less `ItemFrame`-style name collisions.
+
+### Verification boundary
+
+- This is a 2.0.2 successor candidate derived from the accepted 2.0.1 source line; the predecessor remains immutable.
+- No live server, database, deployment, migration, publication, restart, or release effect is performed by this source candidate.
+
 ## [2.0.1] - 2026-09-03
 
 Hotfix candidate for malformed actor identities that could leave quarantine recovery retrying a deterministic `vg_users.name` unique-key failure.
