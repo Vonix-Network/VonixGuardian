@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
@@ -1015,9 +1016,24 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         Integer found = findUserIdOn(c, uuid, resolveName);
         long now = System.currentTimeMillis();
         if (found == null) {
+            Savepoint insertSavepoint = null;
             try {
+                if (!c.getAutoCommit()) {
+                    insertSavepoint = c.setSavepoint("vg_resolve_user_insert");
+                }
                 found = insertUserOn(c, uuid, resolveName, now);
             } catch (SQLException ex) {
+                if (insertSavepoint != null) {
+                    try {
+                        // PostgreSQL marks the whole transaction failed after a
+                        // unique violation. Roll back the speculative insert before
+                        // any reread or alias insert so recovery remains cross-dialect.
+                        c.rollback(insertSavepoint);
+                    } catch (SQLException rollbackEx) {
+                        ex.addSuppressed(rollbackEx);
+                        throw ex;
+                    }
+                }
                 // A concurrent insert (or a pre-existing unique-key conflict) is
                 // safe to reconcile only by one bounded authoritative re-read.
                 // Never retry the same deterministic INSERT in a loop, and never
@@ -1045,6 +1061,15 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 }
                 if (found == null) {
                     throw ex;
+                }
+            } finally {
+                if (insertSavepoint != null) {
+                    try {
+                        c.releaseSavepoint(insertSavepoint);
+                    } catch (SQLException ignored) {
+                        // Savepoint release is cleanup only; the enclosing
+                        // transaction remains authoritative.
+                    }
                 }
             }
         } else {

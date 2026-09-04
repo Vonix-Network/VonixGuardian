@@ -15,6 +15,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
@@ -180,6 +181,49 @@ class AbstractJdbcDaoUserResolutionTest {
     }
 
     @Test
+    void duplicateNameRecoveryRollsBackToSavepointBeforePostgresStyleReread() throws Exception {
+        try (Connection actual = DriverManager.getConnection("jdbc:sqlite::memory:")) {
+            network.vonix.guardian.core.storage.Schema.createTables(actual,
+                    network.vonix.guardian.core.storage.Schema.Dialect.SQLITE);
+            actual.setAutoCommit(false);
+            UUID historicalUuid = UUID.randomUUID();
+            UUID currentUuid = UUID.randomUUID();
+            int historicalId;
+            try (PreparedStatement ps = actual.prepareStatement(
+                    "INSERT INTO vg_users(uuid, name, first_seen, last_seen) VALUES (?,?,?,?)",
+                    Statement.RETURN_GENERATED_KEYS)) {
+                ps.setString(1, historicalUuid.toString());
+                ps.setString(2, "ItemFrame");
+                ps.setLong(3, 1L);
+                ps.setLong(4, 1L);
+                ps.executeUpdate();
+                try (ResultSet keys = ps.getGeneratedKeys()) {
+                    assertThat(keys.next()).isTrue();
+                    historicalId = keys.getInt(1);
+                }
+            }
+            actual.commit();
+
+            AtomicInteger savepointRollbacks = new AtomicInteger();
+            RaceDao raceDao = new RaceDao(postgresAbortConnection(actual, savepointRollbacks));
+            int currentId = raceDao.resolveUser(currentUuid, "ItemFrame");
+            actual.commit();
+
+            assertThat(currentId).isNotEqualTo(historicalId);
+            assertThat(savepointRollbacks).hasValue(1);
+            try (PreparedStatement ps = actual.prepareStatement(
+                    "SELECT uuid, name FROM vg_users WHERE id = ?")) {
+                ps.setInt(1, currentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    assertThat(rs.getString(1)).isEqualTo(currentUuid.toString());
+                    assertThat(rs.getString(2)).endsWith(currentUuid.toString());
+                }
+            }
+        }
+    }
+
+    @Test
     void uniqueClassifierDoesNotTreatOtherIntegrityFailuresAsDuplicateRaces() {
         assertThat(AbstractJdbcDao.isUniqueConstraintViolation(
                 new SQLException("FOREIGN KEY constraint failed", "23000", 1452))).isFalse();
@@ -265,6 +309,49 @@ class AbstractJdbcDaoUserResolutionTest {
                         }
                     }
                     return invoke(delegate, method, args);
+                });
+    }
+
+    private static Connection postgresAbortConnection(Connection actual, AtomicInteger savepointRollbacks) {
+        AtomicInteger aborted = new AtomicInteger();
+        return (Connection) Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+                    String methodName = method.getName();
+                    if ("rollback".equals(methodName) && args != null && args.length == 1
+                            && args[0] instanceof Savepoint) {
+                        Object result = invoke(actual, method, args);
+                        aborted.set(0);
+                        savepointRollbacks.incrementAndGet();
+                        return result;
+                    }
+                    if ("prepareStatement".equals(methodName) && aborted.get() != 0) {
+                        throw new SQLException("current transaction is aborted, commands ignored until end of transaction block",
+                                "25P02");
+                    }
+                    if ("prepareStatement".equals(methodName) && args != null && args.length > 0
+                            && args[0] instanceof String sql && sql.startsWith("INSERT INTO vg_users")) {
+                        PreparedStatement delegate = (PreparedStatement) invoke(actual, method, args);
+                        return abortingStatement(delegate, aborted);
+                    }
+                    return invoke(actual, method, args);
+                });
+    }
+
+    private static PreparedStatement abortingStatement(PreparedStatement delegate, AtomicInteger aborted) {
+        return (PreparedStatement) Proxy.newProxyInstance(
+                PreparedStatement.class.getClassLoader(),
+                new Class<?>[]{PreparedStatement.class},
+                (proxy, method, args) -> {
+                    try {
+                        return invoke(delegate, method, args);
+                    } catch (SQLException ex) {
+                        if (AbstractJdbcDao.isUniqueConstraintViolation(ex)) {
+                            aborted.set(1);
+                        }
+                        throw ex;
+                    }
                 });
     }
 
