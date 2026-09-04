@@ -3,7 +3,7 @@
 ## Repository identity
 
 - **Repository:** `Vonix-Network/VonixGuardian`
-- **Canonical checkout for this candidate:** `/root/work/mod-v2-common-migration-20260825/candidates-r14/guardian`
+- **Canonical checkout for this candidate:** `/root/work/vg-null-name-hotfix-20260903/source`
 - **Default branch:** `main`
 - **Project release:** **`2.0.2`** successor hotfix candidate
 - **Common-generation lineage:** begins at `2.0.0`
@@ -126,10 +126,10 @@ Historical release text must remain historical and must not be rewritten as the 
 ## Release procedure
 
 1. Verify `main`, remote identity, current commit/tree, existing tags, and releases.
-2. Confirm every lane embeds `2.0.0`.
+2. Confirm every lane embeds `2.0.2`.
 3. Push the exact default-branch commit without force.
 4. Run build-only CI and require 9/9 success.
-5. Push only the exact `v2.0.0` tag.
+5. Push only the exact `v2.0.2` tag.
 6. Verify the tag-triggered release, nine JARs, `SHA256SUMS`, notes, and stable/prerelease state.
 7. Independently read back the release commit/tree and every asset digest.
 8. Keep live server/database activation explicitly unperformed unless separately evidenced and authorized.
