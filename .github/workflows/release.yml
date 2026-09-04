@@ -48,8 +48,9 @@ jobs:
           MOD_PATH="${MOD_PATH//:/\/}"
           # Strip leading 'v' from the tag, e.g. 'v1.0.0' -> '1.0.0'
           VERSION="${GITHUB_REF_NAME#v}"
-          JAR=$(find "$MOD_PATH" -name 'vonixguardian-*.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' ! -name '*dev*' | head -1)
-          test -n "$JAR"
+          mapfile -t JARS < <(find "$MOD_PATH" -type f -name 'vonixguardian-*.jar' ! -name '*sources*' ! -name '*slim*' ! -name '*shadow*' ! -name '*dev*' ! -name '*-all.jar' | sort)
+          test "${#JARS[@]}" -eq 1
+          JAR="${JARS[0]}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "path=$JAR" >> $GITHUB_OUTPUT
           # Sanitize artifact name: colon is forbidden in upload-artifact@v4 (NTFS portability)
@@ -77,9 +78,11 @@ jobs:
       - name: Stage jars + checksums
         run: |
           mkdir -p release
-          for j in $(find dist -name '*.jar'); do
+          for j in $(find dist -type f -name '*.jar'); do
             cp "$j" release/
           done
+          test "$(find release -maxdepth 1 -type f -name '*.jar' | wc -l)" -eq 9
+          test -z "$(find release -maxdepth 1 -type f -name '*-all.jar' -print -quit)"
           cd release
           ls -la
           sha256sum *.jar > SHA256SUMS
@@ -91,7 +94,16 @@ jobs:
           {
             echo "## VonixGuardian ${GITHUB_REF_NAME}"
             echo
-            echo "Server-side block / inventory / entity audit + rollback for modded Minecraft. CoreProtect 1:1 feature surface with universal modded-entity griefing attribution."
+            echo "Server-side block, inventory, and entity auditing with rollback tools for modded Minecraft."
+            echo
+            echo "### Highlights"
+            echo
+            echo "- Fixes quarantine recovery failures caused by malformed actor identities and valid actor-name collisions such as ItemFrame."
+            echo "- Preserves UUID-based attribution and assigns deterministic aliases when a display name is already occupied."
+            echo "- Uses transaction-safe recovery handling for duplicate-name races, including PostgreSQL-style transaction-abort behavior."
+            echo "- No database schema migration is required for this fix."
+            echo
+            echo "The correction is shared across all nine supported Fabric, Forge, and NeoForge version/loader cells."
             echo
             echo "### Drop-in jars"
             echo
