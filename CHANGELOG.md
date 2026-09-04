@@ -5,35 +5,23 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.2] - 2026-09-04
+## [2.0.1] - Unreleased candidate (2026-09-04)
 
-Successor hotfix candidate for valid actor-name collisions against the globally unique `vg_users.name` key.
-
-### Fixed
-
-- Preserve a valid actor name when it is not already occupied, while assigning a deterministic collision alias when another UUID-bearing or UUID-less identity already owns that name.
-- Keep existing UUID lookup authoritative and leave conflicting historical rows unchanged.
-- Cache UUID-less collision resolutions by their original canonical name so repeated `ItemFrame`-style actions do not repeat the same failed insert attempt.
-- Added SQLite regression coverage for repeated UUID-bearing and UUID-less `ItemFrame`-style name collisions.
-
-### Verification boundary
-
-- This is a 2.0.2 successor candidate derived from the accepted 2.0.1 source line; the predecessor remains immutable.
-- No live server, database, deployment, migration, publication, restart, or release effect is performed by this source candidate.
-
-## [2.0.1] - 2026-09-03
-
-Hotfix candidate for malformed actor identities that could leave quarantine recovery retrying a deterministic `vg_users.name` unique-key failure.
+Hotfix candidate for malformed actor identities and valid actor-name collisions that could leave quarantine recovery retrying a deterministic `vg_users.name` unique-key failure.
 
 ### Fixed
 
 - Canonicalize Java-null, blank, and literal `null` actor names to the existing `#unknown` sentinel for UUID-less actions; UUID-bearing malformed identities use a deterministic `#unknown:<uuid>` alias so attribution remains distinct.
-- Re-read once after a duplicate-key race instead of retrying the same deterministic user insert indefinitely; existing UUID lookup remains authoritative and conflicting historical rows are not rewritten.
-- Added SQLite regression coverage for legacy `name='null'` rows, malformed-name normalization, valid-name preservation, and bounded duplicate-key recovery.
+- Preserve a valid actor name when it is not already occupied, while assigning a deterministic collision alias when another UUID-bearing or UUID-less identity already owns that name.
+- Keep existing UUID lookup authoritative and leave conflicting historical rows unchanged.
+- Re-read once after a duplicate-key race instead of retrying the same deterministic user insert indefinitely; JDBC savepoints protect both speculative inserts from PostgreSQL-style transaction aborts.
+- Cache UUID-less collision resolutions by their original canonical name so repeated `ItemFrame`-style actions do not repeat the same failed insert attempt.
+- Added SQLite regression coverage for legacy `name='null'` rows, malformed-name normalization, valid-name preservation, bounded duplicate-key recovery, and repeated `ItemFrame`-style collisions.
 
 ### Verification boundary
 
 - The fix is in shared `core` and is rebuilt into all nine supported loader/version cells in this candidate.
+- No `2.0.1` release has been published; this source snapshot is an unreleased candidate only.
 - No live server, database, deployment, migration, publication, restart, or release effect is performed by this source candidate.
 
 ## [2.0.0] - 2026-08-28

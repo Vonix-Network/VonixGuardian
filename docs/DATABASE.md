@@ -1,6 +1,6 @@
 # VonixGuardian — Database Reference
 
-**Version:** 2.0.2 (successor hotfix candidate)
+**Version:** 2.0.1 (unreleased hotfix candidate)
 **Schema version:** 8 (see `vg_schema_version`)
 **Source of truth:** `core/src/main/java/network/vonix/guardian/core/storage/Schema.java`
 
