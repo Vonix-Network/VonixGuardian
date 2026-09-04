@@ -1045,16 +1045,39 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 if (found == null && nameOccupiedOn(c, resolveName)) {
                     String collisionName = collisionUserName(uuid, resolveName);
                     if (!collisionName.equals(resolveName)) {
+                        Savepoint aliasSavepoint = null;
                         try {
+                            if (!c.getAutoCommit()) {
+                                aliasSavepoint = c.setSavepoint("vg_resolve_user_alias");
+                            }
                             found = insertUserOn(c, uuid, collisionName, now);
                             resolveName = collisionName;
                         } catch (SQLException aliasEx) {
+                            if (aliasSavepoint != null) {
+                                try {
+                                    // Keep a second speculative insert from
+                                    // poisoning the enclosing PostgreSQL transaction.
+                                    c.rollback(aliasSavepoint);
+                                } catch (SQLException rollbackEx) {
+                                    aliasEx.addSuppressed(rollbackEx);
+                                    throw aliasEx;
+                                }
+                            }
                             if (!isUniqueConstraintViolation(aliasEx)) {
                                 throw aliasEx;
                             }
                             found = findUserIdOn(c, uuid, collisionName);
                             if (found != null) {
                                 resolveName = collisionName;
+                            }
+                        } finally {
+                            if (aliasSavepoint != null) {
+                                try {
+                                    c.releaseSavepoint(aliasSavepoint);
+                                } catch (SQLException ignored) {
+                                    // Savepoint release is cleanup only; the
+                                    // enclosing transaction remains authoritative.
+                                }
                             }
                         }
                     }
