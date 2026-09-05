@@ -3,6 +3,7 @@ package network.vonix.guardian.core.rollback;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.action.NbtPayload;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,59 @@ class NbtDecodeFailureFallbackTest {
             "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeWorldMutator.java",
             "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/NeoForgeWorldMutator.java"
     );
+
+    @Test
+    void fabricDecodeNbt_rejectsOversizedBeforeNbtIoRead() throws Exception {
+        Path root = repoRoot();
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
+        String mutator = Files.readString(root.resolve(
+                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricWorldMutator.java"));
+        int decodeNbt = mutator.indexOf("private static CompoundTag decodeNbt(byte[] bytes)");
+        int tooLarge = mutator.indexOf("NbtPayload.tooLarge", decodeNbt);
+        int nbtIo = mutator.indexOf("NbtIo.read", decodeNbt);
+        int decodeItem = mutator.indexOf("private ItemStack decodeItemStack");
+        int plainItem = mutator.indexOf("itemNbt == null || itemNbt.length == 0", decodeItem);
+        int decodeItemNbt = mutator.indexOf("decodeNbt(itemNbt)", decodeItem);
+        assertThat(decodeNbt).isGreaterThan(-1);
+        assertThat(tooLarge).as("oversized guard before NbtIo.read").isGreaterThan(decodeNbt).isLessThan(nbtIo);
+        assertThat(plainItem).as("plain-item branch is only for genuine absent NBT")
+                .isGreaterThan(decodeItem).isLessThan(decodeItemNbt);
+    }
+
+    @Test
+    void fabricNbtCapture_preservesOversizedBytesInsteadOfNull() throws Exception {
+        Path root = repoRoot();
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
+        String capture = Files.readString(root.resolve(
+                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/NbtCapture.java"));
+        int overflow = capture.indexOf("if (bytes.length > MAX_NBT_BYTES)");
+        int returnBytes = capture.indexOf("return bytes;", overflow);
+        assertThat(overflow).isGreaterThan(-1);
+        assertThat(returnBytes).as("size overflow still returns serialized bytes").isGreaterThan(overflow);
+        String overflowBlock = capture.substring(overflow, returnBytes);
+        assertThat(overflowBlock).doesNotContain("return null");
+        assertThat(capture).contains("NbtIo.write failed");
+    }
+
+    @Test
+    void fabricMixinBridge_routesSlotStackFullPayloadsToNbtAwareSubmitters() throws Exception {
+        Path root = repoRoot();
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
+        String bridge = Files.readString(root.resolve(
+                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricMixinBridge.java"));
+        assertThat(bridge)
+                .contains("change.itemNbt()")
+                .contains("submitContainerChange")
+                .contains("submitHopperTransfer")
+                .contains("toSlotStacks")
+                .contains("NbtCapture.itemStack")
+                .contains("pull.itemNbt()")
+                .contains("push.itemNbt()");
+        int itemDrop = bridge.indexOf("public static void itemDrop");
+        int nbtDrop = bridge.indexOf("submitItemDrop", itemDrop);
+        int nullDrop = bridge.indexOf("itemNbt != null", itemDrop);
+        assertThat(nullDrop).isGreaterThan(itemDrop).isLessThan(nbtDrop);
+    }
 
     @Test
     void every_loader_decodes_block_nbt_before_setBlock_and_checks_entity_type_before_spawn() throws Exception {
@@ -92,6 +146,32 @@ class NbtDecodeFailureFallbackTest {
         engine = new RollbackEngine(dao, new NbtFailingMutator(), sync);
         when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(1L);
         when(dao.closeRollbackBatch(anyLong())).thenReturn(1);
+    }
+
+    @Test
+    void oversizedItemNbt_neverFallsThroughToLegacyPlainItemPath() throws Exception {
+        OversizedFailClosedMutator m = new OversizedFailClosedMutator();
+        engine = new RollbackEngine(dao, m, Runnable::run);
+        byte[] oversized = new byte[NbtPayload.MAX_BYTES + 1];
+        oversized[0] = 21;
+        Action a = new ActionBuilder()
+                .id(50L)
+                .type(ActionType.CONTAINER_WITHDRAW)
+                .worldId("minecraft:overworld")
+                .actorName("Notch")
+                .position(8, 64, 8)
+                .targetId("minecraft:diamond_sword")
+                .amount(1)
+                .itemNbt(oversized)
+                .inventorySlot(7)
+                .build();
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(a)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
+                .isInstanceOf(RollbackMutationException.class);
+        assertThat(m.nbtSlotCalls.get()).isEqualTo(1);
+        assertThat(m.legacyCalls.get()).isEqualTo(0);
+        assertThat(m.plainItemCalls.get()).isEqualTo(0);
     }
 
     @Test
@@ -170,6 +250,46 @@ class NbtDecodeFailureFallbackTest {
 
         @Override public void setBlock(String w, int x, int y, int z, String t, String m) {
             legacyCalls++;
+        }
+    }
+
+    /** Records NBT-aware slot dispatch and refuses legacy/plain-item fallbacks. */
+    static final class OversizedFailClosedMutator implements WorldMutator {
+        final AtomicInteger nbtSlotCalls = new AtomicInteger();
+        final AtomicInteger legacyCalls = new AtomicInteger();
+        final AtomicInteger plainItemCalls = new AtomicInteger();
+
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String t, int a, String m) {
+            legacyCalls.incrementAndGet();
+            plainItemCalls.incrementAndGet();
+            return true;
+        }
+        @Override public boolean tryGiveOrDrop(String w, int x, int y, int z, String t, int a, String m, byte[] nbt) {
+            if (nbt == null || nbt.length == 0) {
+                return tryGiveOrDrop(w, x, y, z, t, a, m);
+            }
+            nbtSlotCalls.incrementAndGet();
+            return false;
+        }
+        @Override public boolean tryAddToContainer(String w, int x, int y, int z, String t, int a,
+                                                   String m, byte[] nbt, Integer slot) {
+            if (slot == null) {
+                return tryGiveOrDrop(w, x, y, z, t, a, m, nbt);
+            }
+            nbtSlotCalls.incrementAndGet();
+            return false;
+        }
+        @Override public boolean tryRemoveFromContainer(String w, int x, int y, int z, String t, int a) {
+            legacyCalls.incrementAndGet();
+            return true;
+        }
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String t, String m) {
+            legacyCalls.incrementAndGet();
+            return true;
+        }
+        @Override public boolean tryRespawnEntity(String w, int x, int y, int z, String t, String m) {
+            legacyCalls.incrementAndGet();
+            return true;
         }
     }
 }

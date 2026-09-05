@@ -80,11 +80,20 @@ public record Action(
     byte[] itemNbt,
     byte[] entityNbt,
     Long pairId,
-    /** Exact PlayerInventory slot for INVENTORY_* rows; null for other actions. */
+    /**
+     * Exact slot identity. Player-inventory rows use the PlayerInventory index;
+     * container and hopper rows reuse the same v7/v8 {@code inventory_slot}
+     * column. {@code null} means the row is not slot-addressed (historical
+     * 2.0.1 container/hopper captures).
+     */
     Integer inventorySlot
 ) {
 
-    /** Treat {@code 0} as unpaired so producers can pass a primitive zero. */
+    /**
+     * Treat {@code 0} as unpaired so producers can pass a primitive zero.
+     * Oversized NBT is preserved so {@link #hasOversizedNbt()} can distinguish
+     * it from genuine absence; Guardian admission rejects it before queueing.
+     */
     public Action {
         if (pairId != null && pairId == 0L) {
             pairId = null;
@@ -175,6 +184,16 @@ public record Action(
     public boolean hasNbt() {
         return oldBlockState != null || newBlockState != null
             || blockEntityNbt != null || itemNbt != null || entityNbt != null;
+    }
+
+    /**
+     * True when any binary NBT field exceeds {@link NbtPayload#MAX_BYTES}.
+     * Null and empty payloads are not oversized.
+     */
+    public boolean hasOversizedNbt() {
+        return NbtPayload.tooLarge(blockEntityNbt)
+            || NbtPayload.tooLarge(itemNbt)
+            || NbtPayload.tooLarge(entityNbt);
     }
 
     /**

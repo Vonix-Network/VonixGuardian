@@ -60,9 +60,10 @@ import java.util.List;
  *       databases are upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V6PairId}.</li>
  *   <li><b>v7</b> — additive nullable {@code inventory_slot INTEGER} on
- *       {@code vg_actions}; exact player-inventory slot identity for
- *       compartment-safe rollback. {@code NULL} means non-inventory row.
- *       Added in the r38 candidate.</li>
+ *       {@code vg_actions}; exact slot identity for player-inventory rows
+ *       and, without a later migration, container/hopper rows. {@code NULL}
+ *       means the row is not slot-addressed (including historical 2.0.1
+ *       container captures). Added in the r38 candidate.</li>
  *   <li><b>v8</b> — additive {@code vg_repair_required} (durable
  *       uncompensated rollback state) and {@code vg_sink_outbox} (JDBC/JSONL
  *       dual-write staging). Existing v7 databases are upgraded in place by

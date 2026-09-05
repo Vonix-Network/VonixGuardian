@@ -945,6 +945,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // callers may construct Actions directly, so command privacy must be
         // enforced before either gating or queueing can retain the payload.
         a = CommandPayloadSanitizer.sanitizeForPersistence(a);
+        if (a.hasOversizedNbt()) {
+            LOG.debug(MARKER,
+                    "rejecting oversized NBT action type={} blockEntityBytes={} itemBytes={} entityBytes={}",
+                    a.type(),
+                    a.blockEntityNbt() == null ? 0 : a.blockEntityNbt().length,
+                    a.itemNbt() == null ? 0 : a.itemNbt().length,
+                    a.entityNbt() == null ? 0 : a.entityNbt().length);
+            gated.incrementAndGet();
+            return false;
+        }
         if (maintenanceWriteBlock.get()) {
             gated.incrementAndGet();
             return false;
@@ -972,6 +982,19 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         }
         first = CommandPayloadSanitizer.sanitizeForPersistence(first);
         second = CommandPayloadSanitizer.sanitizeForPersistence(second);
+        if (first.hasOversizedNbt() || second.hasOversizedNbt()) {
+            LOG.debug(MARKER,
+                    "rejecting oversized NBT pair firstType={} secondType={} firstItemBytes={} secondItemBytes={} firstBlockEntityBytes={} secondBlockEntityBytes={} firstEntityBytes={} secondEntityBytes={}",
+                    first.type(), second.type(),
+                    first.itemNbt() == null ? 0 : first.itemNbt().length,
+                    second.itemNbt() == null ? 0 : second.itemNbt().length,
+                    first.blockEntityNbt() == null ? 0 : first.blockEntityNbt().length,
+                    second.blockEntityNbt() == null ? 0 : second.blockEntityNbt().length,
+                    first.entityNbt() == null ? 0 : first.entityNbt().length,
+                    second.entityNbt() == null ? 0 : second.entityNbt().length);
+            gated.addAndGet(2);
+            return false;
+        }
         if (maintenanceWriteBlock.get()) {
             gated.addAndGet(2);
             return false;
@@ -1503,6 +1526,28 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     @Override
+    public void submitContainerChange(UUID actorUuid, String actorName, String worldId,
+                                      int x, int y, int z, String itemId, int delta, String sourceTag,
+                                      byte[] itemNbt, Integer inventorySlot,
+                                      String oldBlockState, String newBlockState,
+                                      byte[] blockEntityNbt, Long pairId) {
+        if (delta == 0) {
+            return;
+        }
+        boolean nbt = persistNbt();
+        submit(seed(delta > 0 ? ActionType.CONTAINER_DEPOSIT : ActionType.CONTAINER_WITHDRAW,
+                    actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(Math.abs(delta)).sourceTag(sourceTag)
+                .itemNbt(nbt ? itemNbt : null)
+                .inventorySlot(inventorySlot)
+                .oldBlockState(nbt ? oldBlockState : null)
+                .newBlockState(nbt ? newBlockState : null)
+                .blockEntityNbt(nbt ? blockEntityNbt : null)
+                .pairId(pairId)
+                .build());
+    }
+
+    @Override
     public void submitItemDrop(UUID actorUuid, String actorName, String worldId,
                                int x, int y, int z, String itemId, int amount, String sourceTag,
                                byte[] itemNbt) {
@@ -1600,6 +1645,24 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     @Override
+    public void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt, Integer inventorySlot,
+                                 String oldBlockState, String newBlockState,
+                                 byte[] blockEntityNbt, Long pairId) {
+        boolean nbt = persistNbt();
+        submit(seed(ActionType.HOPPER_PUSH, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(nbt ? itemNbt : null)
+                .inventorySlot(inventorySlot)
+                .oldBlockState(nbt ? oldBlockState : null)
+                .newBlockState(nbt ? newBlockState : null)
+                .blockEntityNbt(nbt ? blockEntityNbt : null)
+                .pairId(pairId)
+                .build());
+    }
+
+    @Override
     public void submitHopperPull(UUID actorUuid, String actorName, String worldId,
                                  int x, int y, int z, String itemId, int amount, String sourceTag,
                                  byte[] itemNbt) {
@@ -1611,6 +1674,68 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
                 .itemNbt(itemNbt)
                 .build());
+    }
+
+    @Override
+    public void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                                 int x, int y, int z, String itemId, int amount, String sourceTag,
+                                 byte[] itemNbt, Integer inventorySlot,
+                                 String oldBlockState, String newBlockState,
+                                 byte[] blockEntityNbt, Long pairId) {
+        boolean nbt = persistNbt();
+        submit(seed(ActionType.HOPPER_PULL, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(itemId).amount(amount).sourceTag(sourceTag)
+                .itemNbt(nbt ? itemNbt : null)
+                .inventorySlot(inventorySlot)
+                .oldBlockState(nbt ? oldBlockState : null)
+                .newBlockState(nbt ? newBlockState : null)
+                .blockEntityNbt(nbt ? blockEntityNbt : null)
+                .pairId(pairId)
+                .build());
+    }
+
+    @Override
+    public void submitHopperTransfer(UUID actorUuid, String actorName, String worldId,
+                                     network.vonix.guardian.core.event.ContainerTransport.TransferSide pull,
+                                     network.vonix.guardian.core.event.ContainerTransport.TransferSide push,
+                                     String sourceTag) {
+        if (pull == null || push == null) {
+            return;
+        }
+        long pair = network.vonix.guardian.core.event.HopperTransportPairs.nextPairId();
+        boolean nbt = persistNbt();
+        Action pullAction = seed(ActionType.HOPPER_PULL, actorUuid, actorName, worldId)
+                .position(pull.x(), pull.y(), pull.z())
+                .targetId(pull.itemId())
+                .amount(pull.amount())
+                .sourceTag(sourceTag)
+                .itemNbt(nbt ? pull.itemNbt() : null)
+                .inventorySlot(pull.slot())
+                .oldBlockState(nbt ? pull.oldBlockState() : null)
+                .newBlockState(nbt ? pull.newBlockState() : null)
+                .blockEntityNbt(nbt ? pull.blockEntityNbt() : null)
+                .pairId(pair)
+                .build();
+        Action pushAction = seed(ActionType.HOPPER_PUSH, actorUuid, actorName, worldId)
+                .position(push.x(), push.y(), push.z())
+                .targetId(push.itemId())
+                .amount(push.amount())
+                .sourceTag(sourceTag)
+                .itemNbt(nbt ? push.itemNbt() : null)
+                .inventorySlot(push.slot())
+                .oldBlockState(nbt ? push.oldBlockState() : null)
+                .newBlockState(nbt ? push.newBlockState() : null)
+                .blockEntityNbt(nbt ? push.blockEntityNbt() : null)
+                .pairId(pair)
+                .build();
+        boolean pullDup = network.vonix.guardian.core.event.ContainerTransport
+                .suppressDuplicate(pullAction, pullAction.timestamp());
+        boolean pushDup = network.vonix.guardian.core.event.ContainerTransport
+                .suppressDuplicate(pushAction, pushAction.timestamp());
+        if (pullDup && pushDup) {
+            return;
+        }
+        submitAcceptedPair(pullAction, pushAction);
     }
 
     // -------------------------------------------------------------------- inspector

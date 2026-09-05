@@ -27,7 +27,7 @@ import java.util.Map;
  */
 final class NbtCapture {
     private static final Logger LOG = LoggerFactory.getLogger(NbtCapture.class);
-    static final int MAX_NBT_BYTES = 512 * 1024;
+    static final int MAX_NBT_BYTES = network.vonix.guardian.core.action.NbtPayload.MAX_BYTES;
     private NbtCapture() {}
 
     static byte[] blockEntity(BlockEntity be, HolderLookup.Provider registries) {
@@ -103,7 +103,6 @@ final class NbtCapture {
             byte[] bytes = baos.toByteArray();
             if (bytes.length > MAX_NBT_BYTES) {
                 LOG.debug(Guardian.MARKER, "NBT payload {} bytes exceeds cap {}", bytes.length, MAX_NBT_BYTES);
-                return null;
             }
             return bytes;
         } catch (Throwable t) { LOG.debug(Guardian.MARKER, "NbtIo.write failed: {}", t.toString()); return null; }

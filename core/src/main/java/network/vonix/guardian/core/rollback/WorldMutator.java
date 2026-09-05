@@ -79,6 +79,34 @@ public interface WorldMutator {
         return false;
     }
 
+    /**
+     * Slot-aware container removal. {@code inventorySlot == null} falls back to
+     * the historical scan-all path so 2.0.1 rows keep compiling. A non-null
+     * slot that this implementation cannot honour must return {@code false}
+     * (fail closed) rather than dropping items or scanning other slots.
+     */
+    default boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount,
+                                           String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+        if (inventorySlot != null) {
+            return false;
+        }
+        return tryRemoveFromContainer(worldId, x, y, z, itemId, amount);
+    }
+
+    /**
+     * Slot-aware container insertion. Must not drop leftovers on the ground.
+     * A non-null slot that cannot take the complete stack returns {@code false}.
+     * {@code inventorySlot == null} may fall back to {@link #tryGiveOrDrop}
+     * for historical rows.
+     */
+    default boolean tryAddToContainer(String worldId, int x, int y, int z, String itemId, int amount,
+                                      String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+        if (inventorySlot != null) {
+            return false;
+        }
+        return tryGiveOrDrop(worldId, x, y, z, itemId, amount, targetMeta, itemNbt);
+    }
+
     /** Legacy slot-less overload retained for existing mutator implementations. */
     default boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
                                              String targetMeta, byte[] itemNbt) {

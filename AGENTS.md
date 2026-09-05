@@ -5,11 +5,11 @@
 - **Repository:** `Vonix-Network/VonixGuardian`
 - **Canonical checkout for this candidate:** `/root/work/vg-null-name-hotfix-20260903/source`
 - **Default branch:** `main`
-- **Project release:** **`2.0.1`** unreleased hotfix candidate
+- **Project release:** **`3.0.0-m1`** Milestone 1 preview candidate
 - **Common-generation lineage:** begins at `2.0.0`
 - **Project role:** server-side audit, attribution, lookup, rollback, purge, and database utilities for modded Minecraft
 
-This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; this unreleased hotfix candidate advances every lane to `2.0.1`.
+This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; this Milestone 1 preview advances the accepted container-fidelity slice to `3.0.0-m1` for the 1.21.1 Fabric preview artifact.
 
 ## Read first
 
@@ -35,10 +35,10 @@ The repository-level `core/` module owns loader-neutral storage, audit, rollback
 
 ## Version contract
 
-- Every Guardian lane uses the same embedded release version: **`2.0.1`** in this hotfix candidate.
-- The intended release tag and GitHub release title are **`v2.0.1`**.
+- The Milestone 1 preview artifact embeds **`3.0.0-m1`**.
+- The GitHub pre-release tag and title are **`v3.0.0-m1`**.
 - Historical releases such as `v1.0.0`, `v1.4.1`, and `v1.4.3` remain immutable.
-- Keep root `gradle.properties`, `GuardianAPI.PLUGIN_VERSION`, Fabric nested-core metadata, NeoForge metadata expansion, tests, README, docs, and changelog aligned.
+- Keep root `gradle.properties`, `GuardianAPI.PLUGIN_VERSION`, Fabric nested-core metadata, NeoForge metadata expansion, tests, README, docs, and changelog aligned for any versioned release successor.
 - Do not add Minecraft or loader suffixes to the embedded public version; those belong in artifact names and the release matrix.
 
 ## Build and CI
@@ -74,7 +74,7 @@ Do not infer release readiness from a core-only build. The full nine-cell CI mat
 
 ## Packaging rules
 
-- Preserve the loader-specific metadata and exact `2.0.1` expansion.
+- Preserve the loader-specific metadata and exact `3.0.0-m1` expansion for the preview artifact.
 - Keep Fabric nested core JAR names synchronized with the core artifact version.
 - Keep NeoForge 26.1.2 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
 - Exclude module descriptors and signature files only where the existing packaging contract requires it.
@@ -125,12 +125,12 @@ Historical release text must remain historical and must not be rewritten as the 
 
 ## Release procedure
 
-1. Verify `main`, remote identity, current commit/tree, existing tags, and releases.
-2. Confirm every lane embeds `2.0.1`.
-3. Push the exact default-branch commit without force.
-4. Run build-only CI and require 9/9 success.
-5. Push only the exact `v2.0.1` tag.
-6. Verify the tag-triggered release, nine JARs, `SHA256SUMS`, notes, and stable/prerelease state.
+1. Verify the release branch, remote identity, current commit/tree, existing tags, and releases.
+2. Confirm the selected preview artifact embeds `3.0.0-m1`.
+3. Push only the owner-authorized release branch; do not mutate `main` for this Milestone 1 preview.
+4. Run the scoped core/Fabric gates and require fresh Terra acceptance for the exact versioned artifact.
+5. Push only the exact `v3.0.0-m1` tag.
+6. Verify the GitHub pre-release, one declared primary JAR, `SHA256SUMS`, notes, and prerelease state.
 7. Independently read back the release commit/tree and every asset digest.
 8. Keep live server/database activation explicitly unperformed unless separately evidenced and authorized.
 
@@ -149,10 +149,10 @@ Stop and report on:
 
 ## Completion checklist
 
-- [ ] Root AGENTS, README, docs, and changelog agree on Guardian `2.0.1`.
+- [ ] Root AGENTS, README, docs, and changelog agree on the selected release version.
 - [ ] All five version directories remain in this repository.
-- [ ] All nine loader cells embed `2.0.1`.
+- [ ] The selected preview artifact embeds `3.0.0-m1`; full nine-cell version closure remains a later gate.
 - [ ] Manual CI dispatch cannot publish a release.
 - [ ] CI build-only matrix passes 9/9.
-- [ ] `v2.0.1` release assets and hashes read back remotely.
+- [ ] `v3.0.0-m1` preview asset and hash read back remotely.
 - [ ] No live deployment, restart, or production migration is claimed without evidence.

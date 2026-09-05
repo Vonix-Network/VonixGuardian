@@ -607,4 +607,60 @@ public interface EventSubmitter {
                                   byte[] itemNbt) {
         submitHopperPull(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag);
     }
+
+    /**
+     * Slot- and NBT-aware container change. {@code inventorySlot} reuses the
+     * v7 column; {@code pairId} reuses v6. Defaults drop the extra fields.
+     */
+    default void submitContainerChange(UUID actorUuid, String actorName, String worldId,
+                                       int x, int y, int z, String itemId, int delta, String sourceTag,
+                                       byte[] itemNbt, Integer inventorySlot,
+                                       String oldBlockState, String newBlockState,
+                                       byte[] blockEntityNbt, Long pairId) {
+        submitContainerChange(actorUuid, actorName, worldId, x, y, z, itemId, delta, sourceTag, itemNbt);
+    }
+
+    /**
+     * Slot-aware hopper push. Defaults drop slot/state/pair fields.
+     */
+    default void submitHopperPush(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String itemId, int amount, String sourceTag,
+                                  byte[] itemNbt, Integer inventorySlot,
+                                  String oldBlockState, String newBlockState,
+                                  byte[] blockEntityNbt, Long pairId) {
+        submitHopperPush(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag, itemNbt);
+    }
+
+    /**
+     * Slot-aware hopper pull. Defaults drop slot/state/pair fields.
+     */
+    default void submitHopperPull(UUID actorUuid, String actorName, String worldId,
+                                  int x, int y, int z, String itemId, int amount, String sourceTag,
+                                  byte[] itemNbt, Integer inventorySlot,
+                                  String oldBlockState, String newBlockState,
+                                  byte[] blockEntityNbt, Long pairId) {
+        submitHopperPull(actorUuid, actorName, worldId, x, y, z, itemId, amount, sourceTag, itemNbt);
+    }
+
+    /**
+     * Atomic hopper source-pull + dest-push. The default submits sequentially;
+     * {@code Guardian} admits both halves or neither.
+     */
+    default void submitHopperTransfer(UUID actorUuid, String actorName, String worldId,
+                                      ContainerTransport.TransferSide pull,
+                                      ContainerTransport.TransferSide push,
+                                      String sourceTag) {
+        if (pull == null || push == null) {
+            return;
+        }
+        long pair = HopperTransportPairs.nextPairId();
+        submitHopperPull(actorUuid, actorName, worldId,
+                pull.x(), pull.y(), pull.z(), pull.itemId(), pull.amount(), sourceTag,
+                pull.itemNbt(), pull.slot(), pull.oldBlockState(), pull.newBlockState(),
+                pull.blockEntityNbt(), pair);
+        submitHopperPush(actorUuid, actorName, worldId,
+                push.x(), push.y(), push.z(), push.itemId(), push.amount(), sourceTag,
+                push.itemNbt(), push.slot(), push.oldBlockState(), push.newBlockState(),
+                push.blockEntityNbt(), pair);
+    }
 }

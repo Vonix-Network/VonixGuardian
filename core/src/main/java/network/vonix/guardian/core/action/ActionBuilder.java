@@ -356,7 +356,8 @@ public final class ActionBuilder {
      * and decoded on rollback via {@code NbtIo.read(...)}.
      *
      * <p>The DAO takes ownership of the byte[] reference; callers should not
-     * mutate it after this call.
+     * mutate it after this call. Oversized payloads are retained so admission
+     * can distinguish them from genuine absence.
      *
      * @param blockEntityNbt raw NBT bytes; may be {@code null}
      * @return this builder
@@ -407,7 +408,7 @@ public final class ActionBuilder {
         return this;
     }
 
-    /** Sets the exact player-inventory slot for an INVENTORY_* action. */
+    /** Sets the exact inventory or container/hopper slot. */
     public ActionBuilder inventorySlot(Integer inventorySlot) {
         if (inventorySlot != null && inventorySlot < 0) {
             throw new IllegalArgumentException("inventorySlot must be non-negative");

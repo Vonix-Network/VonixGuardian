@@ -368,20 +368,23 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 } else {
                     ps.setString(17, a.newBlockState());
                 }
-                if (a.blockEntityNbt() == null) {
+                byte[] blockEntityNbt = network.vonix.guardian.core.action.NbtPayload.admit(a.blockEntityNbt());
+                if (blockEntityNbt == null) {
                     ps.setNull(18, java.sql.Types.VARBINARY);
                 } else {
-                    ps.setBytes(18, a.blockEntityNbt());
+                    ps.setBytes(18, blockEntityNbt);
                 }
-                if (a.itemNbt() == null) {
+                byte[] itemNbt = network.vonix.guardian.core.action.NbtPayload.admit(a.itemNbt());
+                if (itemNbt == null) {
                     ps.setNull(19, java.sql.Types.VARBINARY);
                 } else {
-                    ps.setBytes(19, a.itemNbt());
+                    ps.setBytes(19, itemNbt);
                 }
-                if (a.entityNbt() == null) {
+                byte[] entityNbt = network.vonix.guardian.core.action.NbtPayload.admit(a.entityNbt());
+                if (entityNbt == null) {
                     ps.setNull(20, java.sql.Types.VARBINARY);
                 } else {
-                    ps.setBytes(20, a.entityNbt());
+                    ps.setBytes(20, entityNbt);
                 }
                 if (a.inventorySlot() == null) {
                     ps.setNull(21, java.sql.Types.INTEGER);

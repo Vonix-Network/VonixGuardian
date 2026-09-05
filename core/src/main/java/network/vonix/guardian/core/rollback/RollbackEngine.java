@@ -1059,7 +1059,23 @@ public final class RollbackEngine {
                     a.id(), a.pairId());
                 outcomes.add(WorldMutationResult.failed(a.id(), failure));
             } else {
-                outcomes.add(applyMutation(a, mode));
+                Action hopperSibling = network.vonix.guardian.core.event.HopperTransportPairs.siblingOf(a, batch);
+                if (hopperSibling != null) {
+                    int siblingIndex = batch.indexOf(hopperSibling);
+                    if (siblingIndex >= 0) {
+                        done.add(siblingIndex);
+                    }
+                    outcomes.addAll(applyHopperPair(a, hopperSibling, mode));
+                } else if (network.vonix.guardian.core.event.HopperTransportPairs.isMember(a)) {
+                    IllegalStateException failure = new IllegalStateException(
+                        "Incomplete hopper transport pair for action id=" + a.id()
+                            + " pairId=" + a.pairId());
+                    LOG.warn("RollbackEngine: refusing lone hopper pair member id={} pairId={}",
+                        a.id(), a.pairId());
+                    outcomes.add(WorldMutationResult.failed(a.id(), failure));
+                } else {
+                    outcomes.add(applyMutation(a, mode));
+                }
             }
         }
         return outcomes;
@@ -1110,6 +1126,59 @@ public final class RollbackEngine {
             return List.of(firstRepair, secondRepair);
         }
         return List.of(firstResult, secondResult);
+    }
+
+    private List<WorldMutationResult> applyHopperPair(Action a, Action b, RollbackResult.Mode mode) {
+        Action pull = a.type() == ActionType.HOPPER_PULL ? a : b;
+        Action push = a.type() == ActionType.HOPPER_PUSH ? a : b;
+        Action first = mode == RollbackResult.Mode.ROLLBACK ? push : pull;
+        Action second = mode == RollbackResult.Mode.ROLLBACK ? pull : push;
+
+        WorldMutationResult firstResult = applyMutation(first, mode);
+        if (firstResult.status() != WorldMutationResult.Status.APPLIED) {
+            Throwable cause = firstResult.failure() != null ? firstResult.failure()
+                : new IllegalStateException("hopper pair first half not applied: " + firstResult.status());
+            if (firstResult.status() == WorldMutationResult.Status.REPAIR_REQUIRED) {
+                return List.of(firstResult, WorldMutationResult.repairRequired(second.id(), second.pairId(),
+                    new IllegalStateException("hopper pair mate repair-required for action id=" + first.id(), cause)));
+            }
+            WorldMutationResult firstOut = firstResult.status() == WorldMutationResult.Status.FAILED
+                ? firstResult : WorldMutationResult.failed(first.id(), cause);
+            return List.of(firstOut, WorldMutationResult.failed(second.id(),
+                new IllegalStateException("hopper pair mate failed for action id=" + first.id(), cause)));
+        }
+
+        WorldMutationResult secondResult = applyMutation(second, mode);
+        if (secondResult.status() != WorldMutationResult.Status.APPLIED) {
+            WorldMutationResult compensation = compensateHopperHalf(first, mode);
+            Throwable cause = secondResult.failure() != null ? secondResult.failure()
+                : new IllegalStateException("hopper pair second half not applied: " + secondResult.status());
+            if (compensation.status() == WorldMutationResult.Status.APPLIED) {
+                return List.of(
+                    WorldMutationResult.failed(first.id(), new IllegalStateException(
+                        "hopper pair compensated=true after mate failure", cause)),
+                    secondResult.status() == WorldMutationResult.Status.FAILED
+                        ? secondResult : WorldMutationResult.failed(second.id(), cause));
+            }
+            IllegalStateException repair = new IllegalStateException(
+                    "hopper pair compensation failed; world may remain half-mutated"
+                            + " firstId=" + first.id() + " secondId=" + second.id(),
+                    compensation.failure() != null ? compensation.failure() : cause);
+            LOG.error("RollbackEngine: hopper pair compensation failed for action id={} after mate id={}; "
+                    + "persisting repair-required (world may remain half-mutated)",
+                    first.id(), second.id());
+            WorldMutationResult firstRepair = WorldMutationResult.repairRequired(first.id(), first.pairId(), repair);
+            WorldMutationResult secondRepair = secondResult.status() == WorldMutationResult.Status.REPAIR_REQUIRED
+                    ? secondResult : WorldMutationResult.repairRequired(second.id(), second.pairId(), repair);
+            return List.of(firstRepair, secondRepair);
+        }
+        return List.of(firstResult, secondResult);
+    }
+
+    private WorldMutationResult compensateHopperHalf(Action applied, RollbackResult.Mode mode) {
+        RollbackResult.Mode inverse = mode == RollbackResult.Mode.ROLLBACK
+            ? RollbackResult.Mode.RESTORE : RollbackResult.Mode.ROLLBACK;
+        return applyMutation(applied, inverse);
     }
 
     private WorldMutationResult compensateInventoryHalf(Action applied, RollbackResult.Mode mode) {
@@ -1184,10 +1253,19 @@ public final class RollbackEngine {
                     yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
-            case CONTAINER_DEPOSIT ->
-                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+            case CONTAINER_DEPOSIT -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
+                yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
+            }
             case CONTAINER_WITHDRAW -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryAddToContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
                 if (nbt) {
                     yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
@@ -1233,10 +1311,19 @@ public final class RollbackEngine {
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
                 mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             // --- v0.1.0 expansion: containers ---
-            case HOPPER_PUSH ->
-                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+            case HOPPER_PUSH -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
+                yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
+            }
             case HOPPER_PULL -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryAddToContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
                 if (nbt) {
                     yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
@@ -1340,6 +1427,10 @@ public final class RollbackEngine {
             case BLOCK_BREAK ->
                 mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
             case CONTAINER_DEPOSIT -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryAddToContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
                 if (nbt) {
                     yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
@@ -1348,9 +1439,14 @@ public final class RollbackEngine {
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
-            case CONTAINER_WITHDRAW ->
-                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+            case CONTAINER_WITHDRAW -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
+                yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
+            }
             case ITEM_DROP, ITEM_PICKUP -> {
                 LOG.warn("RollbackEngine: refusing to restore {} (id={}) — item entity identity required", a.type(), a.id());
                 yield false;
@@ -1387,6 +1483,10 @@ public final class RollbackEngine {
             }
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryAddToContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
                 if (nbt) {
                     yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
@@ -1395,9 +1495,14 @@ public final class RollbackEngine {
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
-            case HOPPER_PULL ->
-                mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+            case HOPPER_PULL -> {
+                if (a.inventorySlot() != null) {
+                    yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
+                }
+                yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
+            }
             // --- v0.1.0 expansion: entities ---
             case HANGING_PLACE -> {
                 if (nbt) {

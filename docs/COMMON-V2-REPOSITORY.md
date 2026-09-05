@@ -1,8 +1,8 @@
 # VonixGuardian 2.0.1 common-generation repository
 
-This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0** and this unreleased candidate is prepared as the hotfix label **`2.0.1`**.
+This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0**. The current `3.0.0-m1` Milestone 1 preview is a separate from-scratch CoreProtect/Ledger parity milestone over this repository and is limited to the accepted 1.21.1 Fabric stateful-container slice.
 
-`2.0.0` was the embedded stable release version for every supported lane in the historical common-generation release and identifies the first common-generation release line beginning at `2.0.0`. No `2.0.1` release has been published; this unreleased candidate combines malformed-identity normalization with valid-name collision and transaction-safe recovery. Existing historical releases, including `v1.0.0`, remain immutable.
+`2.0.0` was the embedded stable release version for every supported lane in the historical common-generation release and identifies the first common-generation release line beginning at `2.0.0`. The earlier `2.0.1` hotfix candidate remains preserved as superseded provenance; existing historical releases, including `v1.0.0`, remain immutable. The `3.0.0-m1` preview does not claim full nine-cell closure or complete CoreProtect v24 parity.
 
 ## One repository, all supported Minecraft lanes
 
@@ -19,7 +19,7 @@ The root `core/` module contains the storage, queue, audit, query, rollback, sch
 ## Release status
 
 - GitHub release automation: `.github/workflows/release.yml` builds all nine lanes on `v*` tags and creates a stable release after every matrix job passes; it does not deploy, activate, restart, or migrate a server/database.
-- Embedded project version: **`2.0.1`** for every supported lane in this hotfix candidate.
+- Embedded project version: **`3.0.0-m1`** for the selected Milestone 1 preview artifact; other lanes are not part of this preview release packet.
 - Release validation: the tag-triggered workflow builds and packages all nine lanes and publishes SHA-256 checksums with each tagged release.
 - Installation: choose the artifact matching your Minecraft version, loader, and Java environment, then follow [`docs/INSTALL.md`](INSTALL.md).
 - Live Minecraft activation, deployment, server restart, and production database migration were **not performed** for this source snapshot.

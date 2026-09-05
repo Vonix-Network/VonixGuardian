@@ -26,6 +26,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.action.NbtPayload;
 import network.vonix.guardian.core.rollback.WorldMutator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -136,6 +137,57 @@ public final class FabricWorldMutator implements WorldMutator {
             return level.addFreshEntity(drop);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "giveOrDrop failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean tryAddToContainer(String worldId, int x, int y, int z, String itemId, int amount,
+                                     String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+        try {
+            if (inventorySlot == null) {
+                return tryGiveOrDrop(worldId, x, y, z, itemId, amount, targetMeta, itemNbt);
+            }
+            ServerLevel level = level(worldId);
+            if (level == null) return false;
+            BlockEntity be = level.getBlockEntity(new BlockPos(x, y, z));
+            if (!(be instanceof Container c)) return false;
+            if (inventorySlot < 0 || inventorySlot >= c.getContainerSize()) return false;
+            ItemStack stack = decodeItemStack(itemId, amount, itemNbt);
+            return stack != null && tryAddAtSlot(c, inventorySlot, stack);
+        } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+            throw e;
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "addToContainer failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount,
+                                          String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+        try {
+            if (inventorySlot == null) {
+                if (itemNbt != null && itemNbt.length > 0) {
+                    ServerLevel level = level(worldId);
+                    if (level == null) return false;
+                    BlockEntity be = level.getBlockEntity(new BlockPos(x, y, z));
+                    if (!(be instanceof Container c)) return false;
+                    ItemStack wanted = decodeItemStack(itemId, amount, itemNbt);
+                    return wanted != null && tryRemove(c, wanted, Math.max(1, amount));
+                }
+                return tryRemoveFromContainer(worldId, x, y, z, itemId, amount);
+            }
+            ServerLevel level = level(worldId);
+            if (level == null) return false;
+            BlockEntity be = level.getBlockEntity(new BlockPos(x, y, z));
+            if (!(be instanceof Container c)) return false;
+            ItemStack wanted = decodeItemStack(itemId, amount, itemNbt);
+            return wanted != null && tryRemoveAtSlot(c, inventorySlot, wanted, Math.max(1, amount));
+        } catch (network.vonix.guardian.core.rollback.UncompensatedSlotMutationException e) {
+            throw e;
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "removeFromContainer (slot) failed at {} {},{},{}", worldId, x, y, z, t);
             return false;
         }
     }
@@ -403,6 +455,11 @@ public final class FabricWorldMutator implements WorldMutator {
     }
 
     private static CompoundTag decodeNbt(byte[] bytes) {
+        if (NbtPayload.tooLarge(bytes)) {
+            LOG.debug(Guardian.MARKER, "NBT payload {} bytes exceeds cap {}; rejecting decode",
+                    bytes.length, NbtPayload.MAX_BYTES);
+            return null;
+        }
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             return NbtIo.read(in);
         } catch (Throwable t) {

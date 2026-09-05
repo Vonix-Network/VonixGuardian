@@ -67,6 +67,7 @@ class ActionTypeCoverageStructuralTest {
             Map.entry("submitInventoryReplacement", EnumSet.of(ActionType.INVENTORY_DEPOSIT, ActionType.INVENTORY_WITHDRAW)),
             Map.entry("submitHopperPush", EnumSet.of(ActionType.HOPPER_PUSH)),
             Map.entry("submitHopperPull", EnumSet.of(ActionType.HOPPER_PULL)),
+            Map.entry("submitHopperTransfer", EnumSet.of(ActionType.HOPPER_PUSH, ActionType.HOPPER_PULL)),
             Map.entry("submitItemCraft", EnumSet.of(ActionType.ITEM_CRAFT)),
             Map.entry("submitEntitySpawn", EnumSet.of(ActionType.ENTITY_SPAWN)),
             Map.entry("submitEntityInteract", EnumSet.of(ActionType.ENTITY_INTERACT)),

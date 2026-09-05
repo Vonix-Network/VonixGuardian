@@ -3,6 +3,7 @@ package network.vonix.guardian.core.rollback;
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionBuilder;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.action.NbtPayload;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,11 +15,14 @@ import java.util.List;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -169,6 +173,61 @@ class NbtRollbackRoundTripTest {
         assertThat(mutator.legacySetBlock).hasSize(1);
     }
 
+    @Test
+    void oversizedContainerWithdraw_dispatchesNbtSlotPathAndFailsClosed() throws Exception {
+        byte[] oversized = new byte[NbtPayload.MAX_BYTES + 1];
+        oversized[0] = 11;
+        Action a = new ActionBuilder()
+                .id(41L)
+                .type(ActionType.CONTAINER_WITHDRAW)
+                .worldId("minecraft:overworld")
+                .actorName("Notch")
+                .position(8, 64, 8)
+                .targetId("minecraft:diamond_sword")
+                .amount(1)
+                .itemNbt(oversized)
+                .inventorySlot(7)
+                .build();
+        assertThat(a.hasOversizedNbt()).isTrue();
+        givenPage(a);
+
+        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
+                .isInstanceOf(RollbackMutationException.class);
+
+        assertThat(mutator.nbtAddContainer).hasSize(1);
+        assertThat(mutator.nbtAddContainer.get(0).itemNbt).isSameAs(oversized);
+        assertThat(mutator.nbtAddContainer.get(0).inventorySlot).isEqualTo(7);
+        assertThat(mutator.legacyGiveOrDrop).isEmpty();
+        assertThat(mutator.nbtGiveOrDrop).isEmpty();
+        assertThat(mutator.legacyAddContainer).isEmpty();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void oversizedHopperPair_failsClosedBeforePairCompletes() throws Exception {
+        byte[] sword = "NAMED_ENCHANTED_SWORD".getBytes();
+        byte[] oversized = new byte[NbtPayload.MAX_BYTES + 1];
+        oversized[0] = 12;
+        long pair = 908L;
+        Action pull = hopper(9L, ActionType.HOPPER_PULL, 1, 65, 1, 3, pair, sword);
+        Action push = hopper(10L, ActionType.HOPPER_PUSH, 1, 64, 1, 0, pair, oversized);
+        assertThat(push.hasOversizedNbt()).isTrue();
+        assertThat(pull.hasOversizedNbt()).isFalse();
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(pull, push)).thenReturn(List.of());
+        when(dao.findByPairIds(any())).thenReturn(List.of(pull, push));
+
+        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
+                .isInstanceOf(RollbackMutationException.class);
+
+        assertThat(mutator.nbtRemoveContainer).hasSize(1);
+        assertThat(mutator.nbtRemoveContainer.get(0).itemNbt).isSameAs(oversized);
+        assertThat(mutator.nbtAddContainer).isEmpty();
+        assertThat(mutator.legacyGiveOrDrop).isEmpty();
+        assertThat(mutator.nbtGiveOrDrop).isEmpty();
+        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        verify(dao, never()).closeRollbackBatch(anyLong());
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private void givenPage(Action a) throws Exception {
@@ -179,6 +238,23 @@ class NbtRollbackRoundTripTest {
     private QueryFilter rangeFilter() {
         return QueryFilter.builder()
                 .sinceMillis(System.currentTimeMillis() - 3_600_000L)
+                .build();
+    }
+
+    private static Action hopper(long id, ActionType type, int x, int y, int z, int slot,
+                                 long pair, byte[] itemNbt) {
+        return new ActionBuilder()
+                .id(id)
+                .timestamp(1_700_000_000_000L + id)
+                .type(type)
+                .actorName("#hopper")
+                .worldId("minecraft:overworld")
+                .position(x, y, z)
+                .targetId("minecraft:diamond_sword")
+                .amount(1)
+                .itemNbt(itemNbt)
+                .inventorySlot(slot)
+                .pairId(pair)
                 .build();
     }
 
@@ -208,6 +284,14 @@ class NbtRollbackRoundTripTest {
             final byte[] entityNbt;
             RespawnEntityCall(String t, byte[] nbt) { this.entityType = t; this.entityNbt = nbt; }
         }
+        static final class ContainerCall {
+            final String itemId;
+            final byte[] itemNbt;
+            final Integer inventorySlot;
+            ContainerCall(String id, byte[] nbt, Integer slot) {
+                this.itemId = id; this.itemNbt = nbt; this.inventorySlot = slot;
+            }
+        }
 
         final List<SetBlockCall> legacySetBlock = Collections.synchronizedList(new ArrayList<>());
         final List<SetBlockCall> nbtSetBlock    = Collections.synchronizedList(new ArrayList<>());
@@ -215,6 +299,9 @@ class NbtRollbackRoundTripTest {
         final List<GiveOrDropCall> nbtGiveOrDrop    = Collections.synchronizedList(new ArrayList<>());
         final List<RespawnEntityCall> legacyRespawnEntity = Collections.synchronizedList(new ArrayList<>());
         final List<RespawnEntityCall> nbtRespawnEntity    = Collections.synchronizedList(new ArrayList<>());
+        final List<ContainerCall> nbtAddContainer = Collections.synchronizedList(new ArrayList<>());
+        final List<ContainerCall> nbtRemoveContainer = Collections.synchronizedList(new ArrayList<>());
+        final List<ContainerCall> legacyAddContainer = Collections.synchronizedList(new ArrayList<>());
 
         @Override public boolean trySetBlock(String w, int x, int y, int z, String targetId, String targetMeta) {
             legacySetBlock.add(new SetBlockCall(targetId, targetMeta, null, null));            return true;
@@ -230,6 +317,23 @@ class NbtRollbackRoundTripTest {
             nbtGiveOrDrop.add(new GiveOrDropCall(itemId, amt, itemNbt));            return true;
         }
         @Override public boolean tryRemoveFromContainer(String w, int x, int y, int z, String itemId, int amt) {return true; }
+        @Override public boolean tryAddToContainer(String w, int x, int y, int z, String itemId, int amt,
+                                                   String meta, byte[] itemNbt, Integer inventorySlot) {
+            if (inventorySlot == null) {
+                legacyAddContainer.add(new ContainerCall(itemId, itemNbt, null));
+                return tryGiveOrDrop(w, x, y, z, itemId, amt, meta, itemNbt);
+            }
+            nbtAddContainer.add(new ContainerCall(itemId, itemNbt, inventorySlot));
+            return !NbtPayload.tooLarge(itemNbt);
+        }
+        @Override public boolean tryRemoveFromContainer(String w, int x, int y, int z, String itemId, int amt,
+                                                        String meta, byte[] itemNbt, Integer inventorySlot) {
+            if (inventorySlot == null) {
+                return tryRemoveFromContainer(w, x, y, z, itemId, amt);
+            }
+            nbtRemoveContainer.add(new ContainerCall(itemId, itemNbt, inventorySlot));
+            return !NbtPayload.tooLarge(itemNbt);
+        }
         @Override public boolean tryRespawnEntity(String w, int x, int y, int z, String entityType, String targetMeta) {
             legacyRespawnEntity.add(new RespawnEntityCall(entityType, null));            return true;
         }

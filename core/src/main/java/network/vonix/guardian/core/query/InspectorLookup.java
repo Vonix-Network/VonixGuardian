@@ -107,6 +107,9 @@ public final class InspectorLookup {
           .append(" | at (")
           .append(a.x()).append(", ").append(a.y()).append(", ").append(a.z())
           .append(')');
+        if (a.inventorySlot() != null) {
+            sb.append(" | slot=").append(a.inventorySlot());
+        }
         if (a.rolledBack()) {
             sb.append(" | rolled back");
         }

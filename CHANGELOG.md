@@ -5,6 +5,24 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0-m1] - 2026-09-05
+
+Milestone 1 preview of the from-scratch CoreProtect/Ledger parity program. This pre-release contains the accepted 1.21.1 Fabric stateful-container fidelity slice and is not a complete parity release.
+
+### Fixed
+
+- Preserve non-null oversized NBT/component payloads long enough to reject them explicitly rather than silently treating them as absent data.
+- Reject oversized payloads before single or paired action queue admission.
+- Reject oversized rollback payloads before NBT parsing or plain-item fallback.
+- Preserve exact-cap payload admission and genuine null/empty legacy behavior.
+
+### Verification boundary
+
+- This GitHub pre-release provides the 1.21.1 Fabric preview artifact only.
+- Parent gates passed: focused tests `50/50`, full core tests/check, 1.21.1 Fabric build, primary-only packaging, changed-file hashes, and diff checks.
+- Terra independently accepted the exact repaired source candidate; packaged runtime and full nine-cell closure remain unverified.
+- No deployment, server restart, database migration, live-world mutation, CurseForge publication, or production-readiness claim is included.
+
 ## [2.0.1] - Unreleased candidate (2026-09-04)
 
 Hotfix candidate for malformed actor identities and valid actor-name collisions that could leave quarantine recovery retrying a deterministic `vg_users.name` unique-key failure.

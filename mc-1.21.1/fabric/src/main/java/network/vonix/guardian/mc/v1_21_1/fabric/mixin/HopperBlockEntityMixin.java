@@ -5,6 +5,7 @@
 package network.vonix.guardian.mc.v1_21_1.fabric.mixin;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -17,70 +18,66 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * v1.3.1 X4 — Hopper push/pull producer.
- *
- * <p>Vanilla hopper item transfer routes through two static helpers:</p>
- * <ul>
- *   <li>{@code suckInItems(Level, Hopper)} — pull from a container above (or an
- *       ItemEntity) into the hopper.</li>
- *   <li>{@code ejectItems(Level, BlockPos, HopperBlockEntity)} — push into the
- *       container the hopper is facing.</li>
- * </ul>
- *
- * <p>We can't cheaply diff both container inventories without allocating
- * snapshots — CoreProtect / Ledger take the same trade-off. We instead capture
- * a coarse per-tick <em>attempt</em> row using the hopper's current output
- * slot: this is exactly the semantics Ledger uses via
- * {@code TransportItemsBetweenContainersMixin}. If the transfer failed the row
- * still exists but with amount=0 (filtered by the core submitContainerChange
- * delta==0 short-circuit).</p>
- *
- * <p>The mixin uses {@code require=0} — if the static helper is not present on
- * a specific loader/mapping combo it silently no-ops. Only vanilla containers
- * are captured; modded Hopper implementations (copper golem inventories, etc.)
- * are covered by later waves.</p>
+ * Milestone 1 hopper producer: snapshot both containers, then emit exact-slot
+ * pull/push rows after a successful vanilla transfer.
  */
 @Mixin(HopperBlockEntity.class)
 public abstract class HopperBlockEntityMixin {
 
-    @Inject(method = "ejectItems", at = @At("RETURN"), require = 0, cancellable = false)
+    @Inject(method = "ejectItems", at = @At("HEAD"), require = 0)
+    private static void vg$beforeEjectItems(Level level, BlockPos pos, HopperBlockEntity hopper,
+                                            CallbackInfoReturnable<Boolean> cir) {
+        try {
+            FabricMixinBridge.hopperEjectBegin(level, pos, hopper);
+        } catch (Throwable ignored) {}
+    }
+
+    @Inject(method = "ejectItems", at = @At("RETURN"), require = 0)
     private static void vg$onEjectItems(Level level, BlockPos pos, HopperBlockEntity hopper,
                                         CallbackInfoReturnable<Boolean> cir) {
         try {
-            if (cir == null) return;
-            Boolean did = cir.getReturnValue();
-            if (did == null || !did) return;
-            ItemStack witness = vg$firstNonEmptySlot(hopper);
-            if (witness == null) return;
-            FabricMixinBridge.hopperPush(level, pos, witness);
+            if (cir != null && Boolean.TRUE.equals(cir.getReturnValue())) {
+                FabricMixinBridge.hopperEjectCommit(level, pos, hopper);
+            } else {
+                FabricMixinBridge.hopperAbort();
+            }
+        } catch (Throwable ignored) {
+            FabricMixinBridge.hopperAbort();
+        }
+    }
+
+    @Inject(method = "suckInItems", at = @At("HEAD"), require = 0)
+    private static void vg$beforeSuckInItems(Level level, Hopper hopper,
+                                             CallbackInfoReturnable<Boolean> cir) {
+        try {
+            FabricMixinBridge.hopperSuckBegin(level, hopper);
         } catch (Throwable ignored) {}
     }
 
-    @Inject(method = "suckInItems", at = @At("RETURN"), require = 0, cancellable = false)
+    @Inject(method = "suckInItems", at = @At("RETURN"), require = 0)
     private static void vg$onSuckInItems(Level level, Hopper hopper,
                                          CallbackInfoReturnable<Boolean> cir) {
         try {
-            if (cir == null) return;
-            Boolean did = cir.getReturnValue();
-            if (did == null || !did) return;
-            // Hopper extends Container; safely narrow via cast.
-            ItemStack witness = vg$firstNonEmptySlot((Container) hopper);
-            if (witness == null) return;
-            BlockPos pos = new BlockPos((int) Math.floor(hopper.getLevelX()),
-                                        (int) Math.floor(hopper.getLevelY()),
-                                        (int) Math.floor(hopper.getLevelZ()));
-            FabricMixinBridge.hopperPull(level, pos, witness);
+            if (cir != null && Boolean.TRUE.equals(cir.getReturnValue())) {
+                FabricMixinBridge.hopperSuckCommit(level, hopper);
+            } else {
+                FabricMixinBridge.hopperAbort();
+            }
+        } catch (Throwable ignored) {
+            FabricMixinBridge.hopperAbort();
+        }
+    }
+
+    @Inject(method = "tryMoveInItem", at = @At("RETURN"), require = 0)
+    private static void vg$onTryMoveInItem(Container source, Container destination, ItemStack stack,
+                                           int destSlot, Direction direction,
+                                           CallbackInfoReturnable<ItemStack> cir) {
+        try {
+            FabricMixinBridge.hopperMoveSlot(destSlot);
         } catch (Throwable ignored) {}
     }
 
-    private static ItemStack vg$firstNonEmptySlot(Container c) {
-        try {
-            int n = c.getContainerSize();
-            for (int i = 0; i < n; i++) {
-                ItemStack s = c.getItem(i);
-                if (s != null && !s.isEmpty()) return s;
-            }
-        } catch (Throwable ignored) {}
-        return null;
+    static java.util.Map<Integer, ItemStack> vg$snapshot(Container c) {
+        return FabricMixinBridge.snapshotContainer(c);
     }
 }
