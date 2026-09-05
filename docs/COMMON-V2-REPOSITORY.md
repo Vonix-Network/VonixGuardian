@@ -18,9 +18,9 @@ The root `core/` module contains the storage, queue, audit, query, rollback, sch
 
 ## Release status
 
-- GitHub release automation: `.github/workflows/release.yml` builds all nine lanes on `v*` tags and creates a stable release after every matrix job passes; it does not deploy, activate, restart, or migrate a server/database.
+- GitHub release automation: `.github/workflows/release.yml` builds all nine lanes on `v*` tags, creates stable releases only for tags without a prerelease suffix, and leaves hyphenated previews such as `v3.0.0-m1` for separate exact-candidate publication; it does not deploy, activate, restart, or migrate a server/database.
 - Embedded project version: **`3.0.0-m1`** for the selected Milestone 1 preview artifact; other lanes are not part of this preview release packet.
-- Release validation: the tag-triggered workflow builds and packages all nine lanes and publishes SHA-256 checksums with each tagged release.
+- Release validation: stable tag-triggered workflows build and package all nine lanes and publish SHA-256 checksums; preview releases use their explicitly accepted artifact scope and checksum packet.
 - Installation: choose the artifact matching your Minecraft version, loader, and Java environment, then follow [`docs/INSTALL.md`](INSTALL.md).
 - Live Minecraft activation, deployment, server restart, and production database migration were **not performed** for this source snapshot.
 - Database configuration examples are documentation placeholders. Never commit real JDBC URLs, usernames, passwords, or connection strings.
