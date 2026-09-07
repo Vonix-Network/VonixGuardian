@@ -14,14 +14,20 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Captures dispenser activation for attribution. Signature verified against
- * Forge 1.20.1 official mappings: {@code protected void dispenseFrom(ServerLevel, BlockPos)}.
- * Runtime SRG name is {@code m_5824_} (see {@code vg.refmap.json}).
+ * Captures dispenser activation for attribution. Packaged Forge 1.20.1 runtime
+ * exposes {@code protected void m_5824_(ServerLevel, BlockPos)}; bind that SRG
+ * name with {@code remap = false} so the injector does not depend on a named
+ * {@code dispenseFrom} refmap lookup.
  */
 @Mixin(DispenserBlock.class)
 public abstract class DispenserBlockMixin {
 
-    @Inject(method = "dispenseFrom", at = @At("HEAD"))
+    @Inject(
+            method = "m_5824_(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;)V",
+            at = @At("HEAD"),
+            require = 1,
+            remap = false
+    )
     private void vg$onDispense(ServerLevel level, BlockPos pos, CallbackInfo ci) {
         try {
             ForgeMixinBridge.dispense(level, pos);

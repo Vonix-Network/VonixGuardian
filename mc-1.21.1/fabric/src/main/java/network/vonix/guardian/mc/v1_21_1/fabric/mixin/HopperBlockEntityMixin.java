@@ -76,8 +76,4 @@ public abstract class HopperBlockEntityMixin {
             FabricMixinBridge.hopperMoveSlot(destSlot);
         } catch (Throwable ignored) {}
     }
-
-    static java.util.Map<Integer, ItemStack> vg$snapshot(Container c) {
-        return FabricMixinBridge.snapshotContainer(c);
-    }
 }

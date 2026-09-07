@@ -3,13 +3,13 @@
 ## Repository identity
 
 - **Repository:** `Vonix-Network/VonixGuardian`
-- **Canonical checkout for this candidate:** `/root/work/vg-null-name-hotfix-20260903/source`
+- **Canonical source lineage:** existing owner-authorized VonixGuardian checkout; this file may be copied into a temporary release candidate and must not be mistaken for a separate repository lineage
 - **Default branch:** `main`
-- **Project release:** **`3.0.0-m1`** Milestone 1 preview candidate
+- **Project release:** **`2.1.0`** stable release
 - **Common-generation lineage:** begins at `2.0.0`
 - **Project role:** server-side audit, attribution, lookup, rollback, purge, and database utilities for modded Minecraft
 
-This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; this Milestone 1 preview advances the accepted container-fidelity slice to `3.0.0-m1` for the 1.21.1 Fabric preview artifact.
+This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; stable `2.1.0` advances the accepted container-fidelity, hopper-transfer, NBT, rollback, schema/migration, recovery, and packaging work across the full nine-cell matrix. The published `3.0.0-m1` preview remains separate historical provenance and is not relabeled by this release.
 
 ## Read first
 
@@ -46,7 +46,7 @@ The repository-level `core/` module owns loader-neutral storage, audit, rollback
 The authoritative release workflow is `.github/workflows/release.yml`.
 
 - `workflow_dispatch` runs the nine-lane build matrix only; the release job is guarded to `refs/tags/v*` and must not publish a release for a branch dispatch.
-- Pushing `v2.0.1` runs all nine cells and publishes the GitHub release only after the matrix succeeds.
+- Pushing the owner-authorized stable tag (for this release, `v2.1.0`) runs all nine cells and publishes the GitHub release only after the matrix succeeds.
 - 1.18.2–1.20.1 lanes use Java 17 with Gradle 8.10.2.
 - 1.21.1 lanes use Java 21 with Gradle 8.10.2.
 - 26.1.2 NeoForge uses Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for that lane.
@@ -74,7 +74,7 @@ Do not infer release readiness from a core-only build. The full nine-cell CI mat
 
 ## Packaging rules
 
-- Preserve the loader-specific metadata and exact `3.0.0-m1` expansion for the preview artifact.
+- Preserve the loader-specific metadata and exact `2.1.0` expansion for every stable artifact; keep the historical `3.0.0-m1` preview metadata immutable.
 - Keep Fabric nested core JAR names synchronized with the core artifact version.
 - Keep NeoForge 26.1.2 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
 - Exclude module descriptors and signature files only where the existing packaging contract requires it.
@@ -126,11 +126,11 @@ Historical release text must remain historical and must not be rewritten as the 
 ## Release procedure
 
 1. Verify the release branch, remote identity, current commit/tree, existing tags, and releases.
-2. Confirm the selected preview artifact embeds `3.0.0-m1`.
-3. Push only the owner-authorized release branch; do not mutate `main` for this Milestone 1 preview.
-4. Run the scoped core/Fabric gates and require fresh Terra acceptance for the exact versioned artifact.
-5. Push only the exact `v3.0.0-m1` tag.
-6. Verify the GitHub pre-release, one declared primary JAR, `SHA256SUMS`, notes, and prerelease state.
+2. Confirm every selected stable artifact embeds `2.1.0` and the historical `3.0.0-m1` preview remains unchanged.
+3. Push only the owner-authorized stable release branch/tag; do not rewrite `main` history or any historical tag.
+4. Run the full nine-cell core/loader gates and require fresh Terra acceptance for the exact versioned artifacts.
+5. Push only the exact owner-authorized `v2.1.0` tag.
+6. Verify the GitHub stable release, all nine declared primary JARs, `SHA256SUMS`, notes, and stable-release state.
 7. Independently read back the release commit/tree and every asset digest.
 8. Keep live server/database activation explicitly unperformed unless separately evidenced and authorized.
 
@@ -149,10 +149,10 @@ Stop and report on:
 
 ## Completion checklist
 
-- [ ] Root AGENTS, README, docs, and changelog agree on the selected release version.
+- [ ] Root AGENTS, README, docs, and changelog agree on stable `2.1.0`; historical `3.0.0-m1` text is explicitly marked historical.
 - [ ] All five version directories remain in this repository.
-- [ ] The selected preview artifact embeds `3.0.0-m1`; full nine-cell version closure remains a later gate.
+- [ ] All nine selected stable artifacts embed `2.1.0`; the separate `3.0.0-m1` preview remains historical provenance.
 - [ ] Manual CI dispatch cannot publish a release.
 - [ ] CI build-only matrix passes 9/9.
-- [ ] `v3.0.0-m1` preview asset and hash read back remotely.
+- [ ] `v2.1.0` stable assets and hashes read back remotely.
 - [ ] No live deployment, restart, or production migration is claimed without evidence.

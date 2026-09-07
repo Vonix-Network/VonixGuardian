@@ -11,9 +11,11 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current preview artifact:** `3.0.0-m1` (Milestone 1, 1.21.1 Fabric stateful-container fidelity) · **Common repository line:** `2.0.0`. This preview is not complete CoreProtect/Ledger parity and does not represent full nine-cell closure.
+> **Current stable release:** `2.1.0` (nine-cell stateful-container, hopper, NBT, rollback, and recovery update) · **Common repository line:** `2.0.0` → `2.1.0`. The published `3.0.0-m1` prerelease remains historical provenance for its separate two-cell preview and is not reclassified by this release.
+>
+> **Public wiki:** https://modwiki.vonix.network/mods/vonixguardian/
 
-## Feature surface (`3.0.0-m1` preview, derived from the v1.4.1 feature line)
+## Feature surface (`2.1.0` stable release, derived from the v1.4.1 feature line)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -109,7 +111,7 @@ packaging. The root `build` task configures every loader cell and is intentional
 CI/release flows because multiple Fabric Loom versions can conflict when configured in one
 Gradle invocation. Classifier artifacts such as `-shadow`, `-all`, and `-slim` are not release assets.
 
-CI historically built an 8-jar matrix; the in-tree candidate matrix is **nine** primary artifacts (Fabric/Forge 1.18.2, 1.19.2, 1.20.1; Fabric/NeoForge 1.21.1; NeoForge 26.1). Do not treat a local nine-cell package as a published GitHub Release.
+CI historically built an 8-jar matrix; stable `2.1.0` publishes **nine** primary artifacts (Fabric/Forge 1.18.2, 1.19.2, 1.20.1; Fabric/NeoForge 1.21.1; NeoForge 26.1.2). The release assets and checksums are the authoritative distribution package.
 
 ## Configuration
 

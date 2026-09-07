@@ -101,12 +101,16 @@ jobs:
             echo
             echo "### Highlights"
             echo
-            echo "- Fixes quarantine recovery failures caused by malformed actor identities and valid actor-name collisions such as ItemFrame."
-            echo "- Preserves UUID-based attribution and assigns deterministic aliases when a display name is already occupied."
-            echo "- Uses transaction-safe recovery handling for duplicate-name races, including PostgreSQL-style transaction-abort behavior."
-            echo "- No database schema migration is required for this fix."
+            echo "- Extends slot-level stateful container and hopper tracking across all nine supported cells, with exact before/after slot diffs and paired transfer correlation."
+            echo "- Preserves item NBT, block-state properties, block-entity NBT, and entity NBT through capture, queue admission, rollback, and restore; oversized payloads are rejected before decode or admission."
+            echo "- Keeps paired transfers fail-closed: incomplete or stale pairs are not mutated, and second-half failures compensate the first half when possible."
+            echo "- Carries forward additive schema/migration continuity through schema v8 (`pair_id`, `inventory_slot`, `vg_repair_required`, and `vg_sink_outbox`) without a destructive migration."
+            echo "- Fixes null-key recovery for Java-null, blank, and literal `null` actor names, deterministic UUID aliases, valid-name preservation, duplicate-key race recovery, and ItemFrame-style collisions."
+            echo "- Repairs Fabric hopper callback descriptors and mixin visibility/packaging assertions, including the 1.20.1 Container-based callback signature."
             echo
-            echo "The correction is shared across all nine supported Fabric, Forge, and NeoForge version/loader cells."
+            echo "This stable release is shared across all nine supported Fabric, Forge, and NeoForge version/loader cells."
+            echo
+            echo "Public wiki: https://modwiki.vonix.network/mods/vonixguardian/"
             echo
             echo "### Drop-in jars"
             echo

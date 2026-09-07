@@ -5,6 +5,34 @@ All notable changes to **VonixGuardian** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_No unreleased changes._
+
+## [2.1.0] - 2026-09-07
+
+Stable common-generation release on the 2.x line. The published `3.0.0-m1` prerelease remains an immutable, separate two-cell milestone and is preserved below as historical provenance; this release does not relabel or erase it.
+
+### Added
+
+- **Nine-cell stateful container and hopper tracking.** Extends the accepted stateful-container slice across 1.18.2 Fabric/Forge, 1.19.2 Fabric/Forge, 1.20.1 Fabric/Forge, 1.21.1 Fabric/NeoForge, and 26.1.2 NeoForge. Producers capture exact before/after slot state for containers and hoppers instead of relying on coarse witness events.
+- **Paired transfer correlation.** Successful hopper pulls/pushes carry source and destination slots, item payloads, and a shared `pair_id`; incomplete, stale, or unsuccessful captures are discarded rather than recorded as false transfers.
+
+### Changed
+
+- **NBT capture and rollback fidelity.** Preserves block-state properties, block-entity NBT, item NBT, and entity NBT through capture, queue admission, rollback, and restore. A shared 512 KiB cap rejects oversized non-null payloads before decode or queue admission, accepts exact-cap payloads, and preserves genuine null/empty legacy behavior.
+- **Paired rollback safety.** Exact-slot container mutations run in the correct reverse/forward order; a failed second half compensates the first half when possible, and lone or stale pair members fail closed without world mutation.
+- **Schema and migration continuity.** Carries forward the additive schema v8 contract: `pair_id` (v6), `inventory_slot` (v7), `vg_repair_required` and `vg_sink_outbox` (v8), with `V3WidenActionTarget`, `V4SignMetadata`, `V5NbtFidelity`, `V6PairId`, `V7InventorySlot`, and `V8RepairAndOutbox` migrations. No destructive migration is introduced by this release.
+- **Null-key recovery.** Stabilizes malformed actor identity recovery for Java-null, blank, and literal `null` names; preserves UUID-based attribution with deterministic aliases, preserves unoccupied valid names, resolves duplicate-key races once with savepoint protection, and caches UUID-less collision resolutions for repeated ItemFrame-style actions.
+- **Fabric descriptor and packaging repair.** Repairs the 1.20.1 Fabric hopper callback to use the runtime `Container` parameter shape, removes ordinary non-private Mixin helpers across all nine hopper Mixins, and expands all-cell structural/Jar-in-Jar assertions so nested `core-2.1.0.jar` metadata and release packaging remain synchronized.
+
+### Verification boundary
+
+- The release artifact matrix is exactly nine primary JARs: 1.18.2 Fabric/Forge; 1.19.2 Fabric/Forge; 1.20.1 Fabric/Forge; 1.21.1 Fabric/NeoForge; and 26.1.2 NeoForge.
+- Only non-classifier primary JARs are included. `-all`, `-sources`, `-slim`, `-shadow`, and `-dev` outputs are excluded.
+- Public wiki: https://modwiki.vonix.network/mods/vonixguardian/
+- No deployment, server restart, live-world mutation, production database migration, GitHub publication, CurseForge upload, or credential access is performed by this source release packet.
+
 ## [3.0.0-m1] - 2026-09-05
 
 Milestone 1 preview of the from-scratch CoreProtect/Ledger parity program. This pre-release contains the accepted 1.21.1 Fabric stateful-container fidelity slice and is not a complete parity release.
@@ -166,10 +194,6 @@ Common-generation repository release. This stable release starts the shared repo
   ties), a multi-page rollback keyset scan, later-page lookup round-trip
   counts, and a matched-workload pagination harness that records SQL shape
   rather than claiming a production speedup.
-
-## [Unreleased]
-
-_No unreleased changes._
 
 ## [1.4.0] - 2026-08-23
 

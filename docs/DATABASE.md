@@ -1,6 +1,6 @@
 # VonixGuardian — Database Reference
 
-**Version:** 3.0.0-m1 (Milestone 1 preview)
+**Version:** 2.1.0 (stable release)
 **Schema version:** 8 (see `vg_schema_version`)
 **Source of truth:** `core/src/main/java/network/vonix/guardian/core/storage/Schema.java`
 
@@ -28,7 +28,7 @@ tables, v8 repair/outbox tables, plus schema-version):
 | 7 | `vg_actions_ts`              | index  | `(ts)` — time-only scans + purge |
 | 8 | `vg_rollback_batches`        | table  | Crash-recovery audit of rollback ops |
 | – | `vg_rollback_batch_actions`  | table  | Many-to-many: batch ↔ affected actions |
-| – | `vg_schema_version`          | table  | Records the applied schema version (currently 2) |
+| – | `vg_schema_version`          | table  | Records the applied schema version (currently 8) |
 
 The DDL is **dialect-aware but additive**: every statement is
 `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`, so re-running

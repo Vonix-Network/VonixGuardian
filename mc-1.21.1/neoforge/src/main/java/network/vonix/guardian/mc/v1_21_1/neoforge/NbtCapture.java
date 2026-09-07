@@ -38,8 +38,7 @@ final class NbtCapture {
 
     private static final Logger LOG = LoggerFactory.getLogger(NbtCapture.class);
 
-    /** Absolute per-payload cap. Anything past this yields null. */
-    static final int MAX_NBT_BYTES = 512 * 1024; // 512 KiB
+    static final int MAX_NBT_BYTES = network.vonix.guardian.core.action.NbtPayload.MAX_BYTES;
 
     private NbtCapture() {}
 
@@ -147,8 +146,7 @@ final class NbtCapture {
             dos.flush();
             byte[] bytes = baos.toByteArray();
             if (bytes.length > MAX_NBT_BYTES) {
-                LOG.debug(Guardian.MARKER, "NBT payload {} bytes exceeds cap {}, discarding", bytes.length, MAX_NBT_BYTES);
-                return null;
+                LOG.debug(Guardian.MARKER, "NBT payload {} bytes exceeds cap {}", bytes.length, MAX_NBT_BYTES);
             }
             return bytes;
         } catch (Throwable t) {

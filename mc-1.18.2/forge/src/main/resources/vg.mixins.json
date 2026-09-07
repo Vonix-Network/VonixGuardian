@@ -6,6 +6,7 @@
   "refmap": "vg.refmap.json",
   "mixins": [
     "DispenserBlockMixin",
+    "HopperBlockEntityMixin",
     "PlayerInventoryMixin"
   ],
   "server": [],

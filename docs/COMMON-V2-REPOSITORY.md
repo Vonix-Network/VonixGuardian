@@ -1,8 +1,8 @@
-# VonixGuardian 2.0.1 common-generation repository
+# VonixGuardian 2.1.0 common-generation repository
 
-This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0**. The current `3.0.0-m1` Milestone 1 preview is a separate from-scratch CoreProtect/Ledger parity milestone over this repository and is limited to the accepted 1.21.1 Fabric stateful-container slice.
+This repository is the single source tree for the VonixGuardian common-generation line. The common line starts at **2.0.0** and the stable line advances through **2.0.1** to the **2.1.0** release. The published `3.0.0-m1` milestone is a separate, explicitly limited prerelease over this tree; it remains historical provenance and is not relabeled by the stable 2.x line.
 
-`2.0.0` was the embedded stable release version for every supported lane in the historical common-generation release and identifies the first common-generation release line beginning at `2.0.0`. The earlier `2.0.1` hotfix candidate remains preserved as superseded provenance; existing historical releases, including `v1.0.0`, remain immutable. The `3.0.0-m1` preview does not claim full nine-cell closure or complete CoreProtect v24 parity.
+`2.0.0` and `2.0.1` are immutable stable releases on the common-generation line. `2.1.0` is their nine-cell stable successor. The published `3.0.0-m1` prerelease remains immutable, covers only its declared two-cell preview scope, and is not treated as a SemVer successor or replacement by this release. Existing historical releases, including `v1.0.0`, remain immutable.
 
 ## One repository, all supported Minecraft lanes
 
@@ -19,7 +19,7 @@ The root `core/` module contains the storage, queue, audit, query, rollback, sch
 ## Release status
 
 - GitHub release automation: `.github/workflows/release.yml` builds all nine lanes on `v*` tags, creates stable releases only for tags without a prerelease suffix, and leaves hyphenated previews such as `v3.0.0-m1` for separate exact-candidate publication; it does not deploy, activate, restart, or migrate a server/database.
-- Embedded project version: **`3.0.0-m1`** for the selected Milestone 1 preview artifact; other lanes are not part of this preview release packet.
+- Embedded project version for this stable release: **`2.1.0`** across all nine primary cells. The published `3.0.0-m1` prerelease remains a separate two-cell historical packet.
 - Release validation: stable tag-triggered workflows build and package all nine lanes and publish SHA-256 checksums; preview releases use their explicitly accepted artifact scope and checksum packet.
 - Installation: choose the artifact matching your Minecraft version, loader, and Java environment, then follow [`docs/INSTALL.md`](INSTALL.md).
 - Live Minecraft activation, deployment, server restart, and production database migration were **not performed** for this source snapshot.
@@ -39,4 +39,4 @@ The 26.1.2 NeoForge lane requires Java 25. The 1.21.1 Fabric/NeoForge lane uses 
 
 ## Release naming
 
-The common-generation label is kept separate from embedded project SemVer so historical VonixGuardian releases and runtime metadata remain truthful. A stable major-version bump requires a separate public API, configuration, persistence, and migration compatibility review.
+The common-generation stable line is kept separate from the published `3.0.0-m1` milestone provenance so historical VonixGuardian releases and runtime metadata remain truthful. This `2.1.0` stable release is a parallel stable-line continuation from `2.0.1`, not a relabeling of `3.0.0-m1`. A stable major-version bump still requires a separate public API, configuration, persistence, and migration compatibility review.

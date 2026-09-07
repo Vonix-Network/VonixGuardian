@@ -1,22 +1,25 @@
-# VonixGuardian — Install Guide (v1.0.0)
+# VonixGuardian — Install Guide (v2.1.0)
 
 VonixGuardian is a **server-side mod**. It does **not** need to be installed on clients. Players join with a vanilla / regular modpack client; only the dedicated server (or single-player integrated server) needs the jar in `mods/`.
 
-This guide covers a clean install of v1.0.0 on a dedicated server.
+This guide covers a clean install of v2.1.0 on a dedicated server.
 
 ## Prerequisites
 
 - A **Minecraft server** running one of the supported loader + version combinations below.
 - **Java** matching the Minecraft version:
+  - Minecraft **26.1.2** → **Java 25**
   - Minecraft **1.21.1** → **Java 21**
   - Minecraft **1.20.1 / 1.19.2 / 1.18.2** → **Java 17**
+- For source builds only, the Minecraft 26.1.2 NeoForge lane uses **Gradle 9.2.0**; operators installing published jars do not need Gradle.
 - Write access to the server directory (the mod creates `config/`, `logs/`, and a SQLite DB file).
 - A few hundred MB of free disk for the audit database (grows with activity).
 
-Supported loader + MC matrix for v1.0.0:
+Supported loader + MC matrix for v2.1.0:
 
 | Minecraft | Fabric | Forge | NeoForge |
 |-----------|--------|-------|----------|
+| 26.1.2    | —      | —     | ✅       |
 | 1.21.1    | ✅     | —     | ✅       |
 | 1.20.1    | ✅     | ✅    | —        |
 | 1.19.2    | ✅     | ✅    | —        |
@@ -26,28 +29,29 @@ No other plugin or library is required. SQLite is bundled inside the jar.
 
 ## Download
 
-Release page: <https://github.com/Vonix-Network/VonixGuardian/releases/tag/v1.0.0>
+Release page: <https://github.com/Vonix-Network/VonixGuardian/releases/tag/v2.1.0>
 
 Pick the **one** jar that matches your server's loader and Minecraft version:
 
 | File | Loader | MC |
 |------|--------|----|
-| `vonixguardian-fabric-1.21.1-1.0.0.jar`   | Fabric   | 1.21.1 |
-| `vonixguardian-neoforge-1.21.1-1.0.0.jar` | NeoForge | 1.21.1 |
-| `vonixguardian-fabric-1.20.1-1.0.0.jar`   | Fabric   | 1.20.1 |
-| `vonixguardian-forge-1.20.1-1.0.0.jar`    | Forge    | 1.20.1 |
-| `vonixguardian-fabric-1.19.2-1.0.0.jar`   | Fabric   | 1.19.2 |
-| `vonixguardian-forge-1.19.2-1.0.0.jar`    | Forge    | 1.19.2 |
-| `vonixguardian-fabric-1.18.2-1.0.0.jar`   | Fabric   | 1.18.2 |
-| `vonixguardian-forge-1.18.2-1.0.0.jar`    | Forge    | 1.18.2 |
+| `vonixguardian-neoforge-26.1.2-2.1.0.jar` | NeoForge | 26.1.2 |
+| `vonixguardian-fabric-1.21.1-2.1.0.jar`   | Fabric   | 1.21.1 |
+| `vonixguardian-neoforge-1.21.1-2.1.0.jar` | NeoForge | 1.21.1 |
+| `vonixguardian-fabric-1.20.1-2.1.0.jar`   | Fabric   | 1.20.1 |
+| `vonixguardian-forge-1.20.1-2.1.0.jar`    | Forge    | 1.20.1 |
+| `vonixguardian-fabric-1.19.2-2.1.0.jar`   | Fabric   | 1.19.2 |
+| `vonixguardian-forge-1.19.2-2.1.0.jar`    | Forge    | 1.19.2 |
+| `vonixguardian-fabric-1.18.2-2.1.0.jar`   | Fabric   | 1.18.2 |
+| `vonixguardian-forge-1.18.2-2.1.0.jar`    | Forge    | 1.18.2 |
 
 Also download `SHA256SUMS` from the same release page.
 
 Example (download the 1.20.1 Forge jar and the checksum file):
 
 ```bash
-curl -LO https://github.com/Vonix-Network/VonixGuardian/releases/download/v1.0.0/vonixguardian-forge-1.20.1-1.0.0.jar
-curl -LO https://github.com/Vonix-Network/VonixGuardian/releases/download/v1.0.0/SHA256SUMS
+curl -LO https://github.com/Vonix-Network/VonixGuardian/releases/download/v2.1.0/vonixguardian-forge-1.20.1-2.1.0.jar
+curl -LO https://github.com/Vonix-Network/VonixGuardian/releases/download/v2.1.0/SHA256SUMS
 ```
 
 ## Verify the download
@@ -61,7 +65,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 Expected output (for the jar you downloaded):
 
 ```
-vonixguardian-forge-1.20.1-1.0.0.jar: OK
+vonixguardian-forge-1.20.1-2.1.0.jar: OK
 ```
 
 If you see `FAILED`, delete the jar and re-download. Do not run unverified jars.
@@ -71,7 +75,7 @@ If you see `FAILED`, delete the jar and re-download. Do not run unverified jars.
 Stop the server, then drop the verified jar into the server's `mods/` directory:
 
 ```bash
-cp vonixguardian-forge-1.20.1-1.0.0.jar /path/to/server/mods/
+cp vonixguardian-forge-1.20.1-2.1.0.jar /path/to/server/mods/
 ```
 
 That is the entire install step. There is no separate library, coremod, or config to pre-stage. The mod ships its SQLite driver inside its own jar.
@@ -144,7 +148,7 @@ If the load line never appears, `/vg status` reports an error, or the server cra
 
 - [`docs/USAGE.md#troubleshooting`](USAGE.md#troubleshooting)
 
-That section covers the usual culprits: wrong loader jar for the MC version, Java version mismatch (1.21.1 requires Java 21), `mods/` directory not being read by the launcher, leftover dev/snapshot jars conflicting with the v1.0.0 jar, and permission errors writing `vonixguardian.db` or `config/vonixguardian/`.
+That section covers the usual culprits: wrong loader jar for the MC version, Java version mismatch (26.1.2 requires Java 25; 1.21.1 requires Java 21), `mods/` directory not being read by the launcher, leftover dev/snapshot jars conflicting with the v2.1.0 jar, and permission errors writing `vonixguardian.db` or `config/vonixguardian/`.
 
 ## See also
 

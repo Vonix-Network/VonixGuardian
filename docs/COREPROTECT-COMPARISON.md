@@ -1,8 +1,10 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-**Current `3.0.0-m1` Milestone 1 preview (2026-09-05):** VonixGuardian's accepted 1.21.1 Fabric stateful-container fidelity slice, including bounded oversized-NBT handling, on the from-scratch CoreProtect/Ledger parity path. The preview artifact covers 1.21.1 Fabric only; nine-cell closure and complete CoreProtect v24 parity are not claimed. Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
+**Current `2.1.0` stable release (2026-09-07):** VonixGuardian's nine-cell stateful-container, hopper-transfer, NBT-fidelity, rollback-safety, schema/migration, null-key recovery, and Fabric descriptor-repair update. The published `3.0.0-m1` entry remains a separate two-cell prerelease milestone and is preserved below as historical provenance; this release does not relabel or erase it. Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
 
-This matrix describes the versioned source candidate and its committed evidence boundary. The candidate pin, source manifest, artifact manifest, and Terra verdict are external Hermes evidence records and are not tracked in this repository.
+### Historical prerelease provenance
+
+The published `v3.0.0-m1` GitHub prerelease remains an immutable two-cell preview milestone. This stable release is prepared on the `2.0.0` → `2.0.1` → `2.1.0` common-generation line and is not a relabeling of that prerelease.
 
 This file still contains a historical v1.2.0 / 2026-07-02 matrix below. Where that older text says eight loader cells, 39 action types, ~380 tests, schema v2, `/vg reload` stub, missing migrate-db, or “1:1 parity”, treat the **current-state** section as authoritative.
 
