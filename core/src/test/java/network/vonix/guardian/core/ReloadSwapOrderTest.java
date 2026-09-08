@@ -6,6 +6,7 @@ package network.vonix.guardian.core;
 
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.config.PerWorldConfigStore;
 import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.rollback.WorldMutator;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -250,6 +252,39 @@ class ReloadSwapOrderTest {
             assertThat(afterCfg.theme()).isEqualTo("gold");
             assertThat(afterCfg.language()).isEqualTo("fr");
             assertThat(afterCfg.rollback().explosionSupplementalReach()).isEqualTo(24);
+        } finally {
+            g.close();
+        }
+    }
+
+    @Test
+    @DisplayName("W3-B5: reload publishes a distinct per-world snapshot without mutating the old gate")
+    void reloadDoesNotMutatePerWorldStoreOwnedByOldGate(@TempDir Path tmp) throws Exception {
+        Path cfgPath = tmp.resolve("config.json");
+        Path worldsDir = tmp.resolve("config/vonixguardian/worlds");
+        Files.createDirectories(worldsDir);
+        Path worldOverride = worldsDir.resolve("minecraft__overworld.json");
+        Files.writeString(worldOverride, "{\"logBlocks\":false}\n");
+        ConfigLoader.save(cfgPath, cfg(tmp, "aqua", "en_us", 16));
+
+        Guardian g = Guardian.boot(ConfigLoader.load(cfgPath), tmp, NOOP_MUTATOR, ZERO_OP, SYNC, DAEMONS);
+        try {
+            g.setConfigPath(cfgPath);
+            PerWorldConfigStore oldStore = g.perWorldStore();
+            assertThat(oldStore).isNotNull();
+            assertThat(oldStore.overrideFor("minecraft:overworld").logBlocks()).isFalse();
+
+            Files.writeString(worldOverride, "{\"logBlocks\":true}\n");
+            ConfigLoader.save(cfgPath, cfg(tmp, "gold", "fr", 24));
+            Guardian.ReloadResult result = g.reloadConfig(cfgPath);
+
+            assertThat(result.errors()).as("reload should not report errors").isEmpty();
+            PerWorldConfigStore newStore = g.perWorldStore();
+            assertThat(newStore).isNotNull().isNotSameAs(oldStore);
+            assertThat(oldStore.overrideFor("minecraft:overworld").logBlocks())
+                    .as("old gate snapshot must remain immutable").isFalse();
+            assertThat(newStore.overrideFor("minecraft:overworld").logBlocks())
+                    .as("new gate must own the reloaded snapshot").isTrue();
         } finally {
             g.close();
         }

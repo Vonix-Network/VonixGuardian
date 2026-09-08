@@ -763,26 +763,25 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             LOG.warn(MARKER, "auto-purge reload failed", e);
         }
 
-        // W3-B5: per-world overrides. Point the store at the new root, re-scan the
-        // worlds/ dir (files may have been added/removed), and re-register the hook
-        // on the freshly-built gate. If no store was ever created (fresh install
-        // without worlds/ dir) but the dir now exists, build one now.
+        // W3-B5: build a per-world snapshot without mutating the store owned by
+        // the currently-published EventGate. An in-place update here lets an
+        // in-flight submit pair the old gate with a new per-world view.
+        PerWorldConfigStore nextPerWorldStore = this.perWorldStore;
         try {
             Path worldsDir = dataDir != null
                 ? dataDir.resolve("config").resolve("vonixguardian").resolve("worlds")
                 : null;
-            PerWorldConfigStore store = this.perWorldStore;
-            if (worldsDir != null && java.nio.file.Files.isDirectory(worldsDir)) {
-                if (store == null) {
-                    store = new PerWorldConfigStore(merged.actions());
-                    this.perWorldStore = store;
-                } else {
-                    store.updateRoot(merged.actions());
-                }
-                java.util.Set<String> before = new java.util.HashSet<>(store.overriddenWorlds());
-                store.reload(worldsDir);
-                java.util.Set<String> after = store.overriddenWorlds();
-                localGate.addHook(new PerWorldEventHook(store, merged.actions()));
+            PerWorldConfigStore previousStore = this.perWorldStore;
+            boolean worldsPresent = worldsDir != null && java.nio.file.Files.isDirectory(worldsDir);
+            if (worldsPresent || previousStore != null) {
+                PerWorldConfigStore replacementStore = new PerWorldConfigStore(merged.actions());
+                java.util.Set<String> before = previousStore == null
+                        ? java.util.Set.of()
+                        : new java.util.HashSet<>(previousStore.overriddenWorlds());
+                replacementStore.reload(worldsPresent ? worldsDir : null);
+                java.util.Set<String> after = replacementStore.overriddenWorlds();
+                localGate.addHook(new PerWorldEventHook(replacementStore, merged.actions()));
+                nextPerWorldStore = replacementStore;
                 if (!before.equals(after)) {
                     java.util.Set<String> added = new java.util.HashSet<>(after);
                     added.removeAll(before);
@@ -793,19 +792,21 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                             + (removed.isEmpty() ? "" : ", removed=" + removed));
                 } else if (!after.isEmpty()) {
                     hot.add("per-world: " + after.size() + " world(s) reloaded (" + after + ")");
+                } else if (!worldsPresent && !before.isEmpty()) {
+                    hot.add("per-world: cleared (worlds/ dir gone)");
                 }
-            } else if (store != null) {
-                // worlds/ dir vanished — clear the cache. Hook stays registered but
-                // now always returns PASS.
-                store.updateRoot(merged.actions());
-                boolean hadEntries = !store.overriddenWorlds().isEmpty();
-                store.reload(worldsDir);
-                localGate.addHook(new PerWorldEventHook(store, merged.actions()));
-                if (hadEntries) hot.add("per-world: cleared (worlds/ dir gone)");
+            } else {
+                nextPerWorldStore = null;
             }
         } catch (Exception e) {
             errs.add("per-world reload failed: " + e.getMessage());
             LOG.warn(MARKER, "per-world reload failed", e);
+            // Preserve the old immutable snapshot on the new gate. Never
+            // publish a rebuilt gate that has silently lost per-world checks.
+            if (this.perWorldStore != null) {
+                localGate.addHook(new PerWorldEventHook(this.perWorldStore, old.actions()));
+                nextPerWorldStore = this.perWorldStore;
+            }
         }
 
         // W3-B6: reload blacklist.txt. Re-parse from disk; if present, build a
@@ -856,6 +857,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // unaffected by the imminent config swap.
         this.gate = localGate;
         this.config = merged;
+        this.perWorldStore = nextPerWorldStore;
         this.blacklistHook = newBlacklistHook;
 
         // logFile.enabled hot-swap: turn off (close + null the ref) or turn on

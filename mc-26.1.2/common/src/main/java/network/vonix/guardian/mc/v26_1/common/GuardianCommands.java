@@ -784,6 +784,7 @@ public final class GuardianCommands {
         public static int apply(CommandContext<CommandSourceStack> ctx, Guardian g) {
             CommandSourceStack src = ctx.getSource();
             UUID actor = actorUuid(src);
+            final long chatGen = CommandChatGuard.next(actor);
             var pending = PENDING_PREVIEWS.snapshot(previewKey(actor));
             if (pending.isEmpty()) {
                 send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] No pending rollback preview."));
@@ -798,15 +799,21 @@ public final class GuardianCommands {
                 PermissionNode requiredPreviewPermission = expectedPreview.mode() == RollbackResult.Mode.RESTORE
                         ? PermissionNode.RESTORE : PermissionNode.ROLLBACK;
                 if (!hasPerm(src, requiredPreviewPermission, g)) {
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Preview permission changed; run the preview again.")));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Preview permission changed; run the preview again."));
+                    });
                     return;
                 }
                 var admittedPreview = PENDING_PREVIEWS.takeIfSame(
                         previewKey(actor), expectedGeneration, expectedPreview);
                 if (admittedPreview.isEmpty()) {
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
-                            "[VonixGuardian] Pending rollback preview changed or expired; run preview again.")));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
+                                "[VonixGuardian] Pending rollback preview changed or expired; run preview again."));
+                    });
                     return;
                 }
                 RollbackResult preview = admittedPreview.get();
@@ -820,13 +827,19 @@ public final class GuardianCommands {
                     if (!result.isSuccess() && !result.mutatedWorld()) {
                         PENDING_PREVIEWS.putIfGeneration(previewKey(actor), expectedGeneration, preview);
                     }
-                    server.execute(() -> sendMutationResult(server, src, actor, g, "Applied preview", result,
-                            preview.originalFilter()));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendMutationResult(server, src, actor, g, "Applied preview", result,
+                                preview.originalFilter());
+                    });
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Apply preview failed", t);
                     PENDING_PREVIEWS.putIfGeneration(previewKey(actor), expectedGeneration, preview);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Apply error: " + t.getMessage())));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Apply error: " + t.getMessage()));
+                    });
                 }
             });
             return admitted ? 1 : 0;
