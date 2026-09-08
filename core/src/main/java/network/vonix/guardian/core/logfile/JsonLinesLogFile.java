@@ -64,6 +64,7 @@ public final class JsonLinesLogFile implements AutoCloseable {
         this.forceSyncOnFlush = forceSyncOnFlush;
         this.clock = clock;
         this.gson = new GsonBuilder()
+                .registerTypeAdapterFactory(network.vonix.guardian.core.config.RecordTypeAdapterFactory.INSTANCE)
                 .registerTypeAdapter(Action.class, new ActionAdapter())
                 .serializeNulls()
                 .disableHtmlEscaping()

@@ -37,12 +37,14 @@ public final class ConfigLoader {
     private static final Logger LOG = LoggerFactory.getLogger(ConfigLoader.class);
 
     private static final Gson STRICT_PRETTY = new GsonBuilder()
+        .registerTypeAdapterFactory(RecordTypeAdapterFactory.INSTANCE)
         .setPrettyPrinting()
         .serializeNulls()
         .disableHtmlEscaping()
         .create();
 
     private static final Gson LENIENT = new GsonBuilder()
+        .registerTypeAdapterFactory(RecordTypeAdapterFactory.INSTANCE)
         .setLenient()
         .create();
 

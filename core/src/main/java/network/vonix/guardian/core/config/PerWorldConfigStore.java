@@ -48,8 +48,10 @@ public final class PerWorldConfigStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(PerWorldConfigStore.class);
 
-    private static final Gson LENIENT = new GsonBuilder().setLenient().create();
-
+    private static final Gson LENIENT = new GsonBuilder()
+            .registerTypeAdapterFactory(RecordTypeAdapterFactory.INSTANCE)
+            .setLenient()
+            .create();
     private volatile GuardianConfig.Actions rootActions;
     private volatile Map<String, GuardianConfig.Actions> cache = Map.of();
     private volatile List<String> loadedFilenames = List.of();
