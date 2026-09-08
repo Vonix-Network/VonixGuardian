@@ -286,6 +286,8 @@ public record GuardianConfig(
      * @param worldBlacklist  world keys (e.g. {@code minecraft:overworld}) to skip
      * @param blockBlacklist  block ids to skip (e.g. {@code minecraft:air})
      * @param sourceBlacklist sourceTag values to skip (e.g. {@code explosion:tnt})
+     * @param itemBlacklist   item ids to skip (e.g. {@code minecraft:diamond})
+     * @param entityBlacklist entity ids to skip (e.g. {@code minecraft:zombie})
      * @param entityBlockChangeCoalesceWindowMs  producer-side dedup window for
      *                                            {@code LivingDestroyBlockEvent}. Same (actor, coord)
      *                                            events within this many ms are collapsed into a single
@@ -356,6 +358,8 @@ public record GuardianConfig(
         List<String> worldBlacklist,
         List<String> blockBlacklist,
         List<String> sourceBlacklist,
+        List<String> itemBlacklist,
+        List<String> entityBlacklist,
         long entityBlockChangeCoalesceWindowMs,
         int entityBlockChangeMaxTracked,
         List<String> entityChangeAllowlist,
@@ -377,6 +381,68 @@ public record GuardianConfig(
         // ---- v1.3.0 W4: kill-switch for hot-tick mixin-sourced events ----
         boolean mixinHotEvents
     ) {
+        public Actions {
+            if (worldBlacklist == null) worldBlacklist = List.of();
+            if (blockBlacklist == null) blockBlacklist = List.of();
+            if (sourceBlacklist == null) sourceBlacklist = List.of();
+            if (itemBlacklist == null) itemBlacklist = List.of();
+            if (entityBlacklist == null) entityBlacklist = List.of();
+            if (entityChangeAllowlist == null) entityChangeAllowlist = List.of();
+        }
+
+        /**
+         * Backward-compat 32-arg constructor for callers/tests written before 2.1.1 added
+         * {@code itemBlacklist} and {@code entityBlacklist}.
+         */
+        @Deprecated
+        public Actions(
+            boolean logBlocks,
+            boolean logContainers,
+            boolean logItems,
+            boolean logEntities,
+            boolean logExplosions,
+            boolean logChat,
+            boolean logCommands,
+            boolean logSessions,
+            boolean logSigns,
+            boolean logInteractions,
+            boolean logWorldEvents,
+            List<String> worldBlacklist,
+            List<String> blockBlacklist,
+            List<String> sourceBlacklist,
+            long entityBlockChangeCoalesceWindowMs,
+            int entityBlockChangeMaxTracked,
+            List<String> entityChangeAllowlist,
+            boolean entityChangeLogAllEntities,
+            boolean logNaturalBreaks,
+            boolean logTreeGrowth,
+            boolean logMushroomGrowth,
+            boolean logVineGrowth,
+            boolean logSculkSpread,
+            boolean logPortals,
+            boolean logWaterFlow,
+            boolean logLavaFlow,
+            boolean logFireExtinguish,
+            boolean logCampfireStart,
+            boolean logHopperMetaFilter,
+            boolean logDuplicateSuppression,
+            boolean logCancelledChat,
+            boolean mixinHotEvents
+        ) {
+            this(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                List.of(), List.of(),
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                mixinHotEvents
+            );
+        }
         /**
          * Backward-compat constructor for callers/tests written before the W5-07 CP-parity toggles
          * existed. Delegates to the canonical constructor, defaulting each new field to the value
@@ -512,9 +578,52 @@ public record GuardianConfig(
                 logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
                 logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
                 worldBlacklist, blockBlacklist, sourceBlacklist,
+                itemBlacklist, entityBlacklist,
                 entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
                 newAllowlist == null ? List.of() : List.copyOf(newAllowlist),
                 entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                mixinHotEvents
+            );
+        }
+
+        /**
+         * Return a copy of this {@code Actions} with {@code itemBlacklist}
+         * replaced by {@code newBlacklist}, every other field preserved.
+         */
+        public Actions withItemBlacklist(List<String> newBlacklist) {
+            return new Actions(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                newBlacklist == null ? List.of() : List.copyOf(newBlacklist),
+                entityBlacklist,
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                mixinHotEvents
+            );
+        }
+
+        /**
+         * Return a copy of this {@code Actions} with {@code entityBlacklist}
+         * replaced by {@code newBlacklist}, every other field preserved.
+         */
+        public Actions withEntityBlacklist(List<String> newBlacklist) {
+            return new Actions(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                itemBlacklist,
+                newBlacklist == null ? List.of() : List.copyOf(newBlacklist),
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
                 logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
                 logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
                 logFireExtinguish, logCampfireStart, logHopperMetaFilter,
@@ -671,6 +780,8 @@ public record GuardianConfig(
         List<String> worldBlacklist = new ArrayList<>();
         List<String> blockBlacklist = new ArrayList<>(List.of("minecraft:air"));
         List<String> sourceBlacklist = new ArrayList<>();
+        List<String> itemBlacklist = new ArrayList<>();
+        List<String> entityBlacklist = new ArrayList<>();
         // Empty allowlist = vanilla-only recording via the hardcoded set in
         // VanillaGrieferSet.DEFAULT_ALLOWLIST. Modded mobs need explicit opt-in.
         // This is the correct semantic for a CoreProtect-style audit tool:
@@ -685,6 +796,7 @@ public record GuardianConfig(
                 true, true, true, true, true, true, true, true, true,
                 true, true,
                 worldBlacklist, blockBlacklist, sourceBlacklist,
+                itemBlacklist, entityBlacklist,
                 500L, 8192,             // entityBlockChange coalescer defaults
                 entityChangeAllowlist,  // entityChangeAllowlist: empty = vanilla-only
                 false,                   // entityChangeLogAllEntities: DO NOT flip this
@@ -841,6 +953,8 @@ public record GuardianConfig(
             checkNoNullElems(errors, "actions.worldBlacklist", actions.worldBlacklist);
             checkNoNullElems(errors, "actions.blockBlacklist", actions.blockBlacklist);
             checkNoNullElems(errors, "actions.sourceBlacklist", actions.sourceBlacklist);
+            checkNoNullElems(errors, "actions.itemBlacklist", actions.itemBlacklist);
+            checkNoNullElems(errors, "actions.entityBlacklist", actions.entityBlacklist);
             checkNoNullElems(errors, "actions.entityChangeAllowlist", actions.entityChangeAllowlist);
         }
 

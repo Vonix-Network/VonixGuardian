@@ -1774,6 +1774,16 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
 
     // -------------------------------------------------------------------- lifecycle
 
+    @Override
+    public boolean shouldLogItem(String worldId, String itemId) {
+        return gate.shouldLogItem(worldId, itemId);
+    }
+
+    @Override
+    public boolean shouldLogEntity(String worldId, String entityId) {
+        return gate.shouldLogEntity(worldId, entityId);
+    }
+
     /**
      * Drain pending writes, close the log file, and shut down the DAO pool.
      * Safe to call multiple times.

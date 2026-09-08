@@ -663,4 +663,34 @@ public interface EventSubmitter {
                 push.itemNbt(), push.slot(), push.oldBlockState(), push.newBlockState(),
                 push.blockEntityNbt(), pair);
     }
+
+    /**
+     * Reports whether an item action for the given world and item identifier
+     * should be logged under current configuration and active event gate.
+     * Callers can use this to skip expensive operations (such as NBT capture)
+     * when the event would be dropped.
+     *
+     * @param worldId world / dimension key, or null
+     * @param itemId  item identifier, or null
+     * @return true if item logging is enabled and the item is not blacklisted
+     * @since 2.1.1
+     */
+    default boolean shouldLogItem(String worldId, String itemId) {
+        return true;
+    }
+
+    /**
+     * Reports whether an entity action for the given world and entity identifier
+     * should be logged under current configuration and active event gate.
+     * Callers can use this to skip expensive operations (such as NBT capture)
+     * when the event would be dropped.
+     *
+     * @param worldId  world / dimension key, or null
+     * @param entityId entity identifier or mob sentinel, or null
+     * @return true if entity logging is enabled and the entity is not blacklisted
+     * @since 2.1.1
+     */
+    default boolean shouldLogEntity(String worldId, String entityId) {
+        return true;
+    }
 }

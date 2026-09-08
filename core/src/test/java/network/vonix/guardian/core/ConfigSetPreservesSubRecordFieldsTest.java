@@ -68,6 +68,7 @@ class ConfigSetPreservesSubRecordFieldsTest {
         return new GuardianConfig.Actions(
             true, true, true, true, true, true, true, true, true, true, true,
             List.of(), List.of("minecraft:air"), List.of(),
+            List.of("minecraft:bedrock"), List.of("minecraft:wither"),
             500L, 8192,
             List.of(), false,
             // ---- W5-07: 13 CP-parity toggles, ALL flipped from default ----
@@ -155,6 +156,7 @@ class ConfigSetPreservesSubRecordFieldsTest {
             a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(),
             a.logInteractions(), a.logWorldEvents(),
             a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(),
+            a.itemBlacklist(), a.entityBlacklist(),
             a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(),
             a.entityChangeAllowlist(), a.entityChangeLogAllEntities(),
             a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(),
@@ -247,7 +249,9 @@ class ConfigSetPreservesSubRecordFieldsTest {
             Arguments.of("actions.logBlocks → logHopperMetaFilter",    "logHopperMetaFilter"),
             Arguments.of("actions.logBlocks → logDuplicateSuppression","logDuplicateSuppression"),
             Arguments.of("actions.logBlocks → logCancelledChat",       "logCancelledChat"),
-            Arguments.of("actions.logBlocks → mixinHotEvents",         "mixinHotEvents")
+            Arguments.of("actions.logBlocks → mixinHotEvents",         "mixinHotEvents"),
+            Arguments.of("actions.logBlocks → itemBlacklist",          "itemBlacklist"),
+            Arguments.of("actions.logBlocks → entityBlacklist",        "entityBlacklist")
         );
     }
 
@@ -332,6 +336,14 @@ class ConfigSetPreservesSubRecordFieldsTest {
             case "mixinHotEvents" -> {
                 assertThat(afterLogFileSet.actions().mixinHotEvents()).isFalse();
                 assertThat(afterActionsSet.actions().mixinHotEvents()).isFalse();
+            }
+            case "itemBlacklist" -> {
+                assertThat(afterLogFileSet.actions().itemBlacklist()).containsExactly("minecraft:bedrock");
+                assertThat(afterActionsSet.actions().itemBlacklist()).containsExactly("minecraft:bedrock");
+            }
+            case "entityBlacklist" -> {
+                assertThat(afterLogFileSet.actions().entityBlacklist()).containsExactly("minecraft:wither");
+                assertThat(afterActionsSet.actions().entityBlacklist()).containsExactly("minecraft:wither");
             }
             default -> throw new AssertionError("unknown field " + field);
         }

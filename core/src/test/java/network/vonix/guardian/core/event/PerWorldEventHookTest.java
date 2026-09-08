@@ -139,4 +139,34 @@ class PerWorldEventHookTest {
         assertThat(hook.test(action(ActionType.FLUID_FLOW, "minecraft:the_nether",
                 "minecraft:lava", "#fluid:lava"))).isEqualTo(EventHook.Decision.PASS);
     }
+
+    @Test
+    void deny_when_item_in_override_blacklist(@TempDir Path tmp) throws Exception {
+        Files.writeString(tmp.resolve("minecraft__the_nether.json"),
+            "{ \"itemBlacklist\": [\"minecraft:netherite_scrap\"] }");
+        PerWorldConfigStore store = new PerWorldConfigStore(root());
+        store.reload(tmp);
+        PerWorldEventHook hook = new PerWorldEventHook(store, root());
+
+        Action dropped = action(ActionType.ITEM_DROP, "minecraft:the_nether", "minecraft:netherite_scrap", null);
+        assertThat(hook.test(dropped)).isEqualTo(EventHook.Decision.DENY);
+
+        Action diamond = action(ActionType.ITEM_DROP, "minecraft:the_nether", "minecraft:diamond", null);
+        assertThat(hook.test(diamond)).isEqualTo(EventHook.Decision.PASS);
+    }
+
+    @Test
+    void deny_when_entity_in_override_blacklist_with_sentinel_normalization(@TempDir Path tmp) throws Exception {
+        Files.writeString(tmp.resolve("minecraft__the_nether.json"),
+            "{ \"entityBlacklist\": [\"minecraft:ghast\"] }");
+        PerWorldConfigStore store = new PerWorldConfigStore(root());
+        store.reload(tmp);
+        PerWorldEventHook hook = new PerWorldEventHook(store, root());
+
+        Action mob = action(ActionType.ENTITY_KILL, "minecraft:the_nether", "#mob:minecraft:ghast", null);
+        assertThat(hook.test(mob)).isEqualTo(EventHook.Decision.DENY);
+
+        Action zombie = action(ActionType.ENTITY_KILL, "minecraft:the_nether", "#mob:minecraft:zombie", null);
+        assertThat(hook.test(zombie)).isEqualTo(EventHook.Decision.PASS);
+    }
 }

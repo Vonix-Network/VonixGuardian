@@ -56,10 +56,44 @@ public final class PerWorldEventHook implements EventHook {
                 && contains(over.blockBlacklist(), a.targetId())) {
             return Decision.DENY;
         }
+        if (a.type().category() == ActionType.Category.ITEM
+                && containsItem(over.itemBlacklist(), a.targetId())) {
+            return Decision.DENY;
+        }
+        if (a.type().category() == ActionType.Category.ENTITY
+                && containsEntity(over.entityBlacklist(), a.targetId())) {
+            return Decision.DENY;
+        }
         if (a.sourceTag() != null && contains(over.sourceBlacklist(), a.sourceTag())) {
             return Decision.DENY;
         }
         return Decision.PASS;
+    }
+
+    private static boolean containsItem(List<String> list, String targetId) {
+        if (list == null || list.isEmpty() || targetId == null) return false;
+        String normTarget = EventGate.normalizeItemId(targetId);
+        if (normTarget == null) return false;
+        for (String s : list) {
+            String norm = EventGate.normalizeItemId(s);
+            if (norm != null && norm.equals(normTarget)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsEntity(List<String> list, String targetId) {
+        if (list == null || list.isEmpty() || targetId == null) return false;
+        String normTarget = EventGate.normalizeEntityId(targetId);
+        if (normTarget == null) return false;
+        for (String s : list) {
+            String norm = EventGate.normalizeEntityId(s);
+            if (norm != null && norm.equals(normTarget)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean contains(List<String> list, String v) {

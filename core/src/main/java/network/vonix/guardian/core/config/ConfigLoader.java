@@ -267,6 +267,8 @@ public final class ConfigLoader {
                 a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(),
                 a.logSigns(), a.logInteractions(), a.logWorldEvents(),
                 a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(),
+                a.itemBlacklist() == null ? java.util.List.of() : a.itemBlacklist(),
+                a.entityBlacklist() == null ? java.util.List.of() : a.entityBlacklist(),
                 window, maxTracked,
                 allowlist, a.entityChangeLogAllEntities(),
                 vNaturalBreaks, vTreeGrowth, vMushroomGrowth, vVineGrowth,

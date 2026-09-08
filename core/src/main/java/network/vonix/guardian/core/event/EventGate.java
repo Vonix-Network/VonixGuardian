@@ -59,6 +59,8 @@ public final class EventGate {
     private final Set<String> worldBlacklist;
     private final Set<String> blockBlacklist;
     private final Set<String> sourceBlacklist;
+    private final Set<String> itemBlacklist;
+    private final Set<String> entityBlacklist;
     /**
      * v1.3.0 W2: cached copy of {@code actions.mixinHotEvents} for the built-in
      * kill-switch short-circuit in {@link #shouldLog(Action)}. Set once at
@@ -92,11 +94,62 @@ public final class EventGate {
         this.worldBlacklist = freeze(cfg.worldBlacklist());
         this.blockBlacklist = freeze(cfg.blockBlacklist());
         this.sourceBlacklist = freeze(cfg.sourceBlacklist());
+        this.itemBlacklist = freezeItemBlacklist(cfg.itemBlacklist());
+        this.entityBlacklist = freezeEntityBlacklist(cfg.entityBlacklist());
         this.mixinHotEventsEnabled = cfg.mixinHotEvents();
     }
 
     private static Set<String> freeze(List<String> src) {
         return src == null ? Set.of() : new HashSet<>(src);
+    }
+
+    /**
+     * Normalizes an item identifier by trimming and converting to lower-case (ROOT).
+     * Returns {@code null} if the input is null or blank.
+     */
+    public static String normalizeItemId(String s) {
+        if (s == null) return null;
+        String trimmed = s.trim().toLowerCase(java.util.Locale.ROOT);
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /**
+     * Normalizes an entity identifier by trimming, converting to lower-case (ROOT),
+     * and stripping the optional {@code "#mob:"} prefix.
+     * Returns {@code null} if the input is null, blank, or becomes empty after stripping.
+     */
+    public static String normalizeEntityId(String s) {
+        if (s == null) return null;
+        String trimmed = s.trim().toLowerCase(java.util.Locale.ROOT);
+        if (trimmed.isEmpty()) return null;
+        if (trimmed.startsWith("#mob:")) {
+            trimmed = trimmed.substring(5);
+        }
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static Set<String> freezeItemBlacklist(List<String> src) {
+        if (src == null || src.isEmpty()) return Set.of();
+        Set<String> set = new HashSet<>(src.size() * 2);
+        for (String s : src) {
+            String norm = normalizeItemId(s);
+            if (norm != null) {
+                set.add(norm);
+            }
+        }
+        return Set.copyOf(set);
+    }
+
+    private static Set<String> freezeEntityBlacklist(List<String> src) {
+        if (src == null || src.isEmpty()) return Set.of();
+        Set<String> set = new HashSet<>(src.size() * 2);
+        for (String s : src) {
+            String norm = normalizeEntityId(s);
+            if (norm != null) {
+                set.add(norm);
+            }
+        }
+        return Set.copyOf(set);
     }
 
     /**
@@ -211,6 +264,18 @@ public final class EventGate {
         if (t.category() == ActionType.Category.BLOCK && blockBlacklist.contains(a.targetId())) {
             return false;
         }
+        if (t.category() == ActionType.Category.ITEM && !itemBlacklist.isEmpty() && a.targetId() != null) {
+            String norm = normalizeItemId(a.targetId());
+            if (norm != null && itemBlacklist.contains(norm)) {
+                return false;
+            }
+        }
+        if (t.category() == ActionType.Category.ENTITY && !entityBlacklist.isEmpty() && a.targetId() != null) {
+            String norm = normalizeEntityId(a.targetId());
+            if (norm != null && entityBlacklist.contains(norm)) {
+                return false;
+            }
+        }
         if (sourceTag != null && sourceBlacklist.contains(sourceTag)) {
             return false;
         }
@@ -278,5 +343,63 @@ public final class EventGate {
     private static boolean isLava(Action a) {
         String target = a.targetId();
         return target != null && target.toLowerCase(java.util.Locale.ROOT).contains("lava");
+    }
+
+    /**
+     * Checks whether an item action for the given world and item identifier should
+     * be logged under the current configuration and hook chain.
+     */
+    public boolean shouldLogItem(String worldId, String itemId) {
+        if (!cfg.logItems()) {
+            return false;
+        }
+        if (worldId != null && worldBlacklist.contains(worldId)) {
+            return false;
+        }
+        if (!itemBlacklist.isEmpty() && itemId != null) {
+            String norm = normalizeItemId(itemId);
+            if (norm != null && itemBlacklist.contains(norm)) {
+                return false;
+            }
+        }
+        if (!hooks.isEmpty()) {
+            Action probe = new Action(-1L, System.currentTimeMillis(), ActionType.ITEM_DROP,
+                    null, "#probe", worldId != null ? worldId : "", 0, 0, 0, itemId, null, 1, false, null);
+            for (EventHook hook : hooks) {
+                EventHook.Decision d = hook.test(probe);
+                if (d == EventHook.Decision.ACCEPT) return true;
+                if (d == EventHook.Decision.DENY) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Checks whether an entity action for the given world and entity identifier should
+     * be logged under the current configuration and hook chain.
+     */
+    public boolean shouldLogEntity(String worldId, String entityId) {
+        if (!cfg.logEntities()) {
+            return false;
+        }
+        if (worldId != null && worldBlacklist.contains(worldId)) {
+            return false;
+        }
+        if (!entityBlacklist.isEmpty() && entityId != null) {
+            String norm = normalizeEntityId(entityId);
+            if (norm != null && entityBlacklist.contains(norm)) {
+                return false;
+            }
+        }
+        if (!hooks.isEmpty()) {
+            Action probe = new Action(-1L, System.currentTimeMillis(), ActionType.ENTITY_SPAWN,
+                    null, "#probe", worldId != null ? worldId : "", 0, 0, 0, entityId, null, 1, false, null);
+            for (EventHook hook : hooks) {
+                EventHook.Decision d = hook.test(probe);
+                if (d == EventHook.Decision.ACCEPT) return true;
+                if (d == EventHook.Decision.DENY) return false;
+            }
+        }
+        return true;
     }
 }

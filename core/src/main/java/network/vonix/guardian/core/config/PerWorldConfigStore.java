@@ -197,6 +197,8 @@ public final class PerWorldConfigStore {
             stringList(o, "worldBlacklist", root.worldBlacklist()),
             stringList(o, "blockBlacklist", root.blockBlacklist()),
             stringList(o, "sourceBlacklist", root.sourceBlacklist()),
+            stringList(o, "itemBlacklist", root.itemBlacklist()),
+            stringList(o, "entityBlacklist", root.entityBlacklist()),
             longVal(o, "entityBlockChangeCoalesceWindowMs", root.entityBlockChangeCoalesceWindowMs()),
             intVal(o, "entityBlockChangeMaxTracked", root.entityBlockChangeMaxTracked()),
             stringList(o, "entityChangeAllowlist", root.entityChangeAllowlist()),
