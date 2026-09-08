@@ -963,7 +963,7 @@ public final class FabricMixinBridge {
         return snap;
     }
 
-    public static void hopperEjectBegin(Level level, BlockPos pos, HopperBlockEntity hopper) {
+    public static void hopperEjectBegin(Level level, BlockPos pos, Container hopper) {
         try {
             HopperCapture cap = new HopperCapture();
             cap.level = level;
@@ -984,7 +984,7 @@ public final class FabricMixinBridge {
         }
     }
 
-    public static void hopperEjectCommit(Level level, BlockPos pos, HopperBlockEntity hopper) {
+    public static void hopperEjectCommit(Level level, BlockPos pos, Container hopper) {
         try {
             HopperCapture cap = HOPPER_CAPTURE.get();
             hopperAbort();
@@ -1049,7 +1049,7 @@ public final class FabricMixinBridge {
         HOPPER_CAPTURE.remove();
     }
 
-    private static void emitHopperDiff(Level level, BlockPos hopperPos, HopperBlockEntity hopper,
+    private static void emitHopperDiff(Level level, BlockPos hopperPos, Container hopper,
                                        BlockPos otherPos,
                                        Map<Integer, ItemStack> hopperBefore,
                                        Map<Integer, ItemStack> otherBefore,

@@ -26,7 +26,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class HopperBlockEntityMixin {
 
     @Inject(method = "ejectItems", at = @At("HEAD"), require = 1)
-    private static void vg$beforeEjectItems(Level level, BlockPos pos, BlockState state, HopperBlockEntity hopper,
+    private static void vg$beforeEjectItems(Level level, BlockPos pos, BlockState state, Container hopper,
                                             CallbackInfoReturnable<Boolean> cir) {
         try {
             FabricMixinBridge.hopperEjectBegin(level, pos, hopper);
@@ -34,7 +34,7 @@ public abstract class HopperBlockEntityMixin {
     }
 
     @Inject(method = "ejectItems", at = @At("RETURN"), require = 1)
-    private static void vg$onEjectItems(Level level, BlockPos pos, BlockState state, HopperBlockEntity hopper,
+    private static void vg$onEjectItems(Level level, BlockPos pos, BlockState state, Container hopper,
                                         CallbackInfoReturnable<Boolean> cir) {
         try {
             if (cir != null && Boolean.TRUE.equals(cir.getReturnValue())) {
