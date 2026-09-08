@@ -54,11 +54,12 @@ class FabricPackagingStructuralTest {
             assertThat(text).as(cell + " LocationalInventory package boundary")
                     .contains("network/vonix/guardian/mc/" + ver + "/fabric/api/LocationalInventory.class")
                     .contains("network/vonix/guardian/mc/" + ver + "/fabric/mixin/LocationalInventory.class");
+            assertThat(text).as(cell + " nested-core metadata")
+                    .contains("\"id\": \"vonixguardian-core\"")
+                    .contains("coreWithFabricMetadata")
+                    .contains("fabric.mod.json");
             if (cell.startsWith("mc-1.21.1/")) {
-                assertThat(text).as(cell + " nested-core metadata")
-                        .contains("\"id\": \"vonixguardian-core\"")
-                        .contains("coreWithFabricMetadata")
-                        .contains("fabric.mod.json")
+                assertThat(text).as(cell + " common sources")
                         .contains("srcDir project(':mc-1.21.1:common').file('src/main/java')");
             }
         }

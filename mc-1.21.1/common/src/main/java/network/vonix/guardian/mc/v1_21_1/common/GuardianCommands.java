@@ -24,6 +24,8 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.command.CommandChatGuard;
+import network.vonix.guardian.core.command.MutationOutcomeFormatter;
 import network.vonix.guardian.core.concurrent.BoundedGenerationExecutor;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
@@ -511,8 +513,10 @@ public final class GuardianCommands {
                             g.theme(), rows, pageActual, perPageF, now, rawF, visiblePage.hasNext());
                     server.execute(() -> {
                         if (rows.isEmpty()) {
-                            sendToPlayerOrSrc(server, src, viewer, ChatRenderer.muted(g.theme(),
-                                    "[VonixGuardian] No results found. Try a wider radius (r:20+) or longer time (t:24h+), or check filter tokens."));
+                            if (!filter.silent()) {
+                                sendToPlayerOrSrc(server, src, viewer, ChatRenderer.muted(g.theme(),
+                                        "[VonixGuardian] No results found. Try a wider radius (r:20+) or longer time (t:24h+), or check filter tokens."));
+                            }
                             return;
                         }
                         for (Component c : pageOut) {
@@ -570,30 +574,39 @@ public final class GuardianCommands {
             final long previewGeneration = PENDING_PREVIEWS.invalidate(previewKey(actor));
             final QueryFilter filter = qf;
             final boolean preview = previewForced || filter.preview();
+            final long chatGen = CommandChatGuard.next(actor);
             submitAsync(src, g, () -> {
                 try {
                     RollbackOptions options = rollbackOptions(server, src, actor);
+                    if (filter.countOnly()) {
+                        var plan = g.rollbackEngine().plan(filter, RollbackResult.Mode.ROLLBACK, actor, options);
+                        RollbackResult counted = new RollbackResult(actor, RollbackResult.Mode.ROLLBACK, true,
+                                plan.actionIds(), plan.skippedIds(), plan.plannedSteps(), 0, filter);
+                        server.execute(() -> {
+                            if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                            sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
+                                    MutationOutcomeFormatter.countLine("Rollback", counted)));
+                        });
+                        return;
+                    }
                     RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor, options);
-                    if (!result.preview()) {
+                    if (!result.preview() && result.mutatedWorld()) {
                         g.undoStack().push(actor != null ? actor
                                 : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
-                    } else {
+                    } else if (result.preview()) {
                         PENDING_PREVIEWS.putIfGeneration(previewKey(actor), previewGeneration, result);
                     }
                     server.execute(() -> {
-                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
-                                "[VonixGuardian] Rollback " + (preview ? "(preview) " : "")
-                                        + "affected=" + result.affectedCount()
-                                        + " planned=" + result.plannedSteps()));
-                        if (result.affectedCount() == 0) {
-                            sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
-                                    "[VonixGuardian] Rollback found 0 matching actions. Explosions record their blast CENTER — try r:20+ or move to the source of the damage."));
-                        }
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendMutationResult(server, src, actor, g, "Rollback", result, filter);
                     });
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Rollback failed", t);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Rollback error: " + t.getMessage())));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Rollback error: " + t.getMessage()));
+                    });
                 }
             });
             return 1;
@@ -624,29 +637,39 @@ public final class GuardianCommands {
             // Any new rollback/restore request supersedes an older actionable preview.
             final long previewGeneration = PENDING_PREVIEWS.invalidate(previewKey(actor));
             final QueryFilter filter = qf;
+            final long chatGen = CommandChatGuard.next(actor);
             submitAsync(src, g, () -> {
                 try {
                     RollbackOptions options = rollbackOptions(server, src, actor);
+                    if (filter.countOnly()) {
+                        var plan = g.rollbackEngine().plan(filter, RollbackResult.Mode.RESTORE, actor, options);
+                        RollbackResult counted = new RollbackResult(actor, RollbackResult.Mode.RESTORE, true,
+                                plan.actionIds(), plan.skippedIds(), plan.plannedSteps(), 0, filter);
+                        server.execute(() -> {
+                            if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                            sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
+                                    MutationOutcomeFormatter.countLine("Restore", counted)));
+                        });
+                        return;
+                    }
                     RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
-                    if (!result.preview()) {
+                    if (!result.preview() && result.mutatedWorld()) {
                         g.undoStack().push(actor != null ? actor
                                 : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
-                    } else {
+                    } else if (result.preview()) {
                         PENDING_PREVIEWS.putIfGeneration(previewKey(actor), previewGeneration, result);
                     }
                     server.execute(() -> {
-                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
-                                "[VonixGuardian] Restore affected=" + result.affectedCount()
-                                        + " planned=" + result.plannedSteps()));
-                        if (result.affectedCount() == 0) {
-                            sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
-                                    "[VonixGuardian] Restore found 0 matching actions. Explosions record their blast CENTER — try r:20+ or move to the source of the damage."));
-                        }
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendMutationResult(server, src, actor, g, "Restore", result, filter);
                     });
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Restore failed", t);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Restore error: " + t.getMessage())));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Restore error: " + t.getMessage()));
+                    });
                 }
             });
             return 1;
@@ -710,14 +733,14 @@ public final class GuardianCommands {
             UUID actor = actorUuid(src);
             UUID key = actor != null ? actor
                     : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY;
-            var popped = g.undoStack().pop(key);
-            if (popped.isEmpty()) {
+            var peeked = g.undoStack().peek(key);
+            if (peeked.isEmpty()) {
                 send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] Nothing to undo."));
                 return 0;
             }
-            RollbackResult prev = popped.get();
+            RollbackResult prev = peeked.get();
             if (prev.originalFilter() == null || prev.affectedIds().isEmpty()) {
-                // Legacy pre-v1.1.6 undo entry — no filter/id set captured, cannot revert world state.
+                g.undoStack().popIfSame(key, prev);
                 LOG.info(Guardian.MARKER,
                         "Undo: popped legacy/empty entry; {} affected id(s) dropped from history",
                         prev.affectedCount());
@@ -729,21 +752,26 @@ public final class GuardianCommands {
             MinecraftServer server = src.getServer();
             final RollbackResult.Mode inverse = prev.inverseMode();
             final QueryFilter exactFilter = idFilter(prev.originalFilter(), prev.affectedIds());
-            // Undo replays the inverse against the exact action ids from the popped
-            // operation. Reusing the broad original filter would catch later rows
-            // that match the same criteria but were not part of the operation.
+            final long chatGen = CommandChatGuard.next(actor);
             submitAsync(src, g, () -> {
                 try {
                     var plan = g.rollbackEngine().plan(exactFilter, inverse, actor);
                     RollbackResult result = g.rollbackEngine().execute(plan, false);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
-                            "[VonixGuardian] Undo (" + inverse + ") affected="
-                                    + result.affectedCount()
-                                    + " planned=" + result.plannedSteps())));
+                    if (result.isSuccess() || result.mutatedWorld()) {
+                        g.undoStack().popIfSame(key, prev);
+                    }
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendMutationResult(server, src, actor, g, "Undo (" + inverse + ")", result,
+                                prev.originalFilter());
+                    });
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Undo failed", t);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Undo error: " + t.getMessage())));
+                    server.execute(() -> {
+                        if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
+                        sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                                "[VonixGuardian] Undo error: " + t.getMessage()));
+                    });
                 }
             });
             return 1;
@@ -804,11 +832,14 @@ public final class GuardianCommands {
                     if (!result.affectedIds().isEmpty()) {
                         g.undoStack().push(previewKey(actor), result);
                     }
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
-                            "[VonixGuardian] Applied preview affected=" + result.affectedCount()
-                                    + " planned=" + result.plannedSteps())));
+                    if (!result.isSuccess() && !result.mutatedWorld()) {
+                        PENDING_PREVIEWS.putIfGeneration(previewKey(actor), expectedGeneration, preview);
+                    }
+                    server.execute(() -> sendMutationResult(server, src, actor, g, "Applied preview", result,
+                            preview.originalFilter()));
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Apply preview failed", t);
+                    PENDING_PREVIEWS.putIfGeneration(previewKey(actor), expectedGeneration, preview);
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                             "[VonixGuardian] Apply error: " + t.getMessage())));
                 }
@@ -825,6 +856,21 @@ public final class GuardianCommands {
             }
             send(src, ChatRenderer.success(g.theme(), "[VonixGuardian] Rollback preview cancelled."));
             return 1;
+        }
+    }
+
+
+    private static void sendMutationResult(MinecraftServer server, CommandSourceStack src, UUID actor,
+                                           Guardian g, String verb, RollbackResult result, QueryFilter filter) {
+        java.util.List<String> lines = MutationOutcomeFormatter.lines(verb, result, filter);
+        for (String line : lines) {
+            if (result.status() == RollbackResult.Status.FAILED) {
+                sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(), line));
+            } else if (result.status() == RollbackResult.Status.SUCCESS) {
+                sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(), line));
+            } else {
+                sendToPlayerOrSrc(server, src, actor, ChatRenderer.warning(g.theme(), line));
+            }
         }
     }
 
@@ -1123,7 +1169,7 @@ public final class GuardianCommands {
                 case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
                 case "actions.mixinHotEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), parseBool(value, key)));
                 case "storage.persistNbt" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, new GuardianConfig.Storage(parseBool(value, key)), c.rollback(), c.theme(), c.language());
-                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key)), c.theme(), c.language());
+                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key), c.rollback().mutationBatchSize()), c.theme(), c.language());
                 case "language" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), value);
                 default -> null;
             };

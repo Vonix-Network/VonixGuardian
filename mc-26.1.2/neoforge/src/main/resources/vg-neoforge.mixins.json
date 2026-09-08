@@ -25,7 +25,9 @@
     "SnowGolemMixin",
     "SpreadingSnowyDirtBlockMixin",
     "TntBlockMixin",
-    "PlayerInventoryMixin"
+    "PlayerInventoryMixin",
+    "SignChangeMixin",
+    "ConcretePowderBlockMixin"
   ],
   "server": [],
   "client": [],

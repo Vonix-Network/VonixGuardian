@@ -62,12 +62,14 @@ public final class MigrationRunner {
     /** The default migration chain: register new migrations here as the schema grows. */
     public static MigrationRunner defaults() {
         return new MigrationRunner(List.of(
+            new V2CreateRollbackTables(),
             new V3WidenActionTarget(),
             new V4SignMetadata(),
             new V5NbtFidelity(),
             new V6PairId(),
             new V7InventorySlot(),
-            new V8RepairAndOutbox()
+            new V8RepairAndOutbox(),
+            new V9TsIdIndex()
         ));
     }
 

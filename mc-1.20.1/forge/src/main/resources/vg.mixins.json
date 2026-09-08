@@ -7,7 +7,9 @@
   "mixins": [
     "DispenserBlockMixin",
     "HopperBlockEntityMixin",
-    "PlayerInventoryMixin"
+    "PlayerInventoryMixin",
+    "SignChangeMixin",
+    "RavagerMixin"
   ],
   "server": [],
   "client": [],

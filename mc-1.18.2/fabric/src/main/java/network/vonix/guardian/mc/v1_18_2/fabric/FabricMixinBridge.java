@@ -657,6 +657,86 @@ public final class FabricMixinBridge {
     }
 
 
+    public static void chatMessage(Player player, String text) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || player == null || text == null) return;
+            s.submitChat(player.getUUID(), player.getName().getString(),
+                    WorldKey.of(player.level), text);
+        } catch (Throwable t) {
+            warn("chatMessage", t);
+        }
+    }
+
+    public static void commandMessage(Player player, String text) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || player == null || text == null) return;
+            s.submitCommand(player.getUUID(), player.getName().getString(),
+                    WorldKey.of(player.level), text);
+        } catch (Throwable t) {
+            warn("commandMessage", t);
+        }
+    }
+
+    public static void livingHurt(LivingEntity victim, net.minecraft.world.damagesource.DamageSource source) {
+        try {
+            if (victim == null || source == null || FabricBootstrap.damageHistory == null) return;
+            net.minecraft.world.entity.Entity src = source.getEntity();
+            if (src instanceof Player p) {
+                FabricBootstrap.damageHistory.record(victim.getUUID(), p.getUUID(),
+                        System.currentTimeMillis());
+            }
+        } catch (Throwable t) {
+            warn("livingHurt", t);
+        }
+    }
+
+    public static void livingDeath(LivingEntity victim, net.minecraft.world.damagesource.DamageSource source) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || victim == null) return;
+            net.minecraft.world.entity.Entity killer = source == null ? null : source.getEntity();
+            // AFTER_KILLED_OTHER_ENTITY already logs killer != null. Only natural deaths here.
+            if (killer != null) return;
+            Attribution attr = Attribution.unknown(EntitySentinel.UNKNOWN);
+            if (FabricBootstrap.damageHistory != null) {
+                UUID last = FabricBootstrap.damageHistory.lastPlayerToHit(
+                        victim.getUUID(), System.currentTimeMillis(),
+                        network.vonix.guardian.core.attribution.DamageHistory.DEFAULT_WINDOW_MILLIS);
+                if (last != null) {
+                    attr = new Attribution(last, "#player",
+                            network.vonix.guardian.core.attribution.AttributionKind.PLAYER_INDIRECT,
+                            EntitySentinel.of(victim), 1);
+                }
+            }
+            BlockPos pos = victim.blockPosition();
+            String entityType = EntitySentinel.of(victim);
+            String tag = source == null ? null : SourceTagger.tag(source);
+            if (persistNbt()) {
+                byte[] entNbt = NbtCapture.entity(victim);
+                if (entNbt != null) {
+                    s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                            WorldKey.of(victim.level), pos.getX(), pos.getY(), pos.getZ(),
+                            entityType, tag, entNbt);
+                } else {
+                    s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                            WorldKey.of(victim.level), pos.getX(), pos.getY(), pos.getZ(),
+                            entityType, tag);
+                }
+            } else {
+                s.submitEntityKill(attr.actorUuid(), attr.actorName(),
+                        WorldKey.of(victim.level), pos.getX(), pos.getY(), pos.getZ(),
+                        entityType, tag);
+            }
+            if (FabricBootstrap.damageHistory != null) {
+                FabricBootstrap.damageHistory.forget(victim.getUUID());
+            }
+        } catch (Throwable t) {
+            warn("livingDeath", t);
+        }
+    }
+
     /** Sign packet → SIGN row with metadata. */
     public static void signChange(Player player, Level level, BlockPos pos, String[] lines, boolean isFront) {
         try {

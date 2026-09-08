@@ -112,7 +112,9 @@ public final class FabricWorldMutator implements WorldMutator {
             Block block = Registry.BLOCK.get(rl);
             if (block == null || !rl.equals(Registry.BLOCK.getKey(block))) return false;
             BlockState state = applyMeta(block.defaultBlockState(), targetMeta);
-            return level.setBlock(new BlockPos(x, y, z), state, Block.UPDATE_ALL);
+            BlockPos pos = new BlockPos(x, y, z);
+            boolean changed = level.setBlock(pos, state, Block.UPDATE_ALL);
+            return changed || level.getBlockState(pos).equals(state);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "setBlock failed at {} {},{},{}", worldId, x, y, z, t);
             return false;
@@ -325,6 +327,7 @@ public final class FabricWorldMutator implements WorldMutator {
 
             mutationStarted = true;
             boolean placed = level.setBlock(pos, state, Block.UPDATE_ALL);
+            if (!placed && level.getBlockState(pos).equals(state)) placed = true;
 
             if (!placed) {
                 restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);

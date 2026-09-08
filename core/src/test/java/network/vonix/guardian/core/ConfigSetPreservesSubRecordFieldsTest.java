@@ -55,7 +55,7 @@ class ConfigSetPreservesSubRecordFieldsTest {
             "logs/vonixguardian-hot",    // directory
             false,                       // gzipRotated (NON-default)
             7,                           // retentionDays (NON-default)
-            false                        // forceSyncOnFlush = false (NON-default — the field the shim drops!)
+            true                         // forceSyncOnFlush = true (NON-default as of 2.1.1)
         );
     }
 
@@ -172,8 +172,8 @@ class ConfigSetPreservesSubRecordFieldsTest {
     void configSetLogFileEnabledPreservesForceSyncOnFlush() {
         GuardianConfig c = hotCfg();
         assertThat(c.logFile().forceSyncOnFlush())
-            .as("fixture: forceSyncOnFlush is non-default")
-            .isFalse();
+            .as("fixture: forceSyncOnFlush is non-default (true vs 2.1.1 default false)")
+            .isTrue();
 
         GuardianConfig next = withLogFileEnabled(c, true);
 
@@ -181,7 +181,7 @@ class ConfigSetPreservesSubRecordFieldsTest {
         assertThat(next.logFile().forceSyncOnFlush())
             .as("/vg config set logFile.enabled MUST NOT drop forceSyncOnFlush "
                 + "(the LogFile(4-arg) shim would silently reset it to true)")
-            .isFalse();
+            .isTrue();
         // Other LogFile fields also preserved
         assertThat(next.logFile().directory()).isEqualTo("logs/vonixguardian-hot");
         assertThat(next.logFile().gzipRotated()).isFalse();
@@ -262,8 +262,8 @@ class ConfigSetPreservesSubRecordFieldsTest {
 
         switch (field) {
             case "forceSyncOnFlush" -> {
-                assertThat(afterLogFileSet.logFile().forceSyncOnFlush()).isFalse();
-                assertThat(afterActionsSet.logFile().forceSyncOnFlush()).isFalse();
+                assertThat(afterLogFileSet.logFile().forceSyncOnFlush()).isTrue();
+                assertThat(afterActionsSet.logFile().forceSyncOnFlush()).isTrue();
             }
             case "directory" -> {
                 assertThat(afterLogFileSet.logFile().directory()).isEqualTo("logs/vonixguardian-hot");

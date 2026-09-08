@@ -62,7 +62,9 @@ public final class BackendMigrationJob {
         new TableSpec("vg_users", "id"),
         new TableSpec("vg_actions", "id"),
         new TableSpec("vg_rollback_batches", "id"),
-        new TableSpec("vg_rollback_batch_actions", "batch_id, action_id")
+        new TableSpec("vg_rollback_batch_actions", "batch_id, action_id"),
+        new TableSpec("vg_repair_required", "action_id"),
+        new TableSpec("vg_sink_outbox", "id")
     );
 
     /** Callback for progress notifications. */

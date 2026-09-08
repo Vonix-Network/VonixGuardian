@@ -262,6 +262,7 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
                 // editing rollback.explosionSupplementalReach in config.json got
                 // no effect even though ConfigLoader passed validation.
                 config.rollback().explosionSupplementalReach());
+        rollback.setMutationBatchSize(config.rollback().mutationBatchSize());
         PurgeEngine purgeEng = new PurgeEngine(dao);
         try {
             rollback.recoverIncompleteBatches();
@@ -738,6 +739,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
             if (this.rollbackEngine != null) {
                 this.rollbackEngine.setExplosionSupplementalReach(
                     merged.rollback().explosionSupplementalReach());
+                this.rollbackEngine.setMutationBatchSize(
+                    merged.rollback().mutationBatchSize());
             }
         } catch (Exception e) {
             errs.add("rollback.setExplosionSupplementalReach failed: " + e.getMessage());

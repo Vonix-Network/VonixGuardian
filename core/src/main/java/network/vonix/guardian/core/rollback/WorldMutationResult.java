@@ -11,7 +11,7 @@ import java.util.Objects;
  */
 public record WorldMutationResult(long actionId, Status status, Throwable failure, Long pairId) {
 
-    public enum Status { APPLIED, SKIPPED, FAILED, REPAIR_REQUIRED }
+    public enum Status { APPLIED, SKIPPED, FAILED, COMPENSATED, REPAIR_REQUIRED }
 
     /** Source-compatible constructor for non-paired outcomes. */
     public WorldMutationResult(long actionId, Status status, Throwable failure) {
@@ -20,11 +20,13 @@ public record WorldMutationResult(long actionId, Status status, Throwable failur
 
     public WorldMutationResult {
         Objects.requireNonNull(status, "status");
-        if ((status == Status.FAILED || status == Status.REPAIR_REQUIRED) && failure == null) {
+        if ((status == Status.FAILED || status == Status.REPAIR_REQUIRED || status == Status.COMPENSATED)
+                && failure == null) {
             throw new IllegalArgumentException(status + " requires failure");
         }
-        if (status != Status.FAILED && status != Status.REPAIR_REQUIRED && failure != null) {
-            throw new IllegalArgumentException("Only FAILED or REPAIR_REQUIRED may carry failure");
+        if (status != Status.FAILED && status != Status.REPAIR_REQUIRED && status != Status.COMPENSATED
+                && failure != null) {
+            throw new IllegalArgumentException("Only FAILED, COMPENSATED, or REPAIR_REQUIRED may carry failure");
         }
         if (pairId != null && pairId == 0L) {
             throw new IllegalArgumentException("pairId must be non-zero when present");
@@ -41,6 +43,16 @@ public record WorldMutationResult(long actionId, Status status, Throwable failur
 
     public static WorldMutationResult failed(long actionId, Throwable failure) {
         return new WorldMutationResult(actionId, Status.FAILED,
+            Objects.requireNonNull(failure, "failure"));
+    }
+
+    /**
+     * First half of a paired mutation was applied, then successfully inverted
+     * after the mate failed. The world is not left half-mutated; the action is
+     * not marked rolled-back.
+     */
+    public static WorldMutationResult compensated(long actionId, Throwable failure) {
+        return new WorldMutationResult(actionId, Status.COMPENSATED,
             Objects.requireNonNull(failure, "failure"));
     }
 

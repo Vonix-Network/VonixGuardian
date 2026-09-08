@@ -37,7 +37,9 @@ class CommandSpecTest {
             CommandSpec.INSPECT, CommandSpec.LOOKUP, CommandSpec.ROLLBACK,
             CommandSpec.RESTORE, CommandSpec.PURGE, CommandSpec.NEAR,
             CommandSpec.UNDO, CommandSpec.STATUS, CommandSpec.RELOAD,
-            CommandSpec.HELP);
+            CommandSpec.HELP, CommandSpec.APPLY, CommandSpec.CANCEL,
+            CommandSpec.CONSUMER, CommandSpec.CONFIG, CommandSpec.ENTITYLOG,
+            CommandSpec.TELEPORT, CommandSpec.GIVE, CommandSpec.MIGRATE_DB);
 
         List<SubcommandSpec> all = CommandSpec.all();
         assertThat(all).hasSize(expected.size());
@@ -71,7 +73,7 @@ class CommandSpecTest {
     void argumentRequiringSubcommandsAreFlagged() {
         for (SubcommandSpec s : CommandSpec.all()) {
             switch (s.name()) {
-                case "lookup", "rollback", "restore", "purge" ->
+                case "lookup", "rollback", "restore", "purge", "config", "teleport", "give", "migrate-db" ->
                     assertThat(s.requiresArguments()).as("%s requires args", s.name()).isTrue();
                 default ->
                     assertThat(s.requiresArguments()).as("%s no args", s.name()).isFalse();

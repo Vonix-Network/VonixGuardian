@@ -188,8 +188,10 @@ class RollbackEngineTest {
         };
         RollbackEngine failing = new RollbackEngine(dao, failingAdd, Runnable::run);
 
-        assertThatThrownBy(() -> failing.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = failing.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.COMPENSATED);
+        assertThat(result.compensatedCount()).isEqualTo(1);
+        assertThat(result.batchClosed()).isFalse();
         assertThat(failingAdd.calls).containsExactly(
                 "removePlayer|" + actor + "|minecraft:emerald|1|null|1|4",
                 "addPlayer|" + actor + "|minecraft:diamond|2|null|1|4",
@@ -207,8 +209,10 @@ class RollbackEngineTest {
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(withdraw));
         when(dao.openRollbackBatch(any(), anyInt(), any(), any())).thenReturn(91L);
 
-        assertThatThrownBy(() -> engine.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = engine.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.FAILED);
+        assertThat(result.failedCount()).isGreaterThan(0);
+        assertThat(result.batchClosed()).isFalse();
         assertThat(mutator.calls).isEmpty();
         verify(dao, never()).markRolledBack(any(), anyBoolean());
         verify(dao, never()).closeRollbackBatch(anyLong());
@@ -245,8 +249,10 @@ class RollbackEngineTest {
         };
         RollbackEngine failing = new RollbackEngine(dao, world, Runnable::run);
 
-        assertThatThrownBy(() -> failing.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = failing.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.REPAIR_REQUIRED);
+        assertThat(result.repairRequiredCount()).isEqualTo(2);
+        assertThat(result.batchClosed()).isFalse();
         assertThat(slot.get())
                 .as("compensation failure must not hide a half-mutated slot")
                 .isNull();
@@ -278,8 +284,10 @@ class RollbackEngineTest {
         };
         RollbackEngine failing = new RollbackEngine(dao, world, Runnable::run);
 
-        assertThatThrownBy(() -> failing.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = failing.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.REPAIR_REQUIRED);
+        assertThat(result.repairRequiredCount()).isEqualTo(1);
+        assertThat(result.batchClosed()).isFalse();
         verify(dao).markRepairRequired(argThat(rows -> rows.size() == 1 && rows.get(0).actionId() == 14L));
         verify(dao, never()).markRolledBack(any(), anyBoolean());
     }
@@ -612,11 +620,10 @@ class RollbackEngineTest {
 
         CompletionStage<RollbackResult> completion = engine.rollbackAsync(filter, false);
 
-        assertThatThrownBy(() -> completion.toCompletableFuture().join())
-            .hasCauseInstanceOf(IllegalStateException.class)
-            .cause()
-            .hasMessageContaining("closeRollbackBatch updated 0 rows")
-            .hasMessageContaining("45");
+        RollbackResult result = completion.toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.PARTIAL);
+        assertThat(result.batchClosed()).isFalse();
+        assertThat(result.affectedIds()).containsExactly(83L);
         verify(dao).markRolledBack(List.of(83L), true);
         verify(dao).closeRollbackBatch(45L);
     }
@@ -637,8 +644,9 @@ class RollbackEngineTest {
 
         CompletionStage<RollbackResult> completion = failed.rollbackAsync(filter, false);
 
-        assertThatThrownBy(() -> completion.toCompletableFuture().join())
-            .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = completion.toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.FAILED);
+        assertThat(result.batchClosed()).isFalse();
         verify(dao, never()).markRolledBack(any(), anyBoolean());
         verify(dao, never()).closeRollbackBatch(anyLong());
     }
@@ -658,8 +666,10 @@ class RollbackEngineTest {
         CompletionStage<RollbackResult> completion = partial.rollbackAsync(filter, false);
         rejecting.runFirst();
 
-        assertThatThrownBy(() -> completion.toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = completion.toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.PARTIAL);
+        assertThat(result.appliedCount()).isEqualTo(RollbackEngine.BATCH_SIZE);
+        assertThat(result.batchClosed()).isFalse();
         verify(dao).markRolledBack(argThat(ids -> ids.size() == RollbackEngine.BATCH_SIZE), eq(true));
         verify(dao, never()).closeRollbackBatch(anyLong());
     }
@@ -673,10 +683,13 @@ class RollbackEngineTest {
 
         CompletionStage<RollbackResult> completion = engine.restoreAsync(filter, false);
 
-        assertThatThrownBy(() -> completion.toCompletableFuture().join())
-            .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult result = completion.toCompletableFuture().join();
+        assertThat(result.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(result.skippedCount()).isGreaterThanOrEqualTo(1);
+        assertThat(result.appliedCount()).isEqualTo(0);
+        assertThat(result.batchClosed()).isTrue();
         verify(dao, never()).markRolledBack(any(), anyBoolean());
-        verify(dao, never()).closeRollbackBatch(anyLong());
+        verify(dao).closeRollbackBatch(43L);
     }
 
     @Test

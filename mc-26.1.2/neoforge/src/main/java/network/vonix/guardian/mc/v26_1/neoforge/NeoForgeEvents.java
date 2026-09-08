@@ -1068,21 +1068,34 @@ public final class NeoForgeEvents {
      *  WORKER is created for the new run.
      */
     public static void reset() {
+        reset(null);
+    }
+
+    /** Stops the inspector worker and runs {@code afterWorkerTermination} only after join. */
+    public static boolean reset(Runnable afterWorkerTermination) {
         pendingDispatcher = null;
+        boolean stopped = true;
         try {
             if (!WORKER.isShutdown()) {
                 WORKER.shutdown();
                 if (!WORKER.awaitTermination(2L, java.util.concurrent.TimeUnit.SECONDS)) {
                     LOG.warn(Guardian.MARKER, "NeoForgeEvents.WORKER did not shut down in 2s; forcing shutdownNow");
                     WORKER.shutdownNow();
+                    stopped = false;
                 }
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             WORKER.shutdownNow();
+            stopped = false;
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "NeoForgeEvents.WORKER shutdown raised", t);
+            stopped = false;
         }
+        if (stopped && afterWorkerTermination != null) {
+            afterWorkerTermination.run();
+        }
+        return stopped;
     }
 
     // ====================================================================== helpers

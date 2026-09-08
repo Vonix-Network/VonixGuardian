@@ -197,8 +197,9 @@ class NbtDecodeFailureFallbackTest {
                 .build();
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(a)).thenReturn(List.of());
 
-        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
-                .isInstanceOf(RollbackMutationException.class);
+        RollbackResult oversized = engine.rollback(rangeFilter(), false);
+        assertThat(oversized.status()).isIn(
+                RollbackResult.Status.FAILED, RollbackResult.Status.PARTIAL, RollbackResult.Status.REPAIR_REQUIRED);
         assertThat(m.nbtSlotCalls.get()).isEqualTo(1);
         assertThat(m.legacyCalls.get()).isEqualTo(0);
         assertThat(m.plainItemCalls.get()).isEqualTo(0);
@@ -230,8 +231,9 @@ class NbtDecodeFailureFallbackTest {
                 .thenReturn(List.of(broken, fine))
                 .thenReturn(List.of());
 
-        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
-                .isInstanceOf(RollbackMutationException.class);
+        RollbackResult mixed = engine.rollback(rangeFilter(), false);
+        assertThat(mixed.status()).isIn(
+                RollbackResult.Status.FAILED, RollbackResult.Status.PARTIAL);
 
         // The NBT overload was called for the broken row and threw.
         assertThat(m.nbtCalls.get()).isEqualTo(1);

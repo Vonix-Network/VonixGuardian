@@ -11,7 +11,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current stable release:** `2.1.0` (nine-cell stateful-container, hopper, NBT, rollback, and recovery update) · **Common repository line:** `2.0.0` → `2.1.0`. The published `3.0.0-m1` prerelease remains historical provenance for its separate two-cell preview and is not reclassified by this release.
+> **Current candidate:** `2.1.1` · **Published stable:** `2.1.0` · **Common repository line:** `2.0.0` → `2.1.0` → `2.1.1`. The published `3.0.0-m1` prerelease remains historical provenance for its separate two-cell preview and is not reclassified by this release.
 >
 > **Public wiki:** https://modwiki.vonix.network/mods/vonixguardian/
 
@@ -44,7 +44,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
   - Includes / excludes: `i:stone,dirt`, `e:minecraft:tnt`.
   - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, `#optimize`.
 
-- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. Current schema is **v8**: v7 `pair_id` / `inventory_slot` plus `vg_repair_required` and `vg_sink_outbox`. `/vg migrate-db` copies between backends under a maintenance write-block that freezes queue admission and waits for the ring buffer, worker local batch, and in-flight sink transaction to idle before copying. This is a best-effort snapshot barrier, not a global database freeze.
+- **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. Current schema is **v9**: v8 `vg_repair_required` / `vg_sink_outbox` plus the additive `vg_actions(ts, id)` index. `/vg migrate-db` copies between backends under a maintenance write-block that freezes queue admission and waits for the ring buffer, worker local batch, and in-flight sink transaction to idle before copying. This is a best-effort snapshot barrier, not a global database freeze.
 
 - **Log file**: rolling JSON-Lines at `logs/vonixguardian/audit-YYYY-MM-DD.log` (gzipped after rotation, configurable retention).
 

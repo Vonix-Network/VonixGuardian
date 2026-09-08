@@ -18,7 +18,7 @@ displayURL = "${mod_homepage}"
 [[dependencies.${mod_id}]]
 modId = "neoforge"
 type = "required"
-versionRange = "[26.1.2.93,)"
+versionRange = "[26.1.2.93,26.1.3)"
 ordering = "NONE"
 side = "SERVER"
 

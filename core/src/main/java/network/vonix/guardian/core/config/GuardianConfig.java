@@ -643,10 +643,22 @@ public record GuardianConfig(
      *                                   never over-admits rows.
      * @since 1.3.1 X8
      */
-    public record Rollback(int explosionSupplementalReach) {
-        /** Canonical default: 16 blocks (matches vanilla TNT reach). */
+    public record Rollback(int explosionSupplementalReach, int mutationBatchSize) {
+        public Rollback {
+            if (explosionSupplementalReach < 0) explosionSupplementalReach = 16;
+            if (mutationBatchSize < 1) mutationBatchSize = 1000;
+        }
+
+        /** Canonical default: 16 blocks (matches vanilla TNT reach), 1000 mutations/tick. */
         public static Rollback defaults() {
-            return new Rollback(16);
+            return new Rollback(16, 1000);
+        }
+
+        /**
+         * Pre-2.1.1 constructor. Defaults the per-tick mutation slice to 1000.
+         */
+        public Rollback(int explosionSupplementalReach) {
+            this(explosionSupplementalReach, 1000);
         }
     }
 
@@ -668,7 +680,7 @@ public record GuardianConfig(
         return new GuardianConfig(
             new Database("sqlite", "vonixguardian.db", null, null, null),
             new Queue(50_000, 5_000L, 1_000),
-            new LogFile(true, "logs/vonixguardian", true, 30, true),
+            new LogFile(true, "logs/vonixguardian", true, 30, false),
             new Actions(
                 true, true, true, true, true, true, true, true, true,
                 true, true,

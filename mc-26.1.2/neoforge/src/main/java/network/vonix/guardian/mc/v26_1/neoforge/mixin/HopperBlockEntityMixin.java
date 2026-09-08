@@ -24,7 +24,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(HopperBlockEntity.class)
 public abstract class HopperBlockEntityMixin {
 
-    @Inject(method = "ejectItems", at = @At("HEAD"), require = 0)
+    @Inject(method = "ejectItems", at = @At("HEAD"), require = 1)
     private static void vg$beforeEjectItems(Level level, BlockPos pos, HopperBlockEntity hopper,
                                             CallbackInfoReturnable<Boolean> cir) {
         try {
@@ -32,7 +32,7 @@ public abstract class HopperBlockEntityMixin {
         } catch (Throwable ignored) {}
     }
 
-    @Inject(method = "ejectItems", at = @At("RETURN"), require = 0)
+    @Inject(method = "ejectItems", at = @At("RETURN"), require = 1)
     private static void vg$onEjectItems(Level level, BlockPos pos, HopperBlockEntity hopper,
                                         CallbackInfoReturnable<Boolean> cir) {
         try {
@@ -46,7 +46,7 @@ public abstract class HopperBlockEntityMixin {
         }
     }
 
-    @Inject(method = "suckInItems", at = @At("HEAD"), require = 0)
+    @Inject(method = "suckInItems", at = @At("HEAD"), require = 1)
     private static void vg$beforeSuckInItems(Level level, Hopper hopper,
                                              CallbackInfoReturnable<Boolean> cir) {
         try {
@@ -54,7 +54,7 @@ public abstract class HopperBlockEntityMixin {
         } catch (Throwable ignored) {}
     }
 
-    @Inject(method = "suckInItems", at = @At("RETURN"), require = 0)
+    @Inject(method = "suckInItems", at = @At("RETURN"), require = 1)
     private static void vg$onSuckInItems(Level level, Hopper hopper,
                                          CallbackInfoReturnable<Boolean> cir) {
         try {
@@ -68,7 +68,7 @@ public abstract class HopperBlockEntityMixin {
         }
     }
 
-    @Inject(method = "tryMoveInItem", at = @At("RETURN"), require = 0)
+    @Inject(method = "tryMoveInItem", at = @At("RETURN"), require = 1)
     private static void vg$onTryMoveInItem(Container source, Container destination, ItemStack stack,
                                            int destSlot, Direction direction,
                                            CallbackInfoReturnable<ItemStack> cir) {

@@ -34,7 +34,7 @@ final class NeoForgePackagingStructuralTest {
         String mixins = Files.readString(root.resolve("src/main/resources/vg-neoforge.mixins.json"));
 
         assertThat(toml).contains("versionRange = \"[26.1.2,26.2)\"")
-            .contains("versionRange = \"[26.1.2.93,)\"")
+            .contains("versionRange = \"[26.1.2.93,26.1.3)\"")
             .contains("side = \"SERVER\"");
         assertThat(mixins).contains("\"required\": true")
             .contains("\"defaultRequire\": 0")

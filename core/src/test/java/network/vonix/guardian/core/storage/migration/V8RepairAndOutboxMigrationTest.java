@@ -24,7 +24,7 @@ class V8RepairAndOutboxMigrationTest {
             }
 
             MigrationRunner.defaults().migrateToCurrent(c, Schema.Dialect.SQLITE);
-            assertThat(MigrationRunner.readVersion(c)).isEqualTo(8);
+            assertThat(MigrationRunner.readVersion(c)).isEqualTo(Schema.CURRENT_VERSION);
             assertThat(tablesOf(c)).contains("vg_repair_required", "vg_sink_outbox");
 
             MigrationRunner.defaults().migrateToCurrent(c, Schema.Dialect.SQLITE);

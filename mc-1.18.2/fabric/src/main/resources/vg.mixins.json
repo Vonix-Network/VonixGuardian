@@ -7,6 +7,7 @@
   "mixins": [
     "BaseContainerBlockEntityMixin",
     "BlockPlaceMixin",
+    "ChatCommandMixin",
     "BucketItemMixin",
     "ConcretePowderBlockMixin",
     "ContainerMixin",
@@ -22,6 +23,7 @@
     "ItemPickupMixin",
     "ItemTossMixin",
     "LeavesBlockMixin",
+    "LivingDeathMixin",
     "LightningBoltMixin",
     "LiquidBlockMixin",
     "LivingDestroyBlockMixin",

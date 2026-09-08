@@ -45,6 +45,22 @@ public final class CommandSpec {
     public static final String RELOAD   = "reload";
     /** {@code /vg help} — list subcommands. */
     public static final String HELP     = "help";
+    /** {@code /vg apply} — apply the pending rollback/restore preview. */
+    public static final String APPLY    = "apply";
+    /** {@code /vg cancel} — cancel the pending preview. */
+    public static final String CANCEL   = "cancel";
+    /** {@code /vg consumer} — pause/resume/toggle the write consumer. */
+    public static final String CONSUMER = "consumer";
+    /** {@code /vg config} — get/set hot-swap-safe config keys. */
+    public static final String CONFIG   = "config";
+    /** {@code /vg entitylog} — manage the modded-entity griefing allowlist. */
+    public static final String ENTITYLOG = "entitylog";
+    /** {@code /vg teleport} — CoreProtect-parity teleport. */
+    public static final String TELEPORT = "teleport";
+    /** {@code /vg give} — CoreProtect-parity give. */
+    public static final String GIVE     = "give";
+    /** {@code /vg migrate-db} — copy the catalog between JDBC backends. */
+    public static final String MIGRATE_DB = "migrate-db";
 
     /** Permission-node prefix — concatenated with the subcommand name. */
     public static final String PERMISSION_PREFIX = "vonixguardian.command.";
@@ -69,6 +85,22 @@ public final class CommandSpec {
         sub(RELOAD,   null, false, "Reload the Guardian configuration file from disk.",
             List.of()),
         sub(HELP,     "?",  false, "List subcommands and their syntax.",
+            List.of()),
+        sub(APPLY,    null, false, "Apply the most recent rollback or restore preview.",
+            List.of()),
+        sub(CANCEL,   null, false, "Cancel the most recent rollback or restore preview.",
+            List.of()),
+        sub(CONSUMER, null, false, "Pause, resume, or toggle the audit write consumer.",
+            List.of()),
+        sub(CONFIG,   null, true,  "Get or set a hot-swap-safe configuration key.",
+            List.of()),
+        sub(ENTITYLOG, null, false, "List, add, or remove modded entities from the griefing allowlist.",
+            List.of()),
+        sub(TELEPORT, "tp", true,  "Teleport to a world coordinate from a lookup row.",
+            List.of()),
+        sub(GIVE,     null, true,  "Give an item id captured by lookup.",
+            List.of()),
+        sub(MIGRATE_DB, null, true, "Copy the Guardian catalog to another JDBC backend.",
             List.of())
     );
 

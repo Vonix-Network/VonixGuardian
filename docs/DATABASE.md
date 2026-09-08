@@ -145,7 +145,7 @@ Index: `vg_rollback_batches_ts ON (ts)`.
 | `version`    | `INTEGER` | **PRIMARY KEY**       |
 | `applied_at` | `BIGINT`  | `NOT NULL` (epoch ms) |
 
-Currently holds a single row: `version = 8`. Fresh installs apply v1–v8 through `Schema` + `MigrationRunner`. Existing databases step through additive migrations `V3WidenActionTarget`, `V4SignMetadata`, `V5NbtFidelity`, `V6PairId`, `V7InventorySlot`, and `V8RepairAndOutbox`.
+Currently holds a single row: `version = 9`. Fresh installs apply v1–v9 through `Schema` + `MigrationRunner`. Existing databases step through additive migrations `V2CreateRollbackTables`, `V3WidenActionTarget`, `V4SignMetadata`, `V5NbtFidelity`, `V6PairId`, `V7InventorySlot`, `V8RepairAndOutbox`, and `V9TsIdIndex`.
 
 ### 2.7 `vg_repair_required` — uncompensated rollback state (v8)
 

@@ -86,54 +86,77 @@ class ActionTypeCoverageStructuralTest {
     );
 
     /**
-     * Fabric-only capture. NeoForge 1.21.1/26.1.2 have no SignChangeEvent (removed
-     * in 1.20+) and no sign mixin; copying Fabric {@code SignChangeMixin} onto
-     * NeoForge is out of scope for this slice.
+     * Published not-applicable types: no producer on any of the nine cells.
+     * Lookup/rollback API remains for historical rows.
      */
-    private static final Set<ActionType> FABRIC_ONLY_DOCUMENTED = EnumSet.of(ActionType.SIGN);
+    private static final java.util.List<CellSpec> CELLS = java.util.List.of(
+            new CellSpec("1.18.2-fabric", "mc-1.18.2/fabric/src/main/java/network/vonix/guardian/mc/v1_18_2/fabric"),
+            new CellSpec("1.18.2-forge", "mc-1.18.2/forge/src/main/java/network/vonix/guardian/mc/v1_18_2/forge"),
+            new CellSpec("1.19.2-fabric", "mc-1.19.2/fabric/src/main/java/network/vonix/guardian/mc/v1_19_2/fabric"),
+            new CellSpec("1.19.2-forge", "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge"),
+            new CellSpec("1.20.1-fabric", "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/fabric"),
+            new CellSpec("1.20.1-forge", "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge"),
+            new CellSpec("1.21.1-fabric", "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric"),
+            new CellSpec("1.21.1-neoforge", "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge"),
+            new CellSpec("26.1.2-neoforge", "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge")
+    );
+
+    private record CellSpec(String name, String path) {}
 
     @Test
     void requestedCellsShareActionTypeSubmitCoverage() throws IOException {
         Path root = CoreImportBoundaryTest.repoRoot();
         assumeTrue(root != null, "repo root not resolvable");
 
-        EnumSet<ActionType> fabric1211 = submittedTypes(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric"));
-        EnumSet<ActionType> neo1211 = submittedTypes(root.resolve(
-                "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge"));
-        EnumSet<ActionType> neo2612 = submittedTypes(root.resolve(
-                "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge"));
-
-        assertFalse(fabric1211.isEmpty());
-        assertFalse(neo1211.isEmpty());
-        assertFalse(neo2612.isEmpty());
-
-        EnumSet<ActionType> missingOnNeo2612 = EnumSet.copyOf(fabric1211);
-        missingOnNeo2612.removeAll(neo2612);
-        missingOnNeo2612.removeAll(FABRIC_ONLY_DOCUMENTED);
-        EnumSet<ActionType> missingOnFabric = EnumSet.copyOf(neo2612);
-        missingOnFabric.removeAll(fabric1211);
-        EnumSet<ActionType> missingOnNeo1211 = EnumSet.copyOf(fabric1211);
-        missingOnNeo1211.removeAll(neo1211);
-        missingOnNeo1211.removeAll(FABRIC_ONLY_DOCUMENTED);
-
-        if (!missingOnNeo2612.isEmpty() || !missingOnFabric.isEmpty() || !missingOnNeo1211.isEmpty()) {
-            fail("ActionType submit coverage diverges across requested cells"
-                    + "\n  Fabric 1.21.1 only vs 26.1.2 NeoForge: " + missingOnNeo2612
-                    + "\n  26.1.2 NeoForge only vs Fabric 1.21.1: " + missingOnFabric
-                    + "\n  Fabric 1.21.1 only vs 1.21.1 NeoForge: " + missingOnNeo1211);
+        java.util.LinkedHashMap<String, EnumSet<ActionType>> byCell = new java.util.LinkedHashMap<>();
+        EnumSet<ActionType> union = EnumSet.noneOf(ActionType.class);
+        for (CellSpec cell : CELLS) {
+            EnumSet<ActionType> types = submittedTypes(root.resolve(cell.path()));
+            assertFalse(types.isEmpty(), cell.name());
+            assertTrue(types.contains(ActionType.SIGN), cell.name() + " must capture SIGN");
+            assertTrue(types.contains(ActionType.FORM), cell.name() + " must capture FORM");
+            assertTrue(types.contains(ActionType.CHAT), cell.name() + " must capture CHAT");
+            assertTrue(types.contains(ActionType.COMMAND), cell.name() + " must capture COMMAND");
+            byCell.put(cell.name(), types);
+            union.addAll(types);
         }
 
-        assertTrue(fabric1211.contains(ActionType.SIGN));
-        assertFalse(neo1211.contains(ActionType.SIGN));
-        assertFalse(neo2612.contains(ActionType.SIGN));
+        StringBuilder drift = new StringBuilder();
+        for (var a : byCell.entrySet()) {
+            for (var b : byCell.entrySet()) {
+                if (a.getKey().equals(b.getKey())) continue;
+                EnumSet<ActionType> missing = EnumSet.copyOf(a.getValue());
+                missing.removeAll(b.getValue());
+                missing.removeAll(NO_PRODUCER_ON_REQUESTED_CELLS);
+                if (!missing.isEmpty()) {
+                    drift.append('\n').append(a.getKey()).append(" only vs ").append(b.getKey())
+                            .append(": ").append(missing);
+                }
+            }
+        }
+        if (drift.length() > 0) {
+            fail("ActionType submit coverage diverges across the nine cells" + drift);
+        }
 
         EnumSet<ActionType> unexplained = EnumSet.allOf(ActionType.class);
-        unexplained.removeAll(fabric1211);
+        unexplained.removeAll(union);
         unexplained.removeAll(NO_PRODUCER_ON_REQUESTED_CELLS);
         if (!unexplained.isEmpty()) {
             fail("ActionTypes have neither a requested-cell producer nor a documented absence: "
                     + unexplained);
+        }
+    }
+
+    @Test
+    void formAndSignHaveCallSitesNotJustDeadHelpers() throws IOException {
+        Path root = CoreImportBoundaryTest.repoRoot();
+        assumeTrue(root != null, "repo root not resolvable");
+        for (CellSpec cell : CELLS) {
+            Path loader = root.resolve(cell.path());
+            assertTrue(hasExternalCall(loader, "blockForm(") || hasCallOutsideBridge(loader, "submitForm("),
+                    cell.name() + " FORM must have a mixin/event call site");
+            assertTrue(hasExternalCall(loader, "submitSign(") || hasExternalCall(loader, "signChange("),
+                    cell.name() + " SIGN must have a submitSign or signChange call site");
         }
     }
 
@@ -156,6 +179,10 @@ class ActionTypeCoverageStructuralTest {
         assertTrue(fabricMixins.contains("\"ExplosionMixin\""));
         assertTrue(fabricMixins.contains("\"PistonMixin\""));
         assertTrue(fabricMixins.contains("\"SignChangeMixin\""));
+        assertTrue(neo1211Mixins.contains("\"SignChangeMixin\""));
+        assertTrue(neo2612Mixins.contains("\"SignChangeMixin\""));
+        assertTrue(neo1211Mixins.contains("\"ConcretePowderBlockMixin\""));
+        assertTrue(neo2612Mixins.contains("\"ConcretePowderBlockMixin\""));
         assertTrue(fabricMixins.contains("\"ContainerMixin\""));
         assertTrue(fabricMixins.contains("\"BaseContainerBlockEntityMixin\""));
         assertFalse(fabricMixins.contains("\"MilkBucketItemMixin\""));
@@ -214,5 +241,42 @@ class ActionTypeCoverageStructuralTest {
         EnumSet<ActionType> types = EnumSet.noneOf(ActionType.class);
         types.addAll(found.keySet());
         return types;
+    }
+
+    private static boolean hasCallOutsideBridge(Path loaderRoot, String token) throws IOException {
+        try (Stream<Path> stream = Files.walk(loaderRoot)) {
+            return stream.filter(p -> p.toString().endsWith(".java"))
+                    .filter(p -> !p.getFileName().toString().contains("MixinBridge"))
+                    .anyMatch(file -> {
+                        try {
+                            return Files.readString(file).contains(token);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+        }
+    }
+
+    private static boolean hasExternalCall(Path loaderRoot, String token) throws IOException {
+        try (Stream<Path> stream = Files.walk(loaderRoot)) {
+            return stream.filter(p -> p.toString().endsWith(".java")).anyMatch(file -> {
+                try {
+                    String text = Files.readString(file);
+                    int idx = 0;
+                    while ((idx = text.indexOf(token, idx)) >= 0) {
+                        int lineStart = text.lastIndexOf('\n', idx) + 1;
+                        String line = text.substring(lineStart, Math.min(text.length(), idx + token.length() + 40));
+                        if (!line.contains("void " + token.replace("(", ""))
+                                && !line.contains("public static void " + token.replace("(", ""))) {
+                            return true;
+                        }
+                        idx += token.length();
+                    }
+                    return false;
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        }
     }
 }

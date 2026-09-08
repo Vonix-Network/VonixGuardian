@@ -256,9 +256,10 @@ class BlockStateRoundTripTest {
         RollbackEngine closed = new RollbackEngine(dao, failing, Runnable::run);
         QueryFilter filter = QueryFilter.builder().sinceMillis(1L).build();
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> closed.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult closedResult = closed.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(closedResult.status()).isIn(
+                RollbackResult.Status.FAILED, RollbackResult.Status.PARTIAL);
+        assertThat(closedResult.batchClosed()).isFalse();
         assertThat(dao.query(QueryFilter.empty(), 0, 2).get(0).rolledBack()).isFalse();
         assertThat(dao.findRepairRequired()).isEmpty();
     }

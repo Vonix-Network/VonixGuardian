@@ -68,12 +68,16 @@ import java.util.List;
  *       uncompensated rollback state) and {@code vg_sink_outbox} (JDBC/JSONL
  *       dual-write staging). Existing v7 databases are upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V8RepairAndOutbox}.</li>
+ *   <li><b>v9</b> — additive composite index {@code vg_actions_ts_id (ts, id)}
+ *       covering {@code ORDER BY ts DESC, id DESC} lookup/rollback keyset
+ *       pages. Existing v8 databases are upgraded in place by
+ *       {@link network.vonix.guardian.core.storage.migration.V9TsIdIndex}.</li>
  * </ul>
  */
 public final class Schema {
 
     /** Current schema version. */
-    public static final int CURRENT_VERSION = 8;
+    public static final int CURRENT_VERSION = 9;
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -99,7 +103,14 @@ public final class Schema {
      * locks on {@code information_schema}.
      */
     public static void createTables(Connection c, Dialect dialect) throws SQLException {
-        boolean existingUnversionedSchema = hasExistingUnversionedSchema(c);
+        boolean preexistingFact = tableExists(c, "vg_actions")
+            || tableExists(c, "vg_users")
+            || tableExists(c, "vg_worlds");
+        java.util.Set<String> preexistingActionColumns = preexistingFact && tableExists(c, "vg_actions")
+            ? actionColumns(c)
+            : java.util.Set.of();
+        boolean versionTableExisted = tableExists(c, "vg_schema_version");
+        boolean versionTableEmpty = !versionTableExisted || isVersionTableEmpty(c);
         // 1. Tables — every CREATE TABLE uses IF NOT EXISTS, which all three dialects accept.
         try (Statement st = c.createStatement()) {
             for (String ddl : tableDdlFor(dialect)) {
@@ -113,15 +124,78 @@ public final class Schema {
         //    version is older than CURRENT_VERSION; blindly stamping CURRENT_VERSION
         //    here would trick the MigrationRunner into thinking no work is needed.
         //    Let the runner insert the correct stamps as it applies each step.
+        //
+        //    An empty vg_schema_version table next to an old vg_actions fact table
+        //    is NOT a fresh install. CREATE TABLE IF NOT EXISTS does not ALTER
+        //    columns, so stamping CURRENT_VERSION would skip required migrations.
         if (isVersionTableEmpty(c)) {
-            // Fresh installs just received the full CURRENT_VERSION DDL above.
-            // Existing pre-version installs, however, kept their old vg_actions
-            // table because CREATE TABLE IF NOT EXISTS is additive only. The v2
-            // rollback tables are created by tableDdlFor(), so stamp v2 and let
-            // MigrationRunner apply v3/v4/v5 ALTER migrations on the existing
-            // fact table instead of over-stamping it as current.
-            stampVersion(c, existingUnversionedSchema ? 2 : CURRENT_VERSION);
+            if (preexistingFact && versionTableEmpty) {
+                stampVersion(c, inferHistoricalVersion(preexistingActionColumns));
+            } else {
+                stampVersion(c, CURRENT_VERSION);
+            }
         }
+    }
+
+    /**
+     * Infer the highest schema version whose additive columns are already present
+     * on a preexisting {@code vg_actions} table. Missing columns mean the
+     * corresponding migrations still have to run.
+     */
+    static int inferHistoricalVersion(java.util.Set<String> actionColumns) {
+        if (actionColumns == null || actionColumns.isEmpty()) {
+            return 2;
+        }
+        java.util.Set<String> lower = new java.util.HashSet<>();
+        for (String col : actionColumns) {
+            if (col != null) {
+                lower.add(col.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        if (lower.contains("inventory_slot")) {
+            return 7;
+        }
+        if (lower.contains("pair_id")) {
+            return 6;
+        }
+        if (lower.contains("old_block_state") || lower.contains("block_entity_nbt")
+                || lower.contains("item_nbt") || lower.contains("entity_nbt")) {
+            return 5;
+        }
+        if (lower.contains("sign_side") || lower.contains("sign_dye_color") || lower.contains("sign_waxed")) {
+            return 4;
+        }
+        return 2;
+    }
+
+    static java.util.Set<String> actionColumns(Connection c) throws SQLException {
+        java.util.Set<String> cols = new java.util.HashSet<>();
+        java.sql.ResultSet rs = c.getMetaData().getColumns(null, null, "vg_actions", null);
+        try (rs) {
+            while (rs.next()) {
+                String name = rs.getString("COLUMN_NAME");
+                if (name != null) {
+                    cols.add(name);
+                }
+            }
+        }
+        if (!cols.isEmpty()) {
+            return cols;
+        }
+        // SQLite JDBC sometimes requires the connection's catalog; PRAGMA is the
+        // portable fallback for in-memory fixtures.
+        try (Statement st = c.createStatement();
+             java.sql.ResultSet pragma = st.executeQuery("PRAGMA table_info(vg_actions)")) {
+            while (pragma.next()) {
+                String name = pragma.getString("name");
+                if (name != null) {
+                    cols.add(name);
+                }
+            }
+        } catch (SQLException ignored) {
+            // Non-SQLite backends already populated cols via DatabaseMetaData.
+        }
+        return cols;
     }
 
     private static boolean hasExistingUnversionedSchema(Connection c) throws SQLException {
@@ -191,6 +265,7 @@ public final class Schema {
         out.add(prefix + "vg_actions_user_t ON vg_actions(user_id, ts)");
         out.add(prefix + "vg_actions_type_t ON vg_actions(type, ts)");
         out.add(prefix + "vg_actions_ts     ON vg_actions(ts)");
+        out.add(prefix + "vg_actions_ts_id  ON vg_actions(ts, id)");
         out.add(prefix + "vg_actions_pair   ON vg_actions(pair_id)");
         out.add(prefix + "vg_rollback_batches_ts ON vg_rollback_batches(ts)");
         return List.copyOf(out);

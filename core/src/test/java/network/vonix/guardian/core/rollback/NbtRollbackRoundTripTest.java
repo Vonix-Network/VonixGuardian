@@ -191,8 +191,9 @@ class NbtRollbackRoundTripTest {
         assertThat(a.hasOversizedNbt()).isTrue();
         givenPage(a);
 
-        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
-                .isInstanceOf(RollbackMutationException.class);
+        RollbackResult oversizedResult = engine.rollback(rangeFilter(), false);
+        assertThat(oversizedResult.status()).isIn(
+                RollbackResult.Status.FAILED, RollbackResult.Status.PARTIAL, RollbackResult.Status.REPAIR_REQUIRED);
 
         assertThat(mutator.nbtAddContainer).hasSize(1);
         assertThat(mutator.nbtAddContainer.get(0).itemNbt).isSameAs(oversized);
@@ -216,8 +217,10 @@ class NbtRollbackRoundTripTest {
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(pull, push)).thenReturn(List.of());
         when(dao.findByPairIds(any())).thenReturn(List.of(pull, push));
 
-        assertThatThrownBy(() -> engine.rollback(rangeFilter(), false))
-                .isInstanceOf(RollbackMutationException.class);
+        RollbackResult pairResult = engine.rollback(rangeFilter(), false);
+        assertThat(pairResult.status()).isIn(
+                RollbackResult.Status.FAILED, RollbackResult.Status.PARTIAL,
+                RollbackResult.Status.COMPENSATED, RollbackResult.Status.REPAIR_REQUIRED);
 
         assertThat(mutator.nbtRemoveContainer).hasSize(1);
         assertThat(mutator.nbtRemoveContainer.get(0).itemNbt).isSameAs(oversized);

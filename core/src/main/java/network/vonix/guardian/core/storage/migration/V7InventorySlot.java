@@ -21,14 +21,22 @@ public final class V7InventorySlot implements Migration {
         }
     }
 
+    private static final int MYSQL_ERR_DUP_FIELDNAME = 1060;
+    private static final String PG_SQLSTATE_DUP_COLUMN = "42701";
+
     private static boolean isDuplicateColumn(Schema.Dialect dialect, SQLException ex) {
+        if (dialect == Schema.Dialect.MYSQL && ex.getErrorCode() == MYSQL_ERR_DUP_FIELDNAME) {
+            return true;
+        }
+        if (dialect == Schema.Dialect.POSTGRES && PG_SQLSTATE_DUP_COLUMN.equals(ex.getSQLState())) {
+            return true;
+        }
         String message = ex.getMessage();
         if (message == null) return false;
         String lower = message.toLowerCase();
         return lower.contains("duplicate column")
             || lower.contains("duplicate column name")
-            || lower.contains("already exists")
-            || lower.contains("duplicate") && lower.contains("inventory_slot")
-            || dialect == Schema.Dialect.POSTGRES && lower.contains("duplicate") && lower.contains("column");
+            || (lower.contains("already exists") && lower.contains("inventory_slot"))
+            || (lower.contains("duplicate") && lower.contains("inventory_slot"));
     }
 }

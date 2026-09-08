@@ -149,8 +149,9 @@ class ContainerTransportParityTest {
                 .thenReturn(new GuardianDao.QueryPage(List.of(pull), false));
         when(dao.findByPairIds(any())).thenReturn(List.of(pull));
 
-        assertThatThrownBy(() -> engine.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult lone = engine.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(lone.status()).isEqualTo(RollbackResult.Status.FAILED);
+        assertThat(lone.batchClosed()).isFalse();
         assertThat(mutator.calls).isEmpty();
         verify(dao, never()).markRolledBack(any(), org.mockito.ArgumentMatchers.anyBoolean());
         verify(dao, never()).closeRollbackBatch(anyLong());
@@ -188,8 +189,9 @@ class ContainerTransportParityTest {
         };
         RollbackEngine engine = new RollbackEngine(dao, world, Runnable::run);
 
-        assertThatThrownBy(() -> engine.rollbackAsync(filter, false).toCompletableFuture().join())
-                .hasCauseInstanceOf(RollbackMutationException.class);
+        RollbackResult repair = engine.rollbackAsync(filter, false).toCompletableFuture().join();
+        assertThat(repair.status()).isEqualTo(RollbackResult.Status.REPAIR_REQUIRED);
+        assertThat(repair.batchClosed()).isFalse();
         verify(dao).markRepairRequired(org.mockito.ArgumentMatchers.argThat(rows ->
                 rows != null && rows.size() == 2));
         verify(dao, never()).closeRollbackBatch(anyLong());

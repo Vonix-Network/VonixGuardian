@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [2.1.1] - 2026-09-08
+
+Candidate successor to stable 2.1.0. Public version is `2.1.1`. The published `3.0.0-m1` preview remains historical provenance.
+
+### Added
+
+- Authoritative rollback/restore/undo result status (`SUCCESS`, `PARTIAL`, `FAILED`, `COMPENSATED`, `REPAIR_REQUIRED`) with applied/skipped/failed/compensated/repair-required counts and batch id in operator chat.
+- Schema v9 additive composite index `vg_actions(ts, id)` and a v1→v2 rollback-table migration so stamped-v1 catalogs can boot.
+- SIGN capture on Forge 1.18.2/1.19.2/1.20.1 and NeoForge 1.21.1/26.1.2 via `SignChangeMixin`.
+- FORM call site on both NeoForge cells (`ConcretePowderBlockMixin`).
+- 1.18.2 Fabric chat/command and natural-death/damage mixins (Fabric API has no `ServerMessageEvents` / `AFTER_DEATH` on this line).
+- Disposable historical-schema fixtures and a lookup/count/rollback latency harness.
+
+### Changed
+
+- Empty `vg_schema_version` next to an existing fact table infers the historical version from columns and never stamps current.
+- `/vg migrate-db` copies `vg_repair_required` and `vg_sink_outbox`.
+- `#silent` / `#verbose` change command output; `#count` on rollback/restore is a dry plan.
+- `/vg undo` and preview apply consume tokens only after a successful execute.
+- Lookup pages ≥2 walk `(ts, id)` keyset instead of OFFSET for page ≥3.
+- JSONL `forceSyncOnFlush` default is `false`; rollback mutation slice is configurable.
+- Fabric nested core JARs embed `fabric.mod.json` (`id=vonixguardian-core`) on all four Fabric cells; nested filename is `core-${mod_version}.jar`.
+- NeoForge loader ranges closed to `[21.1.0,21.2)` and `[26.1.2.93,26.1.3)`. Forge 1.19.2 Minecraft range closed to `[1.19.2,1.19.3)`.
+- Hopper injectors on Fabric/NeoForge use `require = 1`.
+- `USERNAME_CHANGE`, `STRUCTURE_GROW`, and `CHUNK_POPULATE` are published not-applicable (no producer on any cell).
+
+### Verification boundary
+
+- Candidate source only. No live database, server, world, publication, or deployment is performed by this packet.
+
 ## [2.1.0] - 2026-09-07
 
 Stable common-generation release on the 2.x line. The published `3.0.0-m1` prerelease remains an immutable, separate two-cell milestone and is preserved below as historical provenance; this release does not relabel or erase it.

@@ -149,6 +149,40 @@ class BackendMigrationJobTest {
     }
 
     @Test
+    void copies_repair_required_and_sink_outbox() throws Exception {
+        seedSource();
+        source.markRepairRequired(List.of(new network.vonix.guardian.core.storage.GuardianDao.RepairRequired(
+                1L, 44L, 9L, "test-repair", 1_700_000_000_000L)));
+        source.withRawConnection(c -> {
+            try (var ps = c.prepareStatement(
+                    "INSERT INTO vg_sink_outbox(id, payload, created_ts) VALUES (1, ?, ?)")) {
+                ps.setBytes(1, new byte[] {1, 2, 3});
+                ps.setLong(2, 1_700_000_000_001L);
+                assertThat(ps.executeUpdate()).isEqualTo(1);
+            }
+            return null;
+        });
+
+        BackendMigrationJob.Result result = new BackendMigrationJob(source, dest, 1000, null).run();
+        assertThat(result.rowsPerTable().get("vg_repair_required")).isEqualTo(1L);
+        assertThat(result.rowsPerTable().get("vg_sink_outbox")).isEqualTo(1L);
+        dest.withRawConnection(c -> {
+            try (var st = c.createStatement();
+                 var rs = st.executeQuery("SELECT action_id, reason FROM vg_repair_required")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getLong(1)).isEqualTo(1L);
+                assertThat(rs.getString(2)).isEqualTo("test-repair");
+            }
+            try (var st = c.createStatement();
+                 var rs = st.executeQuery("SELECT length(payload) FROM vg_sink_outbox WHERE id = 1")) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getInt(1)).isEqualTo(3);
+            }
+            return null;
+        });
+    }
+
+    @Test
     void force_flag_bypasses_emptiness_gate() throws Exception {
         // Empty source so no PK conflicts even with force.
         BackendMigrationJob.Result r = new BackendMigrationJob(

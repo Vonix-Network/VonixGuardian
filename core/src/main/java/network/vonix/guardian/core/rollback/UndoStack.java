@@ -82,6 +82,21 @@ public final class UndoStack {
     }
 
     /**
+     * Pop the most recent result only if it is the same instance previously
+     * peeked. A failed undo must leave the stack unchanged.
+     */
+    public synchronized Optional<RollbackResult> popIfSame(UUID actor, RollbackResult expected) {
+        if (expected == null) {
+            return Optional.empty();
+        }
+        Optional<RollbackResult> top = peek(actor);
+        if (top.isEmpty() || top.get() != expected) {
+            return Optional.empty();
+        }
+        return pop(actor);
+    }
+
+    /**
      * Peek the most recent result for an actor without removing it.
      *
      * @param actor actor UUID; {@code null} maps to {@link #CONSOLE_KEY}

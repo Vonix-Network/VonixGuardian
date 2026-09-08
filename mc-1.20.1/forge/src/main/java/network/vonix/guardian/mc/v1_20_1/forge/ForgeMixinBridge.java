@@ -497,6 +497,36 @@ public final class ForgeMixinBridge {
         }
     }
 
+
+    public static void signChange(Player player, Level level, BlockPos pos, String[] lines, boolean isFront) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null || player == null || level == null || pos == null || lines == null) return;
+            StringBuilder joined = new StringBuilder();
+            for (int i = 0; i < lines.length; i++) {
+                if (i > 0) joined.append('\n');
+                joined.append(lines[i] == null ? "" : lines[i]);
+            }
+            String side = isFront ? "front" : "back";
+            String dye = null;
+            Boolean waxed = null;
+            try {
+                var be = level.getBlockEntity(pos);
+                var meta = isFront
+                        ? network.vonix.guardian.mc.v1_20_1.common.SignMetadataExtractor.front(be)
+                        : network.vonix.guardian.mc.v1_20_1.common.SignMetadataExtractor.back(be);
+                dye = meta.dyeColor();
+                waxed = meta.waxed();
+            } catch (Throwable ignored) { }
+            s.submitSign(player.getUUID(), player.getName().getString(),
+                    worldKey(level),
+                    pos.getX(), pos.getY(), pos.getZ(), joined.toString(),
+                    side, dye, waxed);
+        } catch (Throwable t) {
+            warn("signChange", t);
+        }
+    }
+
     private static void warn(String label, Throwable t) {
         LOG.warn(Guardian.MARKER, "ForgeMixinBridge {} failed", label, t);
     }

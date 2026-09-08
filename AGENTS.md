@@ -5,7 +5,7 @@
 - **Repository:** `Vonix-Network/VonixGuardian`
 - **Canonical source lineage:** existing owner-authorized VonixGuardian checkout; this file may be copied into a temporary release candidate and must not be mistaken for a separate repository lineage
 - **Default branch:** `main`
-- **Project release:** **`2.1.0`** stable release
+- **Project release:** **`2.1.1`** candidate successor to stable `2.1.0`
 - **Common-generation lineage:** begins at `2.0.0`
 - **Project role:** server-side audit, attribution, lookup, rollback, purge, and database utilities for modded Minecraft
 

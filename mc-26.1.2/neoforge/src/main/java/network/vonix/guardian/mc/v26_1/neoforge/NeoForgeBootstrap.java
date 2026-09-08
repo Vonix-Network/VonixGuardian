@@ -107,25 +107,25 @@ public final class NeoForgeBootstrap {
     public static void onServerStopping(ServerStoppingEvent ev) {
         Guardian g = VonixGuardianNeoForge.guardian();
         boolean commandsStopped = GuardianCommands.reset(() -> {
-            try {
-                if (g != null) {
-                    g.close();
+            boolean inspectorsStopped = NeoForgeEvents.reset(() -> {
+                try {
+                    if (g != null) {
+                        g.close();
+                    }
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Guardian.close() raised", t);
                 }
-            } catch (Throwable t) {
-                LOG.warn(Guardian.MARKER, "Guardian.close() raised", t);
+            });
+            if (!inspectorsStopped) {
+                LOG.warn(Guardian.MARKER, "Inspector worker did not terminate; Guardian cleanup is deferred");
             }
         });
-        if (!commandsStopped && g != null) {
-            try {
-                g.close();
-            } catch (Throwable t) {
-                LOG.warn(Guardian.MARKER, "Guardian.close() raised after command reset rejection", t);
-            }
-        }
         if (damageHistory != null) {
             damageHistory.clear();
         }
+        if (!commandsStopped) {
+            LOG.warn(Guardian.MARKER, "Command worker did not terminate; Guardian cleanup is deferred");
+        }
         VonixGuardianNeoForge.setGuardian(null);
-        NeoForgeEvents.reset();
     }
 }

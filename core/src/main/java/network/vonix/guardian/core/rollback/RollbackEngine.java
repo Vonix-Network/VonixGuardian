@@ -51,7 +51,7 @@ public final class RollbackEngine {
 
     private static final Logger LOG = LoggerFactory.getLogger(RollbackEngine.class);
 
-    /** Max mutations dispatched per server tick. */
+    /** Default max mutations dispatched per server tick. */
     public static final int BATCH_SIZE = 1000;
 
     /** Page size for {@link #fetchMatches}. */
@@ -87,6 +87,12 @@ public final class RollbackEngine {
      * engine on every knob change.
      */
     private volatile int explosionSupplementalReach;
+    /**
+     * Max world mutations admitted onto the server thread per tick. Default
+     * {@link #BATCH_SIZE}. {@code volatile} so {@code /vg reload} can shrink
+     * the slice without rebuilding the engine.
+     */
+    private volatile int mutationBatchSize = BATCH_SIZE;
 
     /**
      * @param dao                action store; must not be {@code null}
@@ -173,6 +179,22 @@ public final class RollbackEngine {
      */
     public int getExplosionSupplementalReach() {
         return explosionSupplementalReach;
+    }
+
+    /**
+     * Hot-swap the per-tick world-mutation slice. Values below 1 are rejected.
+     * Called from {@code Guardian.reloadConfig}.
+     */
+    public void setMutationBatchSize(int size) {
+        if (size < 1) {
+            throw new IllegalArgumentException("mutationBatchSize must be >= 1 (got " + size + ")");
+        }
+        this.mutationBatchSize = size;
+    }
+
+    /** Current per-tick world-mutation slice. */
+    public int getMutationBatchSize() {
+        return mutationBatchSize;
     }
 
     public RollbackResult rollback(QueryFilter filter, boolean preview) throws Exception {
@@ -320,7 +342,8 @@ public final class RollbackEngine {
 
         if (preview || planned == 0) {
             return CompletableFuture.completedFuture(new RollbackResult(actorUuid, mode, preview,
-                affectedIds, skippedIds, planned, 0, effective));
+                affectedIds, skippedIds, planned, 0, effective,
+                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true));
         }
 
         String filterJson = encodeFilter(effective);
@@ -332,8 +355,8 @@ public final class RollbackEngine {
         } catch (RuntimeException e) {
             LOG.error("RollbackEngine.{}: batch id={} failed during dispatch; vg_rollback_batches row left OPEN for recovery",
                 mode, batchId, e);
-            return failedStage(new RollbackMutationException(batchId, List.of(
-                WorldMutationResult.failed(-1L, e))));
+            return CompletableFuture.completedFuture(failedResult(
+                batchId, actorUuid, mode, effective, skippedIds, planned, e));
         }
         return finalizeAsync(mutations, batchId, actorUuid, mode, effective, skippedIds, planned);
     }
@@ -352,8 +375,8 @@ public final class RollbackEngine {
                     Throwable cause = unwrapCompletionFailure(failure);
                     LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
                         mode, batchId, cause);
-                    result.completeExceptionally(new RollbackMutationException(batchId, List.of(
-                        WorldMutationResult.failed(-1L, cause))));
+                    result.complete(failedResult(batchId, actorUuid, mode, effective,
+                        plannedSkippedIds, planned, cause));
                     return;
                 }
                 result.complete(finishBatch(batchId, actorUuid, mode, effective,
@@ -365,6 +388,18 @@ public final class RollbackEngine {
         return result;
     }
 
+    private RollbackResult failedResult(long batchId,
+                                        UUID actorUuid,
+                                        RollbackResult.Mode mode,
+                                        QueryFilter effective,
+                                        List<Long> plannedSkippedIds,
+                                        int planned,
+                                        Throwable cause) {
+        return new RollbackResult(actorUuid, mode, false,
+            List.of(), plannedSkippedIds, planned, 0, effective,
+            RollbackResult.Status.FAILED, batchId, 1, 0, 0, false);
+    }
+
     private RollbackResult finishBatch(long batchId,
                                        UUID actorUuid,
                                        RollbackResult.Mode mode,
@@ -373,49 +408,85 @@ public final class RollbackEngine {
                                        int planned,
                                        List<WorldMutationResult> outcomes) {
         List<Long> appliedIds = new ArrayList<>();
-        List<WorldMutationResult> incomplete = new ArrayList<>();
+        List<Long> dispatchSkipped = new ArrayList<>();
+        List<WorldMutationResult> failed = new ArrayList<>();
+        List<WorldMutationResult> compensated = new ArrayList<>();
         List<WorldMutationResult> repairRequired = new ArrayList<>();
         for (WorldMutationResult outcome : outcomes) {
-            if (outcome.status() == WorldMutationResult.Status.APPLIED) {
-                appliedIds.add(outcome.actionId());
-            } else {
-                incomplete.add(outcome);
-                if (outcome.status() == WorldMutationResult.Status.REPAIR_REQUIRED) {
-                    repairRequired.add(outcome);
-                }
+            switch (outcome.status()) {
+                case APPLIED -> appliedIds.add(outcome.actionId());
+                case SKIPPED -> dispatchSkipped.add(outcome.actionId());
+                case COMPENSATED -> compensated.add(outcome);
+                case REPAIR_REQUIRED -> repairRequired.add(outcome);
+                case FAILED -> failed.add(outcome);
             }
         }
+
+        List<Long> allSkipped = new ArrayList<>(plannedSkippedIds.size() + dispatchSkipped.size());
+        allSkipped.addAll(plannedSkippedIds);
+        allSkipped.addAll(dispatchSkipped);
 
         boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
-        if (!incomplete.isEmpty()) {
-            if (!appliedIds.isEmpty()) {
+        boolean persistOk = true;
+        if (!appliedIds.isEmpty()) {
+            try {
                 markApplied(batchId, appliedIds, targetFlag);
+            } catch (RuntimeException e) {
+                persistOk = false;
+                LOG.error("RollbackEngine.{}: failed to mark applied prefix for batch id={}", mode, batchId, e);
             }
-            if (!repairRequired.isEmpty()) {
+        }
+        if (!repairRequired.isEmpty()) {
+            try {
                 persistRepairRequired(batchId, repairRequired);
+            } catch (RuntimeException e) {
+                persistOk = false;
+                LOG.error("RollbackEngine.{}: failed to persist repair-required for batch id={}", mode, batchId, e);
             }
-            LOG.error("RollbackEngine.{}: batch id={} incomplete; vg_rollback_batches row left OPEN for recovery",
-                mode, batchId);
-            throw new RollbackMutationException(batchId, incomplete);
         }
 
-        markApplied(batchId, appliedIds, targetFlag);
-        try {
-            int closed = dao.closeRollbackBatch(batchId);
-            if (closed != 1) {
-                LOG.error("RollbackEngine.{}: closeRollbackBatch id={} updated {} rows (expected 1); "
-                        + "audit row considered unclosed", mode, batchId, closed);
-                throw new IllegalStateException(
-                        "closeRollbackBatch updated " + closed + " rows for batch id=" + batchId
-                                + " (expected 1); audit row left unclosed");
+        RollbackResult.Status status;
+        if (!repairRequired.isEmpty()) {
+            status = RollbackResult.Status.REPAIR_REQUIRED;
+        } else if (!compensated.isEmpty()) {
+            status = RollbackResult.Status.COMPENSATED;
+        } else if (!failed.isEmpty() && appliedIds.isEmpty()) {
+            status = RollbackResult.Status.FAILED;
+        } else if (!failed.isEmpty() || !persistOk) {
+            status = RollbackResult.Status.PARTIAL;
+        } else {
+            status = RollbackResult.Status.SUCCESS;
+        }
+
+        boolean canClose = persistOk && failed.isEmpty() && compensated.isEmpty() && repairRequired.isEmpty();
+        boolean batchClosed = false;
+        if (canClose) {
+            try {
+                int closed = dao.closeRollbackBatch(batchId);
+                if (closed != 1) {
+                    LOG.error("RollbackEngine.{}: closeRollbackBatch id={} updated {} rows (expected 1); "
+                            + "audit row considered unclosed", mode, batchId, closed);
+                    if (status == RollbackResult.Status.SUCCESS) {
+                        status = RollbackResult.Status.PARTIAL;
+                    }
+                } else {
+                    batchClosed = true;
+                }
+            } catch (Exception e) {
+                LOG.error("RollbackEngine.{}: failed to close batch id={}", mode, batchId, e);
+                if (status == RollbackResult.Status.SUCCESS) {
+                    status = RollbackResult.Status.PARTIAL;
+                }
             }
-        } catch (Exception e) {
-            LOG.error("RollbackEngine.{}: failed to close batch id={}", mode, batchId, e);
-            throw new CompletionException(e);
+        } else {
+            LOG.warn("RollbackEngine.{}: batch id={} left OPEN status={} applied={} skipped={} failed={} compensated={} repairRequired={}",
+                mode, batchId, status, appliedIds.size(), allSkipped.size(),
+                failed.size(), compensated.size(), repairRequired.size());
         }
 
         return new RollbackResult(actorUuid, mode, false,
-            appliedIds, plannedSkippedIds, planned, appliedIds.size(), effective);
+            appliedIds, allSkipped, planned, appliedIds.size(), effective,
+            status, batchId, failed.size(), compensated.size(), repairRequired.size(), batchClosed);
     }
 
     private void markApplied(long batchId, List<Long> ids, boolean targetFlag) {
@@ -961,7 +1032,8 @@ public final class RollbackEngine {
         }
         List<Action> batch = new ArrayList<>();
         int cursor = start;
-        while (cursor < ordered.size() && batch.size() < BATCH_SIZE) {
+        int slice = mutationBatchSize;
+        while (cursor < ordered.size() && batch.size() < slice) {
             Action a = ordered.get(cursor++);
             if (a.id() >= 0L && !consumedIds.add(a.id())) {
                 continue;
@@ -1108,7 +1180,7 @@ public final class RollbackEngine {
                 : new IllegalStateException("inventory pair second half not applied: " + secondResult.status());
             if (compensation.status() == WorldMutationResult.Status.APPLIED) {
                 return List.of(
-                    WorldMutationResult.failed(first.id(), new IllegalStateException(
+                    WorldMutationResult.compensated(first.id(), new IllegalStateException(
                         "inventory pair compensated=true after mate failure", cause)),
                     secondResult.status() == WorldMutationResult.Status.FAILED
                         ? secondResult : WorldMutationResult.failed(second.id(), cause));
@@ -1155,7 +1227,7 @@ public final class RollbackEngine {
                 : new IllegalStateException("hopper pair second half not applied: " + secondResult.status());
             if (compensation.status() == WorldMutationResult.Status.APPLIED) {
                 return List.of(
-                    WorldMutationResult.failed(first.id(), new IllegalStateException(
+                    WorldMutationResult.compensated(first.id(), new IllegalStateException(
                         "hopper pair compensated=true after mate failure", cause)),
                     secondResult.status() == WorldMutationResult.Status.FAILED
                         ? secondResult : WorldMutationResult.failed(second.id(), cause));
