@@ -2,6 +2,8 @@ package network.vonix.guardian.core.bench;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -16,14 +18,18 @@ class BenchExplosionAffectedListJoinTest {
 
     @Test
     void serverThreadWallTime_reducedByAtLeast85Percent() throws Exception {
-        BenchExplosionAffectedListJoin.Result r = BenchExplosionAffectedListJoin.run();
+        double[] reductions = new double[3];
+        for (int i = 0; i < reductions.length; i++) {
+            reductions[i] = BenchExplosionAffectedListJoin.run().reductionPercent();
+        }
+        Arrays.sort(reductions);
         // The old path does correctness-equivalent chunked StringBuilder joins
         // + submits on the caller. The new path snapshots scratch arrays on the
-        // caller, then hands the string joins to the worker.
-        // CI/VM scheduler variance after the async correctness hardening can
-        // occasionally shave a couple percentage points off the synthetic wall
-        // clock ratio while still preserving the real server-thread offload.
-        // Keep the regression gate aggressive but stable across slower runners.
-        assertThat(r.reductionPercent()).isGreaterThan(82.5);
+        // caller, then hands the string joins to the worker. Use the median of
+        // three samples so one scheduler interruption cannot mask a real
+        // regression while the ≥85% target remains enforced.
+        assertThat(reductions[1])
+                .as("median server-thread wall-time reduction; samples=" + Arrays.toString(reductions))
+                .isGreaterThan(85.0);
     }
 }
