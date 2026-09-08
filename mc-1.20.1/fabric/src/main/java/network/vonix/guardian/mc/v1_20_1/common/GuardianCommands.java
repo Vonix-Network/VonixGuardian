@@ -793,7 +793,7 @@ public final class GuardianCommands {
                 PermissionNode requiredPreviewPermission = expectedPreview.mode() == RollbackResult.Mode.RESTORE
                         ? PermissionNode.RESTORE : PermissionNode.ROLLBACK;
                 if (!hasPerm(src, requiredPreviewPermission, g)) {
-                    server.execute(() => {
+                    server.execute(() -> {
                         if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                                 "[VonixGuardian] Preview permission changed; run the preview again."));
