@@ -149,16 +149,34 @@ the validator. An absent (or `null`) array is treated as empty.
 | `worldBlacklist`  | World identifier (namespaced key)            | `minecraft:overworld`         | `Level.dimension().location().toString()`        |
 | `blockBlacklist`  | Block ID (namespaced)                        | `minecraft:air`               | `BuiltInRegistries.BLOCK.getKey(block)`          |
 | `sourceBlacklist` | `sourceTag` of the action                    | `explosion:tnt`               | `Action.sourceTag()` exact match                 |
+| `itemBlacklist`   | Item ID (namespaced key)                     | `minecraft:diamond`           | Item-bearing item/container/hopper actions      |
+| `entityBlacklist` | Entity ID (namespaced key; optional `#mob:`) | `minecraft:zombie`            | Entity and hanging-entity actions               |
 
-**Glob support.** v1.0.0 uses **exact, case-sensitive string equality** for
-all three lists. Wildcards / globs are **not** parsed — `minecraft:*_log` is
-treated as a literal id and will never match. Globbing is tracked for a
-future minor release.
+**Matching.** All lists use exact matching; wildcards / globs are not parsed.
+Item and entity IDs are trimmed and compared case-insensitively. Entity IDs
+also match symmetrically with or without the stored `#mob:` sentinel prefix.
+Blank or malformed per-world entries are ignored for that override; malformed
+root-config entries fail validation rather than broadening the filter.
+
+**Per-world overrides.** Create partial JSON files under
+`config/vonixguardian/worlds/`, using the world key with `:` replaced by `__`.
+For example, `minecraft__the_end.json` may contain:
+
+```json
+{
+  "itemBlacklist": ["minecraft:elytra"],
+  "entityBlacklist": ["minecraft:enderman"]
+}
+```
+
+Missing fields inherit from the root `actions` block. `/vg reload` rebuilds the
+root and per-world gate snapshots atomically; historical rows are never
+deleted or rewritten.
 
 **Default `blockBlacklist`** ships with `minecraft:air` to suppress the
 torrent of air-replacement noise from physics updates and bucket-fills.
 
-**Reload:** ❌ Restart — listener wiring inspects toggles at registration.
+**Reload:** ✅ Reload — category toggles and all blacklist snapshots are rebuilt atomically; listener wiring remains unchanged.
 
 ---
 
@@ -324,7 +342,9 @@ before saving — `config.json` is parsed as **strict JSON**, not JSON5.
     "logWorldEvents": true,
     "worldBlacklist": [],             // e.g. ["minecraft:the_nether"]
     "blockBlacklist": ["minecraft:air"],
-    "sourceBlacklist": []             // e.g. ["explosion:tnt"]
+    "sourceBlacklist": [],            // e.g. ["explosion:tnt"]
+    "itemBlacklist": [],              // e.g. ["minecraft:diamond"]
+    "entityBlacklist": []             // e.g. ["minecraft:zombie"]
   },
 
   // §6 — Permission resolution.
@@ -373,7 +393,7 @@ the reload handler is implemented.
 | `logFile`     | `enabled`, `directory`                                 | Restart     | Restart       |
 | `logFile`     | `gzipRotated`, `retentionDays`                         | Reload      | Restart       |
 | `actions`     | all category toggles                                   | Restart     | Restart       |
-| `actions`     | `worldBlacklist`, `blockBlacklist`, `sourceBlacklist`  | Reload      | Restart       |
+| `actions`     | all blacklists                                        | Reload      | Restart       |
 | `permissions` | `useLuckPerms`                                         | Restart     | Restart       |
 | `permissions` | `defaultOpLevel`                                       | Reload      | Restart       |
 | `lookup`      | `defaultPageSize`                                      | Reload      | Restart       |

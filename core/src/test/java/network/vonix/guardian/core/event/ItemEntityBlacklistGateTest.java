@@ -73,6 +73,31 @@ class ItemEntityBlacklistGateTest {
     }
 
     @Test
+    @DisplayName("Item blacklist gates container and hopper actions that carry item IDs")
+    void exactItemMatchGatesAllItemBearingContainerTypes() {
+        GuardianConfig.Actions cfg = makeActions(List.of("minecraft:diamond"), List.of());
+        EventGate gate = new EventGate(cfg);
+
+        for (ActionType type : List.of(
+                ActionType.CONTAINER_DEPOSIT,
+                ActionType.CONTAINER_WITHDRAW,
+                ActionType.INVENTORY_DEPOSIT,
+                ActionType.INVENTORY_WITHDRAW,
+                ActionType.HOPPER_PUSH,
+                ActionType.HOPPER_PULL)) {
+            Action blacklisted = createAction(type, "minecraft:diamond");
+            assertThat(gate.shouldLog(blacklisted))
+                    .as("Action %s with blacklisted item should be dropped", type)
+                    .isFalse();
+
+            Action allowed = createAction(type, "minecraft:iron_ingot");
+            assertThat(gate.shouldLog(allowed))
+                    .as("Action %s with unlisted item should be allowed", type)
+                    .isTrue();
+        }
+    }
+
+    @Test
     @DisplayName("Item blacklist does not broaden into prefix or substring matches")
     void itemBlacklistExactNonBroadening() {
         GuardianConfig.Actions cfg = makeActions(List.of("minecraft:dia"), List.of());
@@ -242,13 +267,55 @@ class ItemEntityBlacklistGateTest {
         Action owElytra = new Action(-1L, System.currentTimeMillis(), ActionType.ITEM_DROP,
                 UUID.randomUUID(), "P", "minecraft:overworld", 0, 0, 0, "minecraft:elytra", null, 1, false, null);
         assertThat(hook.test(owElytra)).isEqualTo(EventHook.Decision.PASS);
+
+        Action endContainer = new Action(-1L, System.currentTimeMillis(), ActionType.HOPPER_PUSH,
+                UUID.randomUUID(), "P", "minecraft:the_end", 0, 0, 0, "minecraft:elytra", null, 1, false, null);
+        assertThat(hook.test(endContainer)).isEqualTo(EventHook.Decision.DENY);
+
+        // Reload must replace the per-world snapshot rather than retaining stale IDs.
+        Files.writeString(tmp.resolve("minecraft__the_end.json"),
+                "{\n" +
+                "  \"itemBlacklist\": [\"minecraft:shulker_box\"],\n" +
+                "  \"entityBlacklist\": [\"minecraft:shulker\"]\n" +
+                "}\n");
+        store.reload(tmp);
+        Action reloadedAllowed = new Action(-1L, System.currentTimeMillis(), ActionType.ITEM_DROP,
+                UUID.randomUUID(), "P", "minecraft:the_end", 0, 0, 0, "minecraft:elytra", null, 1, false, null);
+        assertThat(hook.test(reloadedAllowed)).isEqualTo(EventHook.Decision.PASS);
+        Action reloadedDenied = new Action(-1L, System.currentTimeMillis(), ActionType.ITEM_DROP,
+                UUID.randomUUID(), "P", "minecraft:the_end", 0, 0, 0, "minecraft:shulker_box", null, 1, false, null);
+        assertThat(hook.test(reloadedDenied)).isEqualTo(EventHook.Decision.DENY);
+    }
+
+    @Test
+    @DisplayName("Per-world override rejects malformed blacklist element types without aborting reload")
+    void malformedPerWorldBlacklistEntryIsSkipped(@TempDir Path tmp) throws Exception {
+        GuardianConfig.Actions root = makeActions(List.of(), List.of());
+        Files.writeString(tmp.resolve("minecraft__the_end.json"),
+                "{\"itemBlacklist\":[{}],\"entityBlacklist\":[true]}\n");
+
+        PerWorldConfigStore store = new PerWorldConfigStore(root);
+        assertThatNoException().isThrownBy(() -> store.reload(tmp));
+        assertThat(store.overriddenWorlds()).isEmpty();
     }
 
     @Test
     @DisplayName("ConfigLoader forward-compat backfills empty lists when missing from YAML/JSON")
-    void configLoaderForwardCompat() {
+    void configLoaderForwardCompat(@TempDir Path tmp) throws Exception {
         GuardianConfig defaults = GuardianConfig.defaults();
         assertThat(defaults.actions().itemBlacklist()).isEmpty();
         assertThat(defaults.actions().entityBlacklist()).isEmpty();
+
+        GuardianConfig configured = new GuardianConfig(
+                defaults.database(), defaults.queue(), defaults.logFile(),
+                defaults.actions().withItemBlacklist(List.of("minecraft:diamond"))
+                        .withEntityBlacklist(List.of("#mob:minecraft:zombie")),
+                defaults.permissions(), defaults.lookup(), defaults.privacy(), defaults.purge(),
+                defaults.storage(), defaults.rollback(), defaults.theme(), defaults.language());
+        Path config = tmp.resolve("config.json");
+        ConfigLoader.save(config, configured);
+        GuardianConfig loaded = ConfigLoader.load(config);
+        assertThat(loaded.actions().itemBlacklist()).containsExactly("minecraft:diamond");
+        assertThat(loaded.actions().entityBlacklist()).containsExactly("#mob:minecraft:zombie");
     }
 }

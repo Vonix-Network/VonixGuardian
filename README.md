@@ -149,7 +149,9 @@ First boot writes `config/vonixguardian/config.json`:
     "logWorldEvents": true,
     "worldBlacklist": [],
     "blockBlacklist": ["minecraft:air"],
-    "sourceBlacklist": []
+    "sourceBlacklist": [],
+    "itemBlacklist": [],
+    "entityBlacklist": []
   },
   "permissions": { "useLuckPerms": true, "defaultOpLevel": 3 },
   "lookup": { "defaultPageSize": 7, "maxRadius": 10000, "maxResultRows": 100000, "maxConcurrent": 4 },

@@ -246,7 +246,14 @@ public final class PerWorldConfigStore {
         JsonArray arr = e.getAsJsonArray();
         List<String> out = new ArrayList<>(arr.size());
         for (JsonElement it : arr) {
-            out.add(it.isJsonNull() ? null : it.getAsString());
+            if (it.isJsonNull()) {
+                out.add(null);
+                continue;
+            }
+            if (!it.isJsonPrimitive() || !it.getAsJsonPrimitive().isString()) {
+                throw new JsonSyntaxException("field " + k + " entries must be JSON strings");
+            }
+            out.add(it.getAsString());
         }
         return out;
     }

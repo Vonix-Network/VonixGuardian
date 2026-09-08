@@ -264,7 +264,10 @@ public final class EventGate {
         if (t.category() == ActionType.Category.BLOCK && blockBlacklist.contains(a.targetId())) {
             return false;
         }
-        if (t.category() == ActionType.Category.ITEM && !itemBlacklist.isEmpty() && a.targetId() != null) {
+        // Item identifiers are carried by both explicit item actions and
+        // container/hopper transfer actions. Keep the check category-aware so
+        // an item blacklist never broadens into block/world identifiers.
+        if (isItemBearing(t) && !itemBlacklist.isEmpty() && a.targetId() != null) {
             String norm = normalizeItemId(a.targetId());
             if (norm != null && itemBlacklist.contains(norm)) {
                 return false;
@@ -306,6 +309,11 @@ public final class EventGate {
             return isLava(a) ? cfg.logLavaFlow() : cfg.logWaterFlow();
         }
         return typeEnabled(a.type());
+    }
+
+    private static boolean isItemBearing(ActionType type) {
+        return type.category() == ActionType.Category.ITEM
+                || type.category() == ActionType.Category.CONTAINER;
     }
 
     private static EnumSet<ActionType> enabledTypes(GuardianConfig.Actions cfg) {

@@ -440,7 +440,9 @@ public record GuardianConfig(
                           boolean logCommands, boolean logSessions, boolean logSigns,
                           boolean logInteractions, boolean logWorldEvents,
                           List<String> worldBlacklist, List<String> blockBlacklist,
-                          List<String> sourceBlacklist) {}
+                          List<String> sourceBlacklist,
+                          // 2.1.1: exact item/entity ID exclusions.
+                          List<String> itemBlacklist, List<String> entityBlacklist) {}
     public record Permissions(boolean useLuckPerms, int defaultOpLevel) {}
     public record Lookup(int defaultPageSize, int maxRadius, int maxResultRows, int maxConcurrent) {}
     /** IP hashing for SESSION_JOIN. salt must be >= 16 chars when hashIps is true. */

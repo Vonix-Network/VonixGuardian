@@ -56,7 +56,7 @@ public final class PerWorldEventHook implements EventHook {
                 && contains(over.blockBlacklist(), a.targetId())) {
             return Decision.DENY;
         }
-        if (a.type().category() == ActionType.Category.ITEM
+        if (isItemBearing(a.type())
                 && containsItem(over.itemBlacklist(), a.targetId())) {
             return Decision.DENY;
         }
@@ -94,6 +94,11 @@ public final class PerWorldEventHook implements EventHook {
             }
         }
         return false;
+    }
+
+    private static boolean isItemBearing(ActionType type) {
+        return type.category() == ActionType.Category.ITEM
+                || type.category() == ActionType.Category.CONTAINER;
     }
 
     private static boolean contains(List<String> list, String v) {
