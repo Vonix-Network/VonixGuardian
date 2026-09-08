@@ -123,8 +123,14 @@ public final class PerWorldConfigStore {
                      next.put(worldId, merged);
                      filenames.add(fname);
                      mtimeCache.put(p, mtime);
-                 } catch (IOException | JsonSyntaxException e) {
+                 } catch (IOException e) {
                      LOG.warn("Failed to load per-world override {}: {}", p, e.getMessage());
+                 } catch (RuntimeException e) {
+                     // Per-world JSON is untrusted operator input. A wrong scalar
+                     // type (for example an object where a boolean/number is
+                     // expected) must skip only this file, not abort the reload
+                     // before the replacement snapshot is published.
+                     LOG.warn("Invalid per-world override {}: {}", p, e.getMessage());
                  }
              });
         } catch (IOException e) {

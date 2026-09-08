@@ -300,6 +300,23 @@ class ItemEntityBlacklistGateTest {
     }
 
     @Test
+    @DisplayName("Malformed scalar override fields skip only that file and still publish a replacement snapshot")
+    void malformedPerWorldScalarEntryIsSkipped(@TempDir Path tmp) throws Exception {
+        GuardianConfig.Actions root = makeActions(List.of(), List.of());
+        Files.writeString(tmp.resolve("minecraft__the_end.json"),
+                "{\"logItems\":{},\"entityBlockChangeCoalesceWindowMs\":{}}\n");
+        Files.writeString(tmp.resolve("minecraft__overworld.json"),
+                "{\"itemBlacklist\":[\"minecraft:diamond\"]}\n");
+
+        PerWorldConfigStore store = new PerWorldConfigStore(root);
+        assertThatNoException().isThrownBy(() -> store.reload(tmp));
+        assertThat(store.overriddenWorlds()).containsExactly("minecraft:overworld");
+        assertThat(store.overrideFor("minecraft:overworld").itemBlacklist())
+                .containsExactly("minecraft:diamond");
+        assertThat(store.overrideFor("minecraft:the_end")).isNull();
+    }
+
+    @Test
     @DisplayName("ConfigLoader forward-compat backfills empty lists when missing from YAML/JSON")
     void configLoaderForwardCompat(@TempDir Path tmp) throws Exception {
         GuardianConfig defaults = GuardianConfig.defaults();
