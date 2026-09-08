@@ -85,13 +85,13 @@ tasks.register('embedCoreJarInJar') {
         File coreWithFabricMetadata = new File(artifact.parentFile, coreJar.name + '.fabric.tmp')
         String entryName = "META-INF/jars/${coreJar.name}"
         String coreFabricMetadata = """{
-  \"schemaVersion\": 1,
-  \"id\": \"vonixguardian-core\",
-  \"version\": \"${project.version}\",
-  \"name\": \"VonixGuardian Core\",
-  \"environment\": \"server\",
-  \"depends\": {
-    \"java\": \">=17\"
+  "schemaVersion": 1,
+  "id": "vonixguardian-core",
+  "version": "${project.version}",
+  "name": "VonixGuardian Core",
+  "environment": "server",
+  "depends": {
+    "java": ">=17"
   }
 }
 """

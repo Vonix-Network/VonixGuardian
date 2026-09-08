@@ -197,8 +197,8 @@ class NbtDecodeFailureFallbackTest {
                 .build();
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(a)).thenReturn(List.of());
 
-        RollbackResult oversized = engine.rollback(rangeFilter(), false);
-        assertThat(oversized.status()).isIn(
+        RollbackResult rollbackResult = engine.rollback(rangeFilter(), false);
+        assertThat(rollbackResult.status()).isIn(
                 RollbackResult.Status.FAILED, RollbackResult.Status.PARTIAL, RollbackResult.Status.REPAIR_REQUIRED);
         assertThat(m.nbtSlotCalls.get()).isEqualTo(1);
         assertThat(m.legacyCalls.get()).isEqualTo(0);

@@ -168,12 +168,10 @@ public final class LookupPermissionFilter {
         }
         long targetLong = (long) pageSize + (prefetchNext ? 1L : 0L);
         int targetRows = targetLong >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) targetLong;
-        // There is no caller-supplied cursor in the page-number API. For page
-        // 2+ walk from the first batch with a (ts,id) keyset so a large page
-        // number does not force OFFSET skip of already-consumed rows. Older
-        // or mock DAOs that return null from the keyset method fall back once
-        // to a single bounded OFFSET.
-        boolean seekMode = page >= 2;
+        // There is no caller-supplied cursor in the page-number API. Use one
+        // zero-origin keyset anchor only for page 2; deeper pages must use a
+        // single bounded OFFSET rather than repeatedly scanning from row zero.
+        boolean seekMode = page == 2;
         boolean keysetUnavailable = false;
         long remainingSkip = seekMode ? visibleSkip : 0L;
         int rawOffset = seekMode ? 0 : (int) visibleSkip;

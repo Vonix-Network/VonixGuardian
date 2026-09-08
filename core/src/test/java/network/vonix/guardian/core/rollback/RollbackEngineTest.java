@@ -183,7 +183,7 @@ class RollbackEngineTest {
                                                    String targetMeta, byte[] itemNbt, Integer inventorySlot) {
                 calls.add("addPlayer|" + playerUuid + "|" + itemId + "|" + amount + "|"
                         + targetMeta + "|" + (itemNbt == null ? 0 : itemNbt.length) + "|" + inventorySlot);
-                return false;
+                return "minecraft:emerald".equals(itemId);
             }
         };
         RollbackEngine failing = new RollbackEngine(dao, failingAdd, Runnable::run);

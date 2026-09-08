@@ -26,7 +26,7 @@ public final class V9TsIdIndex implements Migration {
             try {
                 st.execute(ddl);
             } catch (SQLException ex) {
-                if (!isDuplicateIndex(dialect, ex)) {
+                if (!isDuplicateIndex(dialect, ex) && !isMissingTsColumn(dialect, ex)) {
                     throw ex;
                 }
             }
@@ -39,6 +39,20 @@ public final class V9TsIdIndex implements Migration {
         }
         String m = ex.getMessage();
         return m != null && m.toLowerCase().contains("already exists");
+    }
+
+    private static boolean isMissingTsColumn(Schema.Dialect dialect, SQLException ex) {
+        if (dialect == Schema.Dialect.MYSQL && ex.getErrorCode() == 1072) {
+            return true;
+        }
+        String m = ex.getMessage();
+        if (m == null) return false;
+        String lower = m.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("ts") && (
+                lower.contains("no such column")
+                || lower.contains("unknown column")
+                || lower.contains("does not exist")
+                || lower.contains("doesn't exist"));
     }
 
     @Override

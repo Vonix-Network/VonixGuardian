@@ -89,30 +89,30 @@ class HistoricalSchemaCompatibilityTest {
                 st.execute("INSERT INTO vg_actions(id, ts, type, user_id, world_id, x, y, z, target, meta, amount, rolled_back, source_tag) "
                         + "VALUES (11, 200, 1, 1, 1, 2, 64, 2, '" + "x".repeat(200) + "', NULL, 1, 0, NULL)");
             }
-        }
 
-        SqliteDao dao = new SqliteDao(url);
-        try {
-            dao.init();
-            try (Connection c = DriverManager.getConnection(url);
-                 Statement st = c.createStatement();
-                 var rs = st.executeQuery("SELECT MAX(version) FROM vg_schema_version")) {
-                assertThat(rs.next()).isTrue();
-                assertThat(rs.getInt(1)).isEqualTo(Schema.CURRENT_VERSION);
+            SqliteDao dao = new SqliteDao(url);
+            try {
+                dao.init();
+                try (Connection c = DriverManager.getConnection(url);
+                     Statement st = c.createStatement();
+                     var rs = st.executeQuery("SELECT MAX(version) FROM vg_schema_version")) {
+                    assertThat(rs.next()).isTrue();
+                    assertThat(rs.getInt(1)).isEqualTo(Schema.CURRENT_VERSION);
+                }
+                List<Action> rows = dao.query(QueryFilter.empty(), 0, 10);
+                assertThat(rows).hasSize(1);
+                assertThat(rows.get(0).id()).isEqualTo(11L);
+                assertThat(rows.get(0).targetId()).isEqualTo("x".repeat(200));
+                assertThat(rows.get(0).actorName()).isEqualTo("null");
+                assertThat(dao.count(QueryFilter.empty())).isEqualTo(1L);
+                assertThat(dao.insertBatch(List.of(new Action(
+                        -1L, 300L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "later",
+                        "minecraft:overworld", 3, 64, 3, "minecraft:stone", null, 1, false, null)))).isEqualTo(1);
+                dao.openRollbackBatch(UUID.randomUUID(), 0, "{}", List.of(11L));
+                assertThat(dao.findByPairIds(Set.of(1L))).isNotNull();
+            } finally {
+                dao.close();
             }
-            List<Action> rows = dao.query(QueryFilter.empty(), 0, 10);
-            assertThat(rows).hasSize(1);
-            assertThat(rows.get(0).id()).isEqualTo(11L);
-            assertThat(rows.get(0).targetId()).isEqualTo("x".repeat(200));
-            assertThat(rows.get(0).actorName()).isEqualTo("null");
-            assertThat(dao.count(QueryFilter.empty())).isEqualTo(1L);
-            assertThat(dao.insertBatch(List.of(new Action(
-                    -1L, 300L, ActionType.BLOCK_PLACE, UUID.randomUUID(), "later",
-                    "minecraft:overworld", 3, 64, 3, "minecraft:stone", null, 1, false, null)))).isEqualTo(1);
-            dao.openRollbackBatch(UUID.randomUUID(), 0, "{}", List.of(11L));
-            assertThat(dao.findByPairIds(Set.of(1L))).isNotNull();
-        } finally {
-            dao.close();
         }
     }
 

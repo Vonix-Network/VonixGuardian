@@ -564,10 +564,12 @@ public final class GuardianCommands {
                         return;
                     }
                     RollbackResult result = g.rollbackEngine().rollback(filter, preview, actor, options);
-                    if (!result.preview() && result.mutatedWorld()) {
-                        g.undoStack().push(actor != null ? actor
-                                : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
-                    } else if (result.preview()) {
+                    if (!result.preview()) {
+                        if (result.mutatedWorld()) {
+                            g.undoStack().push(actor != null ? actor
+                                    : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                        }
+                    } else {
                         PENDING_PREVIEWS.putIfGeneration(previewKey(actor), previewGeneration, result);
                     }
                     server.execute(() -> {
@@ -627,10 +629,12 @@ public final class GuardianCommands {
                         return;
                     }
                     RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
-                    if (!result.preview() && result.mutatedWorld()) {
-                        g.undoStack().push(actor != null ? actor
-                                : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
-                    } else if (result.preview()) {
+                    if (!result.preview()) {
+                        if (result.mutatedWorld()) {
+                            g.undoStack().push(actor != null ? actor
+                                    : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY, result);
+                        }
+                    } else {
                         PENDING_PREVIEWS.putIfGeneration(previewKey(actor), previewGeneration, result);
                     }
                     server.execute(() -> {

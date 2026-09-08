@@ -49,7 +49,7 @@ class LookupRollbackSpeedHarnessTest {
         QueryFilter hour = QueryFilter.builder()
                 .sinceMillis(now - 3_600_000L)
                 .radius(10)
-                .centerX(0).centerY(64).centerZ(0)
+                .center(0, 64, 0)
                 .build();
 
         long t0 = System.nanoTime();
@@ -72,7 +72,7 @@ class LookupRollbackSpeedHarnessTest {
         QueryFilter rb = QueryFilter.builder()
                 .sinceMillis(now - 3_600_000L)
                 .radius(10)
-                .centerX(0).centerY(64).centerZ(0)
+                .center(0, 64, 0)
                 .build();
         t0 = System.nanoTime();
         var result = engine.rollback(rb, false);
