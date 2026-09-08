@@ -52,7 +52,7 @@ final class NeoForgePackagingStructuralTest {
                 .as("mixin source %s", name).isTrue();
             count++;
         }
-        assertThat(count).isEqualTo(21);
+        assertThat(count).isEqualTo(23);
     }
 
     @Test
