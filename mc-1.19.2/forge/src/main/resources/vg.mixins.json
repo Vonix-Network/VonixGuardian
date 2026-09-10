@@ -8,6 +8,7 @@
     "DispenserBlockMixin",
     "HopperBlockEntityMixin",
     "PlayerInventoryMixin",
+    "ServerGamePacketListenerAccessor",
     "SignChangeMixin",
     "RavagerMixin"
   ],

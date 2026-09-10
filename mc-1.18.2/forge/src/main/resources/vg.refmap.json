@@ -4,6 +4,9 @@
     "searge": {
       "network/vonix/guardian/mc/v1_18_2/forge/mixin/DispenserBlockMixin": {
         "dispenseFrom(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;)V": "m_5824_(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;)V"
+      },
+      "network/vonix/guardian/mc/v1_18_2/forge/mixin/SignChangeMixin": {
+        "handleSignUpdate(Lnet/minecraft/network/protocol/game/ServerboundSignUpdatePacket;)V": "m_5527_(Lnet/minecraft/network/protocol/game/ServerboundSignUpdatePacket;)V"
       }
     }
   }
