@@ -120,6 +120,14 @@ tasks.register('verifyJarInJarPackaging') {
         }.files
         assert outerJdbcClasses.empty
         assert zipTree(artifact).matching { include 'META-INF/services/java.sql.Driver' }.files.empty
+
+        assert !zipTree(artifact).matching {
+            include 'network/vonix/guardian/mc/v1_19_2/fabric/api/LocationalInventory.class'
+        }.files.empty
+        assert zipTree(artifact).matching {
+            include 'network/vonix/guardian/mc/v1_19_2/fabric/mixin/LocationalInventory.class'
+        }.files.empty
+
         logger.lifecycle("Verified Fabric JarInJar artifact: ${artifact.name}")
     }
 }

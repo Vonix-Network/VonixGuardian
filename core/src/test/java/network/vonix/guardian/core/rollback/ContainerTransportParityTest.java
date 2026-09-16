@@ -214,35 +214,65 @@ class ContainerTransportParityTest {
         assertThat(mutator.calls).isEmpty();
     }
 
+    private static final List<String[]> LOADER_CELLS = List.of(
+            new String[]{"mc-1.18.2/fabric", "fabric", "v1_18_2"},
+            new String[]{"mc-1.19.2/fabric", "fabric", "v1_19_2"},
+            new String[]{"mc-1.20.1/fabric", "fabric", "v1_20_1"},
+            new String[]{"mc-1.21.1/fabric", "fabric", "v1_21_1"},
+            new String[]{"mc-1.18.2/forge", "forge", "v1_18_2"},
+            new String[]{"mc-1.19.2/forge", "forge", "v1_19_2"},
+            new String[]{"mc-1.20.1/forge", "forge", "v1_20_1"},
+            new String[]{"mc-1.21.1/neoforge", "neoforge", "v1_21_1"},
+            new String[]{"mc-26.1.2/neoforge", "neoforge", "v26_1"}
+    );
+
     @Test
-    void fabric1211ProducerAndMutator_carrySlotNbtAndFailClosedCompensation() throws Exception {
+    void everyCellProducerAndMutator_carrySlotNbtAndFailClosedCompensation() throws Exception {
         Path root = repoRoot();
         assumeTrue(root != null, "repo root not resolvable");
-        String hopper = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/mixin/HopperBlockEntityMixin.java"));
-        String bridge = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricMixinBridge.java"));
-        String mutator = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricWorldMutator.java"));
-        String capture = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/NbtCapture.java"));
+        for (String[] cell : LOADER_CELLS) {
+            String loader = cell[1];
+            String pkg = cell[2];
+            String hopperRel = cell[0] + "/src/main/java/network/vonix/guardian/mc/" + pkg + "/" + loader
+                    + "/mixin/HopperBlockEntityMixin.java";
+            String bridgeName = loader.equals("fabric") ? "FabricMixinBridge"
+                    : loader.equals("forge") ? "ForgeMixinBridge" : "NeoForgeMixinBridge";
+            String mutatorName = loader.equals("fabric") ? "FabricWorldMutator"
+                    : loader.equals("forge") ? "ForgeWorldMutator" : "NeoForgeWorldMutator";
+            String hopper = Files.readString(root.resolve(hopperRel));
+            String bridge = Files.readString(root.resolve(
+                    cell[0] + "/src/main/java/network/vonix/guardian/mc/" + pkg + "/" + loader + "/" + bridgeName + ".java"));
+            String mutator = Files.readString(root.resolve(
+                    cell[0] + "/src/main/java/network/vonix/guardian/mc/" + pkg + "/" + loader + "/" + mutatorName + ".java"));
+            String capture = Files.readString(root.resolve(
+                    cell[0] + "/src/main/java/network/vonix/guardian/mc/" + pkg + "/" + loader + "/NbtCapture.java"));
 
-        assertThat(hopper)
-                .contains("vg$snapshot")
-                .contains("tryMoveInItem")
-                .doesNotContain("vg$firstNonEmptySlot");
-        assertThat(bridge)
-                .contains("inventorySlot")
-                .contains("HopperTransportPairs")
-                .contains("ContainerTransport")
-                .contains("submitHopperPush")
-                .contains("blockStateProps");
-        assertThat(mutator)
-                .contains("tryAddToContainer")
-                .contains("tryRemoveFromContainer")
-                .contains("restoreExactSlotOrThrow")
-                .contains("UncompensatedSlotMutationException");
-        assertThat(capture).contains("MAX_NBT_BYTES");
+            assertThat(hopper).as(hopperRel)
+                    .doesNotContain("vg$snapshot")
+                    .contains("hopperEjectBegin")
+                    .contains("hopperSuckBegin")
+                    .contains("hopperMoveSlot")
+                    .contains("tryMoveInItem")
+                    .doesNotContain("vg$firstNonEmptySlot");
+            assertThat(bridge).as(cell[0] + " bridge")
+                    .contains("inventorySlot")
+                    .contains("HopperTransportPairs")
+                    .contains("ContainerTransport")
+                    .contains("submitHopperPush")
+                    .contains("blockStateProps");
+            assertThat(mutator).as(cell[0] + " mutator")
+                    .contains("tryAddToContainer")
+                    .contains("tryRemoveFromContainer")
+                    .contains("restoreExactSlotOrThrow")
+                    .contains("UncompensatedSlotMutationException")
+                    .contains("NbtPayload.tooLarge");
+            assertThat(capture).as(cell[0] + " capture").contains("MAX_NBT_BYTES");
+            int overflow = capture.indexOf("if (bytes.length > MAX_NBT_BYTES)");
+            int returnBytes = capture.indexOf("return bytes;", overflow);
+            assertThat(overflow).as(cell[0] + " overflow log").isGreaterThan(-1);
+            assertThat(capture.substring(overflow, returnBytes)).as(cell[0] + " preserve oversized")
+                    .doesNotContain("return null");
+        }
     }
 
     private static Action hopper(ActionType type, int x, int y, int z, int slot, long pair) {

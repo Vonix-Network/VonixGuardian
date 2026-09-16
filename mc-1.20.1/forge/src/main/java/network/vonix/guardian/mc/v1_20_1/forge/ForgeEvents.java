@@ -898,34 +898,7 @@ public final class ForgeEvents {
             if (snap == null || pos == null) return;
             BlockEntity be = sp.level().getBlockEntity(pos);
             if (!(be instanceof Container c)) return;
-            String worldId = WorldKey.of(sp.level());
-            EventSubmitter s = sub();
-            if (s == null) return;
-            int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
-            boolean nbtOn = persistNbt();
-            for (int slot = 0; slot < size; slot++) {
-                ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
-                ItemStack after = c.getItem(slot);
-                int beforeCount = before.isEmpty() ? 0 : before.getCount();
-                int afterCount = after.isEmpty() ? 0 : after.getCount();
-                String itemId = !before.isEmpty() ? itemId(before) : (!after.isEmpty() ? itemId(after) : null);
-                if (itemId == null) continue;
-                int delta = afterCount - beforeCount;
-                if (delta == 0) continue;
-                byte[] itemNbt = null;
-                if (nbtOn) {
-                    // delta > 0 = deposit (after carries NBT); delta < 0 = withdraw (before carries NBT).
-                    ItemStack src = delta > 0 ? after : before;
-                    itemNbt = NbtCapture.itemStack(src);
-                }
-                if (itemNbt != null) {
-                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
-                } else {
-                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
-                }
-            }
+            ForgeMixinBridge.emitContainerClose(sp, c, snap, pos, WorldKey.of(sp.level()));
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onContainerClose failed", t);
         }
@@ -2169,9 +2142,9 @@ public final class ForgeEvents {
     }
 
     /**
-     * Z3 — Sample one hopper: read current slot contents, diff against
-     * snapshot, submit push/pull rows, update snapshot. Returns false if the
-     * hopper is gone (chunk unloaded, block replaced).
+     * Z3 — Keep hopper occupancy tracking warm. Vanilla hopper transfers are
+     * captured by {@code HopperBlockEntityMixin} with exact slot identity and
+     * pair IDs; this sampler must not emit duplicate coarse push/pull rows.
      */
     private static boolean sampleHopperOne(ServerLevel level, String worldId, long k, EventSubmitter s) {
         BlockPos pos = HOPPER_POS_LOOKUP.get(k);
@@ -2187,41 +2160,9 @@ public final class ForgeEvents {
         }
         String[] snap = HOPPER_SNAPSHOT.get(k);
         if (snap == null) snap = new String[HOPPER_SLOTS];
-        boolean firstObservation = allNull(snap);
         for (int i = 0; i < HOPPER_SLOTS; i++) {
             ItemStack cur = i < hopper.getContainerSize() ? hopper.getItem(i) : ItemStack.EMPTY;
-            String curKey = slotKey(cur);
-            String prevKey = snap[i];
-            snap[i] = curKey;
-            if (firstObservation) continue;
-            if (java.util.Objects.equals(prevKey, curKey)) continue;
-            int prevCount = parseSlotCount(prevKey);
-            int curCount = parseSlotCount(curKey);
-            String itemIdCur = parseSlotId(curKey);
-            String itemIdPrev = parseSlotId(prevKey);
-            // Item type CHANGED entirely: emit pull(prev) + push(cur) so
-            // rollback can undo both sides of the swap. This can happen if the
-            // hopper drained an item and got a different one within the same
-            // sample window; a rare corner case, but under-log is worse than
-            // false log.
-            if (prevKey != null && curKey != null && itemIdCur != null
-                    && itemIdPrev != null && !itemIdCur.equals(itemIdPrev)) {
-                s.submitHopperPull(null, Sentinel.HOPPER, worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemIdPrev, prevCount, Sentinel.HOPPER);
-                s.submitHopperPush(null, Sentinel.HOPPER, worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemIdCur, curCount, Sentinel.HOPPER);
-                continue;
-            }
-            String itemId = curKey != null ? itemIdCur : itemIdPrev;
-            if (itemId == null) continue;
-            int delta = curCount - prevCount;
-            if (delta > 0) {
-                s.submitHopperPush(null, Sentinel.HOPPER, worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, delta, Sentinel.HOPPER);
-            } else if (delta < 0) {
-                s.submitHopperPull(null, Sentinel.HOPPER, worldId,
-                        pos.getX(), pos.getY(), pos.getZ(), itemId, -delta, Sentinel.HOPPER);
-            }
+            snap[i] = slotKey(cur);
         }
         HOPPER_SNAPSHOT.put(k, snap);
         return true;

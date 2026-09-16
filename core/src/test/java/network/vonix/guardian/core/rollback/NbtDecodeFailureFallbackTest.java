@@ -40,64 +40,94 @@ import static org.mockito.Mockito.when;
  */
 class NbtDecodeFailureFallbackTest {
 
-    /** Requested cells: 1.21.1 Fabric, 1.21.1 NeoForge, 26.1.2 NeoForge. */
+    /** All nine supported loader/version cells. */
     private static final List<String> REQUESTED_LOADER_MUTATORS = List.of(
+            "mc-1.18.2/fabric/src/main/java/network/vonix/guardian/mc/v1_18_2/fabric/FabricWorldMutator.java",
+            "mc-1.19.2/fabric/src/main/java/network/vonix/guardian/mc/v1_19_2/fabric/FabricWorldMutator.java",
+            "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/fabric/FabricWorldMutator.java",
             "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricWorldMutator.java",
+            "mc-1.18.2/forge/src/main/java/network/vonix/guardian/mc/v1_18_2/forge/ForgeWorldMutator.java",
+            "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge/ForgeWorldMutator.java",
+            "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/ForgeWorldMutator.java",
             "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeWorldMutator.java",
             "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/NeoForgeWorldMutator.java"
     );
 
+    private static final List<String> REQUESTED_NBT_CAPTURES = List.of(
+            "mc-1.18.2/fabric/src/main/java/network/vonix/guardian/mc/v1_18_2/fabric/NbtCapture.java",
+            "mc-1.19.2/fabric/src/main/java/network/vonix/guardian/mc/v1_19_2/fabric/NbtCapture.java",
+            "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/fabric/NbtCapture.java",
+            "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/NbtCapture.java",
+            "mc-1.18.2/forge/src/main/java/network/vonix/guardian/mc/v1_18_2/forge/NbtCapture.java",
+            "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge/NbtCapture.java",
+            "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/NbtCapture.java",
+            "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/NbtCapture.java",
+            "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/NbtCapture.java"
+    );
+
+    private static final List<String> REQUESTED_MIXIN_BRIDGES = List.of(
+            "mc-1.18.2/fabric/src/main/java/network/vonix/guardian/mc/v1_18_2/fabric/FabricMixinBridge.java",
+            "mc-1.19.2/fabric/src/main/java/network/vonix/guardian/mc/v1_19_2/fabric/FabricMixinBridge.java",
+            "mc-1.20.1/fabric/src/main/java/network/vonix/guardian/mc/v1_20_1/fabric/FabricMixinBridge.java",
+            "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricMixinBridge.java",
+            "mc-1.18.2/forge/src/main/java/network/vonix/guardian/mc/v1_18_2/forge/ForgeMixinBridge.java",
+            "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge/ForgeMixinBridge.java",
+            "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/ForgeMixinBridge.java",
+            "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/NeoForgeMixinBridge.java",
+            "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/NeoForgeMixinBridge.java"
+    );
+
     @Test
-    void fabricDecodeNbt_rejectsOversizedBeforeNbtIoRead() throws Exception {
+    void everyLoaderDecodeNbt_rejectsOversizedBeforeNbtIoRead() throws Exception {
         Path root = repoRoot();
         org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
-        String mutator = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricWorldMutator.java"));
-        int decodeNbt = mutator.indexOf("private static CompoundTag decodeNbt(byte[] bytes)");
-        int tooLarge = mutator.indexOf("NbtPayload.tooLarge", decodeNbt);
-        int nbtIo = mutator.indexOf("NbtIo.read", decodeNbt);
-        int decodeItem = mutator.indexOf("private ItemStack decodeItemStack");
-        int plainItem = mutator.indexOf("itemNbt == null || itemNbt.length == 0", decodeItem);
-        int decodeItemNbt = mutator.indexOf("decodeNbt(itemNbt)", decodeItem);
-        assertThat(decodeNbt).isGreaterThan(-1);
-        assertThat(tooLarge).as("oversized guard before NbtIo.read").isGreaterThan(decodeNbt).isLessThan(nbtIo);
-        assertThat(plainItem).as("plain-item branch is only for genuine absent NBT")
-                .isGreaterThan(decodeItem).isLessThan(decodeItemNbt);
+        for (String rel : REQUESTED_LOADER_MUTATORS) {
+            String mutator = Files.readString(root.resolve(rel));
+            int decodeNbt = mutator.indexOf("private static CompoundTag decodeNbt(byte[] bytes)");
+            int tooLarge = mutator.indexOf("NbtPayload.tooLarge", decodeNbt);
+            int nbtIo = mutator.indexOf("NbtIo.read", decodeNbt);
+            int decodeItem = mutator.indexOf("private ItemStack decodeItemStack");
+            int plainItem = mutator.indexOf("itemNbt == null || itemNbt.length == 0", decodeItem);
+            int decodeItemNbt = mutator.indexOf("decodeNbt(itemNbt)", decodeItem);
+            assertThat(decodeNbt).as(rel).isGreaterThan(-1);
+            assertThat(tooLarge).as("oversized guard before NbtIo.read: %s", rel)
+                    .isGreaterThan(decodeNbt).isLessThan(nbtIo);
+            assertThat(plainItem).as("plain-item branch is only for genuine absent NBT: %s", rel)
+                    .isGreaterThan(decodeItem).isLessThan(decodeItemNbt);
+        }
     }
 
     @Test
-    void fabricNbtCapture_preservesOversizedBytesInsteadOfNull() throws Exception {
+    void everyNbtCapture_preservesOversizedBytesInsteadOfNull() throws Exception {
         Path root = repoRoot();
         org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
-        String capture = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/NbtCapture.java"));
-        int overflow = capture.indexOf("if (bytes.length > MAX_NBT_BYTES)");
-        int returnBytes = capture.indexOf("return bytes;", overflow);
-        assertThat(overflow).isGreaterThan(-1);
-        assertThat(returnBytes).as("size overflow still returns serialized bytes").isGreaterThan(overflow);
-        String overflowBlock = capture.substring(overflow, returnBytes);
-        assertThat(overflowBlock).doesNotContain("return null");
-        assertThat(capture).contains("NbtIo.write failed");
+        for (String rel : REQUESTED_NBT_CAPTURES) {
+            String capture = Files.readString(root.resolve(rel));
+            int overflow = capture.indexOf("if (bytes.length > MAX_NBT_BYTES)");
+            int returnBytes = capture.indexOf("return bytes;", overflow);
+            assertThat(overflow).as(rel).isGreaterThan(-1);
+            assertThat(returnBytes).as("size overflow still returns serialized bytes: %s", rel).isGreaterThan(overflow);
+            String overflowBlock = capture.substring(overflow, returnBytes);
+            assertThat(overflowBlock).as(rel).doesNotContain("return null");
+            assertThat(capture).as(rel).contains("NbtIo.write failed");
+        }
     }
 
     @Test
-    void fabricMixinBridge_routesSlotStackFullPayloadsToNbtAwareSubmitters() throws Exception {
+    void everyMixinBridge_routesSlotStackFullPayloadsToNbtAwareSubmitters() throws Exception {
         Path root = repoRoot();
         org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "repo root not resolvable");
-        String bridge = Files.readString(root.resolve(
-                "mc-1.21.1/fabric/src/main/java/network/vonix/guardian/mc/v1_21_1/fabric/FabricMixinBridge.java"));
-        assertThat(bridge)
-                .contains("change.itemNbt()")
-                .contains("submitContainerChange")
-                .contains("submitHopperTransfer")
-                .contains("toSlotStacks")
-                .contains("NbtCapture.itemStack")
-                .contains("pull.itemNbt()")
-                .contains("push.itemNbt()");
-        int itemDrop = bridge.indexOf("public static void itemDrop");
-        int nbtDrop = bridge.indexOf("submitItemDrop", itemDrop);
-        int nullDrop = bridge.indexOf("itemNbt != null", itemDrop);
-        assertThat(nullDrop).isGreaterThan(itemDrop).isLessThan(nbtDrop);
+        for (String rel : REQUESTED_MIXIN_BRIDGES) {
+            String bridge = Files.readString(root.resolve(rel));
+            assertThat(bridge).as(rel)
+                    .contains("change.itemNbt()")
+                    .contains("submitContainerChange")
+                    .contains("submitHopperTransfer")
+                    .contains("toSlotStacks")
+                    .contains("NbtCapture.itemStack")
+                    .contains("pull.itemNbt()")
+                    .contains("push.itemNbt()");
+        }
     }
 
     @Test

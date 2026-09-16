@@ -836,37 +836,7 @@ public final class NeoForgeEvents {
             if (snap == null || pos == null) return;
             BlockEntity be = sp.level().getBlockEntity(pos);
             if (!(be instanceof Container c)) return;
-            String worldId = WorldKey.of(sp.level());
-            EventSubmitter s = sub();
-            if (s == null) return;
-            int size = Math.min(c.getContainerSize(), MAX_CONTAINER_SLOTS);
-            boolean nbtOn = persistNbt();
-            HolderLookup.Provider registries = nbtOn ? sp.level().registryAccess() : null;
-            for (int slot = 0; slot < size; slot++) {
-                ItemStack before = snap.getOrDefault(slot, ItemStack.EMPTY);
-                ItemStack after = c.getItem(slot);
-                int beforeCount = before.isEmpty() ? 0 : before.getCount();
-                int afterCount = after.isEmpty() ? 0 : after.getCount();
-                String itemId = !before.isEmpty() ? itemId(before) : (!after.isEmpty() ? itemId(after) : null);
-                if (itemId == null) continue;
-                int delta = afterCount - beforeCount;
-                if (delta == 0) continue;
-                byte[] itemNbt = null;
-                if (nbtOn) {
-                    // delta > 0 means deposit — the "after" side carries the NBT
-                    // for what was added; delta < 0 means withdraw — the "before"
-                    // side carries the NBT for what was removed.
-                    ItemStack src = delta > 0 ? after : before;
-                    itemNbt = NbtCapture.itemStack(src, registries);
-                }
-                if (itemNbt != null) {
-                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null, itemNbt);
-                } else {
-                    s.submitContainerChange(sp.getUUID(), sp.getName().getString(), worldId,
-                            pos.getX(), pos.getY(), pos.getZ(), itemId, delta, null);
-                }
-            }
+            NeoForgeMixinBridge.emitContainerClose(sp, c, snap, pos, WorldKey.of(sp.level()));
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onContainerClose failed", t);
         }
