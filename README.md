@@ -14,7 +14,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current candidate:** `2.1.1` · **Published stable:** `2.1.0` · **Common repository line:** `2.0.0` → `2.1.0` → `2.1.1`. The published `3.0.0-m1` prerelease remains historical provenance for its separate two-cell preview and is not reclassified by this release.
+> **Current release:** `2.1.2` (unified across all thirteen loader cells) · **Published stable:** `2.1.0` · **Common repository line:** `2.0.0` → `2.1.0` → `2.1.2`. The published `3.0.0-m1` prerelease remains historical provenance for its separate two-cell preview and is not reclassified by this release.
 >
 > **Public wiki:** https://modwiki.vonix.network/mods/vonixguardian/
 
@@ -69,20 +69,15 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 | MC Version | Fabric | Forge | NeoForge |
 |-----------:|:------:|:-----:|:--------:|
-| 26.2       |   —    |   —   |    ✅    |
-| 26.3       |   —    |   —   |  ✅ beta |
-| 26.2       |   ✅   |   —   |    —     |
-| 26.3       |   ✅   |   —   |    —     |
+| 26.3       |   ✅   |   —   |  ✅ beta |
+| 26.2       |   ✅   |   —   |    ✅    |
 | 26.1.2     |   —    |   —   |    ✅    |
 | 1.21.1     |   ✅   |   —   |    ✅    |
 | 1.20.1     |   ✅   |   ✅  |    —     |
 | 1.19.2     |   ✅   |   ✅  |    —     |
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
-Ten loader cells in this tree (stable `2.1.0` published nine). NeoForge did not exist before 1.20.4; the 1.21.1, 26.1.2, and 26.2 jars replace Forge on those versions per the loader split.
-Nine stable loader cells plus a tenth **beta** NeoForge 26.3 cell (pinned to `26.3.0.6-beta`; not part of the stable GitHub nine-JAR release until NeoForge cuts stable 26.3). NeoForge did not exist before 1.20.4; the 1.21.1, 26.1, and 26.3 jars replace Forge on those versions per the loader split.
-Ten loader cells in this tree (nine historical plus Fabric 26.2). NeoForge did not exist before 1.20.4; the 1.21.1 and 26.1 jars replace Forge on those versions per the loader split. The 26.2 NeoForge cell is owned by a sibling worktree and is not in this branch.
-Ten loader cells. NeoForge did not exist before 1.20.4; the 1.21.1 and 26.1 jars replace Forge on those versions per the loader split. Fabric 26.3 is a new lane (no Fabric 26.1.2 cell).
+Thirteen loader cells in this tree: Fabric/Forge on 1.18.2, 1.19.2, 1.20.1; Fabric/NeoForge on 1.21.1; NeoForge on 26.1.2; and Fabric/NeoForge on both 26.2 and 26.3. NeoForge did not exist before 1.20.4, so the 1.21.1 and 26.x jars replace Forge on those versions per the loader split. The 26.3 NeoForge cell is pinned to `26.3.0.6-beta` (no stable 26.3 exists yet) and ships on the pre-release / beta channel until NeoForge cuts a stable 26.3.
 
 ## Architecture
 

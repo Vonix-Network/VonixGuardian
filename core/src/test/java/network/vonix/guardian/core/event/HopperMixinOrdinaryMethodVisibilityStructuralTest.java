@@ -29,7 +29,11 @@ class HopperMixinOrdinaryMethodVisibilityStructuralTest {
             "mc-1.19.2/forge/src/main/java/network/vonix/guardian/mc/v1_19_2/forge/mixin/HopperBlockEntityMixin.java",
             "mc-1.20.1/forge/src/main/java/network/vonix/guardian/mc/v1_20_1/forge/mixin/HopperBlockEntityMixin.java",
             "mc-1.21.1/neoforge/src/main/java/network/vonix/guardian/mc/v1_21_1/neoforge/mixin/HopperBlockEntityMixin.java",
-            "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/mixin/HopperBlockEntityMixin.java"
+            "mc-26.1.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_1/neoforge/mixin/HopperBlockEntityMixin.java",
+            "mc-26.2/fabric/src/main/java/network/vonix/guardian/mc/v26_2/fabric/mixin/HopperBlockEntityMixin.java",
+            "mc-26.2/neoforge/src/main/java/network/vonix/guardian/mc/v26_2/neoforge/mixin/HopperBlockEntityMixin.java",
+            "mc-26.3/fabric/src/main/java/network/vonix/guardian/mc/v26_3/fabric/mixin/HopperBlockEntityMixin.java",
+            "mc-26.3/neoforge/src/main/java/network/vonix/guardian/mc/v26_3/neoforge/mixin/HopperBlockEntityMixin.java"
     );
 
     private static final Set<String> MIXIN_HANDLER_ANNOTATIONS = Set.of(
@@ -62,7 +66,7 @@ class HopperMixinOrdinaryMethodVisibilityStructuralTest {
     void hopperMixinsMustNotExportOrdinaryHelpers() throws Exception {
         Path root = repoRoot();
         assumeTrue(root != null, "repo root not resolvable");
-        assertThat(CELLS).hasSize(9);
+        assertThat(CELLS).hasSize(13);
         for (String cell : CELLS) {
             Path path = root.resolve(cell);
             assumeTrue(Files.exists(path), "cell missing: " + cell);

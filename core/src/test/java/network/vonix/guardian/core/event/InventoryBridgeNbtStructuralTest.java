@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 class InventoryBridgeNbtStructuralTest {
     @Test
-    void allNineBridgesCompareNormalizedNbtAndPersistFullNbt() throws IOException {
+    void allThirteenBridgesCompareNormalizedNbtAndPersistFullNbt() throws IOException {
         Path source = Path.of(".");
         if (!Files.isDirectory(source.resolve("mc-1.18.2"))) source = source.resolve("..");
 
@@ -24,7 +24,7 @@ class InventoryBridgeNbtStructuralTest {
                     .sorted()
                     .collect(Collectors.toList());
         }
-        assertThat(bridges).hasSize(9);
+        assertThat(bridges).hasSize(13);
 
         for (Path bridge : bridges) {
             String text = Files.readString(bridge);
@@ -47,7 +47,7 @@ class InventoryBridgeNbtStructuralTest {
     }
 
     @Test
-    void allNinePlayerMixinsPassKnownOrUnknownSlotExplicitly() throws IOException {
+    void allThirteenPlayerMixinsPassKnownOrUnknownSlotExplicitly() throws IOException {
         Path source = Path.of(".");
         if (!Files.isDirectory(source.resolve("mc-1.18.2"))) source = source.resolve("..");
         try (var stream = Files.walk(source)) {
@@ -55,7 +55,7 @@ class InventoryBridgeNbtStructuralTest {
                     .filter(p -> p.getFileName().toString().equals("PlayerInventoryMixin.java"))
                     .filter(p -> p.toString().contains("/src/main/"))
                     .sorted().collect(Collectors.toList());
-            assertThat(mixins).hasSize(9);
+            assertThat(mixins).hasSize(13);
             for (Path mixin : mixins) {
                 String text = Files.readString(mixin);
                 assertThat(text).as(mixin.toString()).contains("newStack.copy(), i");
