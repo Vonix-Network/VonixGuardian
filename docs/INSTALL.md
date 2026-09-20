@@ -15,6 +15,8 @@ This guide covers a clean install of v2.1.0 on a dedicated server.
   - Minecraft **26.3** (beta NeoForge cell) → **Java 25**
   - Minecraft **26.1.2** → **Java 25**
 - For source builds only, the Minecraft 26.1.2 and 26.3 NeoForge lanes use **Gradle 9.2.0**; operators installing published jars do not need Gradle.
+  - Minecraft **26.3 / 26.1.2** → **Java 25**
+- For source builds only, the Minecraft 26.1.2 NeoForge lane uses **Gradle 9.2.0** and the Minecraft 26.3 Fabric lane uses **Gradle 9.6.0+**; operators installing published jars do not need Gradle.
 - Write access to the server directory (the mod creates `config/`, `logs/`, and a SQLite DB file).
 - A few hundred MB of free disk for the audit database (grows with activity).
 
@@ -24,6 +26,7 @@ Supported loader + MC matrix (this tree adds NeoForge 26.2; published v2.1.0 is 
 |-----------|--------|-------|----------|
 | 26.2      | —      | —     | ✅       |
 | 26.3      | —      | —     | ✅ beta  |
+| 26.3      | ✅     | —     | —        |
 | 26.1.2    | —      | —     | ✅       |
 | 1.21.1    | ✅     | —     | ✅       |
 | 1.20.1    | ✅     | ✅    | —        |

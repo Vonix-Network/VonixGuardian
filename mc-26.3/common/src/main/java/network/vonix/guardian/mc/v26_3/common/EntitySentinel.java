@@ -19,7 +19,7 @@ import java.lang.reflect.Method;
  * {@code "#mob:<namespace>:<path>"} sentinel string used as a non-player
  * actor name in audit rows.
  *
- * <p>NeoForge 26.3 ships Mojang official names at runtime, so
+ * <p>Minecraft 26.3 ships Mojang official names at runtime, so
  * {@code Entity#getType} should always resolve. We still go through a
  * {@link MethodHandle} resolved at class-init time as a defence against
  * pathological mixin/coremod chains observed on heavy modpacks that
@@ -58,7 +58,7 @@ public final class EntitySentinel {
     private static MethodHandle resolveGetType() {
         MethodHandles.Lookup lookup = MethodHandles.publicLookup();
         MethodType mt = MethodType.methodType(EntityType.class);
-        // NeoForge 26.3: only "getType" exists. We still try a list for
+        // Minecraft 26.3: only "getType" exists. We still try a list for
         // forward-compat / parity with the Forge 1.20.1 sentinel.
         for (String name : new String[]{"getType"}) {
             try {

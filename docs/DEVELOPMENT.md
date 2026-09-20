@@ -16,10 +16,10 @@ means the toolchain has to straddle three Java generations.
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| JDK 25 | required | needed by `mc-26.1.2` and the beta `mc-26.3` NeoForge cells |
+| JDK 25 | required | needed by `mc-26.1.2`, `mc-26.2`, and the beta `mc-26.3` NeoForge cells, plus the Fabric 26.2/26.3 cells |
 | JDK 21 | required | needed by `mc-1.21.1` (NeoForge + Fabric on MC 1.21.1 compile against Java 21) |
 | JDK 17 | required | needed by `mc-1.18.2`, `mc-1.19.2`, `mc-1.20.1` (Forge & Fabric) and by `core/` |
-| Gradle | 8.10.2 wrapper; 9.2.0+ for 26.x | use `./gradlew` for 1.18–1.21 cells. 26.1.2 / 26.3 NeoForge need Gradle 9.2.0+ (do not globally bump the wrapper; see P1-G-003). |
+| Gradle | 8.10.2 wrapper; 9.2.0+ for 26.x NeoForge; 9.6.0+ for Fabric 26.x | use `./gradlew` for 1.18–1.21 cells. 26.x NeoForge needs Gradle 9.2.0+; Fabric 26.x needs Gradle 9.6.0+ (`-PbuildProfile=mc262fabric` / `mc263fabric`). Do not globally bump the wrapper (see P1-G-003). |
 | Git | any modern | tags drive the release workflow |
 | IntelliJ IDEA Community | recommended | the project is laid out for IntelliJ's Gradle import. VS Code with the Gradle/Java extensions works, but ForgeGradle/NeoGradle run configurations are auto-generated for IntelliJ |
 
@@ -66,9 +66,14 @@ VonixGuardian/
 ├── mc-26.1.2/
 │   ├── common/
 │   └── neoforge/                  # Java 25 / Gradle 9.2.0
+├── mc-26.2/
+│   ├── common/
+│   ├── neoforge/                  # Java 25 / Gradle 9.2.0+; NeoForge 26.2.0.88
+│   └── fabric/                    # Fabric Loom 1.17 (MC 26.2, Java 25)
 ├── mc-26.3/
 │   ├── common/
-│   └── neoforge/                  # Java 25 / Gradle 9.2.0; NeoForge 26.3.0.6-beta
+│   ├── neoforge/                  # Java 25 / Gradle 9.2.0+; NeoForge 26.3.0.6-beta (beta cell)
+│   └── fabric/                    # Fabric Loom 1.17 (MC 26.3, Java 25)
 ├── buildSrc/                      # convention plugins shared by every module
 ├── gradle/
 │   └── libs.versions.toml         # single version catalog (loader versions, Mojang mappings, deps)

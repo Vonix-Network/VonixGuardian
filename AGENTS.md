@@ -32,6 +32,7 @@ This repository contains all supported Minecraft/loader lanes in one repository.
 | 26.1.2 | NeoForge | `mc-26.1.2/` |
 | 26.2 | NeoForge | `mc-26.2/` |
 | 26.2 | Fabric | `mc-26.2/` |
+| 26.3 | Fabric | `mc-26.3/` |
 
 The repository-level `core/` module owns loader-neutral storage, audit, rollback, schema, API, and query contracts. Version modules consume that core through their settings/dependency wiring. The 26.1.2 and 26.2 NeoForge lanes use Java 25 and the ModDevGradle/Shadow/Jar-in-Jar packaging path described in `LIBRARY-PACKAGING.md`.
 | 26.3 | NeoForge (**beta**) | `mc-26.3/` |
@@ -57,6 +58,7 @@ The authoritative release workflow is `.github/workflows/release.yml`.
 - 26.1.2 and 26.3 NeoForge use Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for those lanes. The 26.3 cell is a beta-channel extra (not part of the stable nine-cell GitHub release matrix).
 - 26.1.2 NeoForge uses Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for that lane.
 - 26.2 Fabric uses Java 25, Fabric Loom 1.17.x, and **Gradle 9.6.0+**. Do not globally bump the 8.10.2 wrapper (it still serves 1.18–1.21 Loom 1.7.4). Invoke Gradle 9.6+ with `-PbuildProfile=mc262fabric`.
+- 26.3 Fabric uses Java 25 with Gradle 9.6.0+ and Fabric Loom 1.17.x (`-PbuildProfile=mc263fabric`). Do not configure it in the same Gradle invocation as fabric-loom 1.7.x cells.
 - CI provisions Gradle explicitly with `gradle/actions/setup-gradle`; do not assume wrapper binaries are committed.
 - Each matrix job selects one release JAR and uploads it. The release job requires exactly nine JARs and writes `SHA256SUMS`.
 - CI does not deploy, activate, restart, or migrate a live server/database.
@@ -70,6 +72,7 @@ gradle -PbuildProfile=mc2612 :mc-26.1.2:neoforge:build --no-daemon
 gradle -PbuildProfile=mc262 :mc-26.2:neoforge:build --no-daemon
 gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build --no-daemon
 gradle -PbuildProfile=mc262fabric :mc-26.2:fabric:build --no-daemon
+gradle -PbuildProfile=mc263fabric :mc-26.3:fabric:build --no-daemon
 ```
 
 Do not infer release readiness from a core-only build. The full nine-cell CI matrix is the publication gate.
