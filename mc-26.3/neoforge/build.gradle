@@ -5,9 +5,10 @@
  * Bundles `core` + shared common code + sqlite-jdbc (the default DB driver)
  * via Shadow into a single drop-in jar.
  *
- * NeoForge has no stable 26.3 release; this cell pins 26.3.0.6-beta and
- * marks the artifact as a pre-release (`${mod_version}-beta`). Re-pin
- * neoForge.version (and the mods.toml neoforge range) when stable 26.3 lands.
+ * NeoForge has no stable 26.3 release; this cell pins 26.3.0.6-beta and is
+ * published on the pre-release / beta channel. The artifact version is the
+ * unified root `mod_version` (no per-cell suffix). Re-pin neoForge.version
+ * (and the mods.toml neoforge range) when stable 26.3 lands.
  *
  * MySQL/Postgres drivers are NOT shaded — operators using those backends drop
  * the driver jar alongside ours.
@@ -21,10 +22,11 @@ plugins {
 
 base { archivesName = 'vonixguardian-neoforge-26.3' }
 
-// Cell-local pre-release marker. Root gradle.properties `mod_version` stays
-// unsuffixed per the repo version contract; only this beta loader cell
-// embeds `-beta` in artifact / mods.toml version.
-version = "${rootProject.version}-beta"
+// All cells embed the unified root `mod_version` (see AGENTS.md version
+// contract: no per-cell suffixes). The 26.3 NeoForge loader pin is a beta
+// release, so this cell is published on the GitHub pre-release / CurseForge
+// beta channel; that is a *publication-channel* distinction, not a version
+// suffix. Re-pin neoForge.version when stable 26.3 lands.
 
 java {
     toolchain { languageVersion = JavaLanguageVersion.of(25) }

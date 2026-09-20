@@ -68,7 +68,11 @@ final class NeoForgePackagingStructuralTest {
             .contains("vg-neoforge.refmap.json")
             .contains("version = '26.3.0.6-beta'")
             .contains("net.neoforged.moddev' version '2.0.147")
-            .contains("${rootProject.version}-beta");
+            // Version contract: every cell embeds the unified root mod_version
+            // with no per-cell suffix. Beta-ness is a publication channel
+            // (GitHub pre-release / CurseForge beta), not a version string.
+            .doesNotContain("${rootProject.version}-beta")
+            .doesNotContain("rootProject.version}-beta");
         assertThat(bootstrap).contains("org.sqlite.JDBC")
             .contains("com.mysql.cj.jdbc.Driver")
             .contains("org.postgresql.Driver")
