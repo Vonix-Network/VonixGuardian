@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - NeoForge 26.2 cell (`mc-26.2/common` + `mc-26.2/neoforge`) targeting Minecraft 26.2 / NeoForge 26.2.0.88. 1:1 port of the 26.1.2 lane (same 40 action types, command surface, DB schema, and config keys). Java 25, ModDevGradle 2.0.147, Mixin `JAVA_25`, Shadow 8.3.9. Loader ranges: NeoForge `[26.2.0.88,26.3)`, Minecraft `[26.2,26.3)`. Build profile `mc262`.
+- Beta NeoForge 26.3 ("Wilderness Bound") cell `mc-26.3/` (common + neoforge), 1:1 port of the 26.1.2 lane. Pins NeoForge `26.3.0.6-beta` / ModDevGradle `2.0.147` / Java 25 / Mixin `JAVA_25`. Artifact and `neoforge.mods.toml` version are cell-local `${mod_version}-beta` (`2.1.2-beta`); root `mod_version` is unchanged. Re-pin when NeoForge cuts stable 26.3. Build with `gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build` (Gradle 9.2.0+). Not part of the stable nine-cell GitHub release matrix.
 
 ## [2.1.1] - 2026-09-08
 

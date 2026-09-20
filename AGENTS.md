@@ -33,6 +33,8 @@ This repository contains all supported Minecraft/loader lanes in one repository.
 | 26.2 | NeoForge | `mc-26.2/` |
 
 The repository-level `core/` module owns loader-neutral storage, audit, rollback, schema, API, and query contracts. Version modules consume that core through their settings/dependency wiring. The 26.1.2 and 26.2 NeoForge lanes use Java 25 and the ModDevGradle/Shadow/Jar-in-Jar packaging path described in `LIBRARY-PACKAGING.md`.
+| 26.3 | NeoForge (**beta**) | `mc-26.3/` |
+The repository-level `core/` module owns loader-neutral storage, audit, rollback, schema, API, and query contracts. Version modules consume that core through their settings/dependency wiring. The 26.1.2 and 26.3 NeoForge lanes use Java 25 and the ModDevGradle/Shadow/Jar-in-Jar packaging path described in `LIBRARY-PACKAGING.md`. The 26.3 cell pins NeoForge `26.3.0.6-beta` (no stable 26.3 exists) and embeds a cell-local `-beta` artifact version; re-pin when NeoForge cuts stable 26.3.
 
 ## Version contract
 
@@ -51,6 +53,7 @@ The authoritative release workflow is `.github/workflows/release.yml`.
 - 1.18.2–1.20.1 lanes use Java 17 with Gradle 8.10.2.
 - 1.21.1 lanes use Java 21 with Gradle 8.10.2.
 - 26.1.2 and 26.2 NeoForge use Java 25 with Gradle 9.2.0+. Gradle 8.x cannot load Java 25 bytecode and must not be used for those lanes.
+- 26.1.2 and 26.3 NeoForge use Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for those lanes. The 26.3 cell is a beta-channel extra (not part of the stable nine-cell GitHub release matrix).
 - CI provisions Gradle explicitly with `gradle/actions/setup-gradle`; do not assume wrapper binaries are committed.
 - Each matrix job selects one release JAR and uploads it. The release job requires exactly nine JARs and writes `SHA256SUMS`.
 - CI does not deploy, activate, restart, or migrate a live server/database.
@@ -62,6 +65,7 @@ gradle -PbuildProfile=coreonly :core:build --no-daemon
 gradle -PbuildProfile=mc1211 :mc-1.21.1:neoforge:build --no-daemon
 gradle -PbuildProfile=mc2612 :mc-26.1.2:neoforge:build --no-daemon
 gradle -PbuildProfile=mc262 :mc-26.2:neoforge:build --no-daemon
+gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build --no-daemon
 ```
 
 Do not infer release readiness from a core-only build. The full nine-cell CI matrix is the publication gate.
@@ -79,6 +83,7 @@ Do not infer release readiness from a core-only build. The full nine-cell CI mat
 - Preserve the loader-specific metadata and exact `2.1.0` expansion for every stable artifact; keep the historical `3.0.0-m1` preview metadata immutable.
 - Keep Fabric nested core JAR names synchronized with the core artifact version.
 - Keep NeoForge 26.1.2 / 26.2 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
+- Keep NeoForge 26.1.2 / 26.3 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
 - Exclude module descriptors and signature files only where the existing packaging contract requires it.
 - The release selection must exclude sources/dev/slim/shadow artifacts.
 - Every selected JAR must be archive-valid and contain the expected mod metadata, mod ID, version, loader identity, and required nested dependencies.
@@ -105,6 +110,8 @@ README/docs/changelog must accurately state:
 - common-generation origin at `2.0.0` without implying linkage to VSU or Viscord releases;
 - database/schema and rollback safety boundaries;
 - Java/Gradle requirements, including Gradle 9.2.0+ for MC 26.1.2 and 26.2;
+- the six supported version directories, nine stable loader cells, and the extra 26.3 NeoForge beta cell;
+- Java/Gradle requirements, including Gradle 9.2.0 for MC 26.1.2 and MC 26.3;
 - CI release behavior and the fact that no live deployment or migration occurs.
 
 Historical release text must remain historical and must not be rewritten as the current `2.0.0` feature set.
@@ -144,6 +151,7 @@ Stop and report on:
 - inconsistent version metadata or nested core JAR names;
 - missing/failed matrix lane or artifact-count mismatch;
 - Gradle/JDK mismatch for MC 26.1.2 / 26.2;
+- Gradle/JDK mismatch for MC 26.1.2 or MC 26.3;
 - schema/rollback/pair-ID test failure;
 - protected data or credential exposure;
 - request to deploy, restart, migrate, purge, or mutate a live server/database;
@@ -152,7 +160,7 @@ Stop and report on:
 ## Completion checklist
 
 - [ ] Root AGENTS, README, docs, and changelog agree on stable `2.1.0`; historical `3.0.0-m1` text is explicitly marked historical.
-- [ ] All five version directories remain in this repository.
+- [ ] All six version directories remain in this repository (26.3 is a beta extra cell).
 - [ ] All nine selected stable artifacts embed `2.1.0`; the separate `3.0.0-m1` preview remains historical provenance.
 - [ ] Manual CI dispatch cannot publish a release.
 - [ ] CI build-only matrix passes 9/9.

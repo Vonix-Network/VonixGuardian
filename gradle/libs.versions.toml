@@ -5,6 +5,11 @@ java-1_19 = "17"
 java-1_20 = "17"
 java-1_21 = "21"
 java-26_2 = "25"
+java-26_3 = "25"
+
+# Loader / API: MC 26.3 (NeoForge beta — re-pin when stable 26.3 lands)
+neoforge-26_3 = "26.3.0.6-beta"
+moddevgradle-26_3 = "2.0.147"
 
 # Gradle plugins
 shadow = "8.1.1"

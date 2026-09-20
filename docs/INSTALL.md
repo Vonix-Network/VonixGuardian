@@ -12,6 +12,9 @@ This guide covers a clean install of v2.1.0 on a dedicated server.
   - Minecraft **1.21.1** → **Java 21**
   - Minecraft **1.20.1 / 1.19.2 / 1.18.2** → **Java 17**
 - For source builds only, the Minecraft 26.1.2 and 26.2 NeoForge lanes use **Gradle 9.2.0+**; operators installing published jars do not need Gradle.
+  - Minecraft **26.3** (beta NeoForge cell) → **Java 25**
+  - Minecraft **26.1.2** → **Java 25**
+- For source builds only, the Minecraft 26.1.2 and 26.3 NeoForge lanes use **Gradle 9.2.0**; operators installing published jars do not need Gradle.
 - Write access to the server directory (the mod creates `config/`, `logs/`, and a SQLite DB file).
 - A few hundred MB of free disk for the audit database (grows with activity).
 
@@ -20,6 +23,7 @@ Supported loader + MC matrix (this tree adds NeoForge 26.2; published v2.1.0 is 
 | Minecraft | Fabric | Forge | NeoForge |
 |-----------|--------|-------|----------|
 | 26.2      | —      | —     | ✅       |
+| 26.3      | —      | —     | ✅ beta  |
 | 26.1.2    | —      | —     | ✅       |
 | 1.21.1    | ✅     | —     | ✅       |
 | 1.20.1    | ✅     | ✅    | —        |
@@ -36,6 +40,7 @@ Pick the **one** jar that matches your server's loader and Minecraft version:
 
 | File | Loader | MC |
 |------|--------|----|
+| `vonixguardian-neoforge-26.3-2.1.2-beta.jar` | NeoForge (beta) | 26.3 |
 | `vonixguardian-neoforge-26.1.2-2.1.0.jar` | NeoForge | 26.1.2 |
 | `vonixguardian-fabric-1.21.1-2.1.0.jar`   | Fabric   | 1.21.1 |
 | `vonixguardian-neoforge-1.21.1-2.1.0.jar` | NeoForge | 1.21.1 |

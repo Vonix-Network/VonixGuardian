@@ -1,0 +1,50 @@
+/*
+ * Copyright (c) 2026 Vonix Network
+ * Licensed under the MIT License.
+ */
+package network.vonix.guardian.mc.v26_3.neoforge.mixin;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ScheduledTickAccess;
+import net.minecraft.world.level.block.ConcretePowderBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import network.vonix.guardian.mc.v26_3.neoforge.NeoForgeMixinBridge;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+/** Captures concrete-powder solidification as FORM on NeoForge 26.3. */
+@Mixin(ConcretePowderBlock.class)
+public abstract class ConcretePowderBlockMixin {
+
+    @Redirect(method = "onLand", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;setBlockAndUpdate(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Z"))
+    private boolean vg$onLandSet(Level level, BlockPos pos, BlockState newState) {
+        BlockState oldState = level.getBlockState(pos);
+        boolean changed = level.setBlockAndUpdate(pos, newState);
+        if (changed && newState != null && oldState != null && !oldState.is(newState.getBlock())) {
+            NeoForgeMixinBridge.blockForm(level, pos, newState, "world:form:concrete_powder");
+        }
+        return changed;
+    }
+
+    // 26.3 updateShape gained LevelReader/ScheduledTickAccess/RandomSource.
+    @Inject(method = "updateShape", at = @At("RETURN"))
+    private void vg$updateShapeForm(BlockState state, LevelReader level, ScheduledTickAccess ticks, BlockPos pos,
+                                    Direction direction, BlockPos neighborPos, BlockState neighborState,
+                                    RandomSource random, CallbackInfoReturnable<BlockState> cir) {
+        try {
+            BlockState result = cir.getReturnValue();
+            if (result == null || state == null || result.is(state.getBlock())) return;
+            if (level instanceof Level realLevel) {
+                NeoForgeMixinBridge.blockForm(realLevel, pos, result, "world:form:concrete_powder_neighbor");
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+}

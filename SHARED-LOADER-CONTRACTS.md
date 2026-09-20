@@ -51,12 +51,15 @@ mc-<ver>/
 `mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. `mc-26.2/common` is consumed the same way by 26.2 NeoForge only. Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
 
 Do not invent Fabric 26.x or Forge 1.21.1 cells.
+`mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. `mc-26.3/common` is consumed the same way by 26.3 NeoForge only (beta loader pin). Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
+Do not invent Fabric 26.1.2 / Fabric 26.3 or Forge 1.21.1 cells.
 
 ### Loader-specific ActionType coverage (requested cells)
 
 Capture **mechanisms** differ by loader and must not be copied blindly:
 
 | Surface | 1.21.1 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge | 26.2 NeoForge |
+| Surface | 1.21.1 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge | 26.3 NeoForge (beta) |
 |---|---|---|---|---|
 | Explosions, pistons, signs, item toss/pickup, craft, container slot, block-place-by-entity, living-destroy | Mixins (`ExplosionMixin`, `PistonMixin`, `SignChangeMixin`, `ItemTossMixin`, `ItemPickupMixin`, `CraftItemMixin`, `ContainerMixin`, `BlockPlaceMixin`, `LivingDestroyBlockMixin`) plus `FabricMixinBridge` | Event-bus adapters in `NeoForgeEvents` (`ExplosionEvent`, `PistonEvent`, item/container/chat/command handlers) | Same NeoForge event-bus adapters | Same as 26.1.2 NeoForge |
 | Environment griefing (fire, ice, leaves, liquid, lightning, ravager, silverfish, snow golem, TNT, hopper, fill/setblock, portal, falling block, dragon) | Mixins registered in `vg.mixins.json` | Mixins registered in `vg-neoforge.mixins.json` (includes `RavagerMixin`) | Same NeoForge mixin set | Same as 26.1.2 NeoForge |
@@ -68,6 +71,7 @@ Sign edits (`ActionType.SIGN`) are produced on Fabric 1.21.1 via `SignChangeMixi
 `ActionType.USERNAME_CHANGE`, `STRUCTURE_GROW`, and `CHUNK_POPULATE` are lookup/rollback API types with no producer on the requested cells. Do not delete NeoForge event adapters or Fabric mixins to force identical files. Register or delete a mixin only when that cell's source and mixin JSON both prove it is stale.
 
 P1-G-003 (Gradle 8.10.2 root wrapper vs 26.1.2/26.2 ModDevGradle/Java 25) is disposition-only: do not globally bump the root wrapper. Invoke Gradle 9.2.0+ for the 26.x NeoForge lanes.
+P1-G-003 (Gradle 8.10.2 root wrapper vs 26.1.2 / 26.3 ModDevGradle/Java 25) is disposition-only: do not globally bump the root wrapper. Build the 26.3 cell with Gradle 9.2.0+ (`-PbuildProfile=mc263`).
 
 ---
 
@@ -395,6 +399,13 @@ public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock e) {
 - Mod entry, lifecycle, command registration, and event-bus capture match 26.1.2 NeoForge (`VonixGuardianNeoForge`, `NeoForgeBootstrap`, `NeoForgeEvents`, `NeoForgePreLogBridge`).
 - Package suffix is `mc.v26_2`. Mixin config remains `vg-neoforge.mixins.json` with `compatibilityLevel: JAVA_25`.
 - Java 25 toolchain, ModDevGradle 2.0.147, Shadow 8.3.9. Build with Gradle 9.2.0+ via profile `mc262`. Do not globally bump `gradle/wrapper`.
+### 26.3 NeoForge (beta)
+- Native NeoForge cell; there is no Fabric 26.3 counterpart.
+- 1:1 port of 26.1.2 NeoForge under package `network.vonix.guardian.mc.v26_3`.
+- Pin: NeoForge `26.3.0.6-beta`, ModDevGradle `2.0.147`, Java 25, Mixin `JAVA_25`. **Re-pin when NeoForge cuts stable 26.3.**
+- Artifact / `neoforge.mods.toml` version is cell-local `${mod_version}-beta` (root `mod_version` stays unsuffixed).
+- Same event-bus + 23-mixin surface as 26.1.2, including `SignChangeMixin`.
+- Java 25. Gradle 9.2.0+ (`-PbuildProfile=mc263`). P1-G-003 still applies — do not globally bump `gradle/wrapper`.
 
 ### 1.20.1 Forge
 - Mod entry: `@Mod("vonixguardian")`.

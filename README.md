@@ -8,6 +8,7 @@
 **A blazing-fast server-side block/inventory/entity audit & rollback tool for modded Minecraft.**
 
 Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 and 26.2 NeoForge lanes. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
+Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane and a **beta** NeoForge 26.3 ("Wilderness Bound") cell. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
@@ -67,6 +68,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 | MC Version | Fabric | Forge | NeoForge |
 |-----------:|:------:|:-----:|:--------:|
 | 26.2       |   —    |   —   |    ✅    |
+| 26.3       |   —    |   —   |  ✅ beta |
 | 26.1.2     |   —    |   —   |    ✅    |
 | 1.21.1     |   ✅   |   —   |    ✅    |
 | 1.20.1     |   ✅   |   ✅  |    —     |
@@ -74,6 +76,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
 Ten loader cells in this tree (stable `2.1.0` published nine). NeoForge did not exist before 1.20.4; the 1.21.1, 26.1.2, and 26.2 jars replace Forge on those versions per the loader split.
+Nine stable loader cells plus a tenth **beta** NeoForge 26.3 cell (pinned to `26.3.0.6-beta`; not part of the stable GitHub nine-JAR release until NeoForge cuts stable 26.3). NeoForge did not exist before 1.20.4; the 1.21.1, 26.1, and 26.3 jars replace Forge on those versions per the loader split.
 
 ## Architecture
 
@@ -105,6 +108,8 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ./gradlew -PbuildProfile=mc2612  :mc-26.1.2:neoforge:build
 ./gradlew -PbuildProfile=mc262   :mc-26.2:neoforge:build
+# 26.3 NeoForge is a beta pin; requires Gradle 9.2.0+ (root wrapper stays 8.10.2)
+gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build
 ```
 
 Produces the selected profile's jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
