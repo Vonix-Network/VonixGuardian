@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+
+- Beta NeoForge 26.3 ("Wilderness Bound") cell `mc-26.3/` (common + neoforge), 1:1 port of the 26.1.2 lane. Pins NeoForge `26.3.0.6-beta` / ModDevGradle `2.0.147` / Java 25 / Mixin `JAVA_25`. Artifact and `neoforge.mods.toml` version are cell-local `${mod_version}-beta` (`2.1.2-beta`); root `mod_version` is unchanged. Re-pin when NeoForge cuts stable 26.3. Build with `gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build` (Gradle 9.2.0+). Not part of the stable nine-cell GitHub release matrix.
 
 ## [2.1.1] - 2026-09-08
 

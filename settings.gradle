@@ -15,7 +15,7 @@ rootProject.name = 'VonixGuardian'
 
 // Build profile: 'coreonly' builds only :core (fast iteration on the engine);
 // 'mc1211' adds 1.21.1 NeoForge + Fabric; 'mc2612' adds 26.1.2 NeoForge;
-// 'all' adds every MC version + loader
+// 'mc263' adds 26.3 NeoForge (beta loader pin); 'all' adds every MC version + loader
 // (default when unset, except metadata-only root tasks like printVersion).
 // 'forgeonly' = every Forge + NeoForge module, skipping Fabric (avoids the
 // fabric-loom classloader conflict during cross-version builds).
@@ -35,8 +35,9 @@ if (profile == 'core') profile = 'coreonly'
 include 'core'
 
 // Include mc-<version>/common when that module exists on disk.
-// Requested cells: mc-1.21.1/common (Fabric + NeoForge) and mc-26.1.2/common
-// (NeoForge only). Do not invent Fabric 26.1.2 or Forge 1.21.1 cells.
+// Requested cells: mc-1.21.1/common (Fabric + NeoForge), mc-26.1.2/common
+// (NeoForge only), and mc-26.3/common (NeoForge only, beta loader).
+// Do not invent Fabric 26.1.2 / Fabric 26.3 or Forge 1.21.1 cells.
 def includedVersionCommons = [] as Set
 def includeVersionCommonIfPresent = { String version ->
     if (!includedVersionCommons.add(version)) {
@@ -56,6 +57,10 @@ if (profile == 'mc1211' || profile == 'all' || profile == 'forgeonly') {
 if (profile == 'mc2612' || profile == 'all' || profile == 'forgeonly') {
     include ':mc-26.1.2:neoforge'
     includeVersionCommonIfPresent('26.1.2')
+}
+if (profile == 'mc263' || profile == 'all' || profile == 'forgeonly') {
+    include ':mc-26.3:neoforge'
+    includeVersionCommonIfPresent('26.3')
 }
 
 if (profile == 'mc1211' || profile == 'all') {

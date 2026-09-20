@@ -1,0 +1,33 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "${mod_license}"
+issueTrackerURL = "${mod_issue_tracker}"
+
+[[mixins]]
+config = "vg-neoforge.mixins.json"
+
+# BETA cell: NeoForge 26.3 has no stable release. Artifact / [[mods]].version
+# is the cell-local project version (root mod_version plus a -beta suffix).
+# Re-pin the neoforge versionRange when NeoForge cuts stable 26.3.
+[[mods]]
+modId = "${mod_id}"
+version = "${mod_version}"
+displayName = "${mod_name}"
+description = '''${mod_description}'''
+authors = "${mod_authors}"
+logoFile = ""
+displayURL = "${mod_homepage}"
+
+[[dependencies.${mod_id}]]
+modId = "neoforge"
+type = "required"
+versionRange = "[26.3.0.6-beta,26.4)"
+ordering = "NONE"
+side = "SERVER"
+
+[[dependencies.${mod_id}]]
+modId = "minecraft"
+type = "required"
+versionRange = "[26.3,26.4)"
+ordering = "NONE"
+side = "SERVER"

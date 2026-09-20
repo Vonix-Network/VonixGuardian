@@ -11,14 +11,15 @@ instead. This document is for people writing or modifying mod code.
 
 ## 1. Prerequisites
 
-VonixGuardian targets five Minecraft versions across three mod loaders, which
-means the toolchain has to straddle two Java generations.
+VonixGuardian targets six Minecraft versions across three mod loaders, which
+means the toolchain has to straddle three Java generations.
 
 | Tool | Version | Notes |
 |------|---------|-------|
+| JDK 25 | required | needed by `mc-26.1.2` and the beta `mc-26.3` NeoForge cells |
 | JDK 21 | required | needed by `mc-1.21.1` (NeoForge + Fabric on MC 1.21.1 compile against Java 21) |
 | JDK 17 | required | needed by `mc-1.18.2`, `mc-1.19.2`, `mc-1.20.1` (Forge & Fabric) and by `core/` |
-| Gradle | bundled | use `./gradlew` — do **not** install Gradle system-wide; the wrapper pins the correct version |
+| Gradle | 8.10.2 wrapper; 9.2.0+ for 26.x | use `./gradlew` for 1.18–1.21 cells. 26.1.2 / 26.3 NeoForge need Gradle 9.2.0+ (do not globally bump the wrapper; see P1-G-003). |
 | Git | any modern | tags drive the release workflow |
 | IntelliJ IDEA Community | recommended | the project is laid out for IntelliJ's Gradle import. VS Code with the Gradle/Java extensions works, but ForgeGradle/NeoGradle run configurations are auto-generated for IntelliJ |
 
@@ -62,6 +63,12 @@ VonixGuardian/
 │   ├── common/
 │   ├── fabric/
 │   └── neoforge/                  # NeoGradle build (Forge → NeoForge split at 1.21)
+├── mc-26.1.2/
+│   ├── common/
+│   └── neoforge/                  # Java 25 / Gradle 9.2.0
+├── mc-26.3/
+│   ├── common/
+│   └── neoforge/                  # Java 25 / Gradle 9.2.0; NeoForge 26.3.0.6-beta
 ├── buildSrc/                      # convention plugins shared by every module
 ├── gradle/
 │   └── libs.versions.toml         # single version catalog (loader versions, Mojang mappings, deps)

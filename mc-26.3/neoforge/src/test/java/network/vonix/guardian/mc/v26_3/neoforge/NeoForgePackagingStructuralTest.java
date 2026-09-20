@@ -1,0 +1,77 @@
+package network.vonix.guardian.mc.v26_3.neoforge;
+
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Source-bound guardrails for the 26.3 NeoForge release cell.
+ *
+ * <p>Archive-level and runtime checks remain parent-owned release gates; this
+ * test prevents the target's source/resource contract from silently drifting
+ * while those gates are run in CI or from another checkout.</p>
+ */
+final class NeoForgePackagingStructuralTest {
+
+    private static final Pattern MIXIN = Pattern.compile("\\\"([A-Za-z0-9]+Mixin)\\\"");
+
+    private static Path moduleRoot() {
+        Path working = Path.of(System.getProperty("user.dir"));
+        return Files.isDirectory(working.resolve("src/main"))
+            ? working
+            : working.resolve("mc-26.3/neoforge");
+    }
+
+    @Test
+    void target_metadata_and_mixin_classes_are_closed() throws Exception {
+        Path root = moduleRoot();
+        String toml = Files.readString(root.resolve("src/main/resources/META-INF/neoforge.mods.toml"));
+        String mixins = Files.readString(root.resolve("src/main/resources/vg-neoforge.mixins.json"));
+
+        assertThat(toml).contains("versionRange = \"[26.3,26.4)\"")
+            .contains("versionRange = \"[26.3.0.6-beta,26.4)\"")
+            .contains("side = \"SERVER\"");
+        assertThat(mixins).contains("\"required\": true")
+            .contains("\"defaultRequire\": 0")
+            .contains("\"refmap\": \"vg-neoforge.refmap.json\"");
+        assertThat(Files.exists(root.resolve("src/main/resources/vg-neoforge.refmap.json")))
+            .as("declared mixin refmap is present in resources").isTrue();
+        assertThat(Files.readString(root.resolve("src/main/resources/vg-neoforge.refmap.json")))
+            .contains("named:named");
+
+        Matcher matcher = MIXIN.matcher(mixins);
+        int count = 0;
+        while (matcher.find()) {
+            String name = matcher.group(1);
+            assertThat(Files.exists(root.resolve("src/main/java/network/vonix/guardian/mc/v26_3/neoforge/mixin/" + name + ".java")))
+                .as("mixin source %s", name).isTrue();
+            count++;
+        }
+        assertThat(count).isEqualTo(23);
+    }
+
+    @Test
+    void build_and_bootstrap_keep_all_database_drivers_bound() throws Exception {
+        Path root = moduleRoot();
+        String build = Files.readString(root.resolve("build.gradle"));
+        String bootstrap = Files.readString(root.resolve("src/main/java/network/vonix/guardian/mc/v26_3/neoforge/NeoForgeBootstrap.java"));
+
+        assertThat(build).contains("jarJar(libs.sqlite.jdbc)")
+            .contains("jarJar(libs.mysql.connector)")
+            .contains("jarJar(libs.postgresql)")
+            .contains("runtimeOnly libs.sqlite.jdbc")
+            .contains("vg-neoforge.refmap.json")
+            .contains("version = '26.3.0.6-beta'")
+            .contains("net.neoforged.moddev' version '2.0.147")
+            .contains("${rootProject.version}-beta");
+        assertThat(bootstrap).contains("org.sqlite.JDBC")
+            .contains("com.mysql.cj.jdbc.Driver")
+            .contains("org.postgresql.Driver")
+            .contains("ensureDatabaseDriver(config)");
+    }
+}

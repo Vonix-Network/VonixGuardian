@@ -36,6 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - { module: 'mc-26.3:neoforge',     profile: 'mc263',   jdk: '25', gradle: '9.2.0' }
           - { module: 'mc-26.1.2:neoforge',   profile: 'mc2612',  jdk: '25' }
           - { module: 'mc-1.21.1:neoforge', profile: 'mc1211', jdk: '21' }
           - { module: 'mc-1.21.1:fabric',   profile: 'mc1211', jdk: '21' }
@@ -52,6 +53,10 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.jdk }}
+      - uses: gradle/actions/setup-gradle@v4
+        if: matrix.gradle != ''
+        with:
+          gradle-version: ${{ matrix.gradle }}
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -59,7 +64,12 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ matrix.module }}-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle*') }}
-      - run: ./gradlew :${{ matrix.module }}:build -PbuildProfile=${{ matrix.profile }} --no-daemon
+      - name: Build with provisioned Gradle 9.x
+        if: matrix.gradle != ''
+        run: gradle :${{ matrix.module }}:build -PbuildProfile=${{ matrix.profile }} --no-daemon
+      - name: Build with wrapper
+        if: matrix.gradle == '' || matrix.gradle == null
+        run: ./gradlew :${{ matrix.module }}:build -PbuildProfile=${{ matrix.profile }} --no-daemon
       - name: Identify jar
         id: jar
         run: |
