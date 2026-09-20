@@ -16,9 +16,10 @@ means the toolchain has to straddle two Java generations.
 
 | Tool | Version | Notes |
 |------|---------|-------|
+| JDK 25 | required | needed by `mc-26.1.2` NeoForge and `mc-26.3` Fabric |
 | JDK 21 | required | needed by `mc-1.21.1` (NeoForge + Fabric on MC 1.21.1 compile against Java 21) |
 | JDK 17 | required | needed by `mc-1.18.2`, `mc-1.19.2`, `mc-1.20.1` (Forge & Fabric) and by `core/` |
-| Gradle | bundled | use `./gradlew` — do **not** install Gradle system-wide; the wrapper pins the correct version |
+| Gradle | bundled + 9.6.0 | `./gradlew` (8.10.2) for 1.18.2–1.21.1; Gradle **9.6.0+** for Fabric 26.3 (`-PbuildProfile=mc263fabric`) |
 | Git | any modern | tags drive the release workflow |
 | IntelliJ IDEA Community | recommended | the project is laid out for IntelliJ's Gradle import. VS Code with the Gradle/Java extensions works, but ForgeGradle/NeoGradle run configurations are auto-generated for IntelliJ |
 
@@ -62,6 +63,12 @@ VonixGuardian/
 │   ├── common/
 │   ├── fabric/
 │   └── neoforge/                  # NeoGradle build (Forge → NeoForge split at 1.21)
+├── mc-26.1.2/
+│   ├── common/
+│   └── neoforge/
+├── mc-26.3/
+│   ├── common/
+│   └── fabric/                    # Fabric Loom 1.17 (MC 26.3, Java 25)
 ├── buildSrc/                      # convention plugins shared by every module
 ├── gradle/
 │   └── libs.versions.toml         # single version catalog (loader versions, Mojang mappings, deps)

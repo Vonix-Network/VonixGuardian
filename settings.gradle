@@ -15,7 +15,9 @@ rootProject.name = 'VonixGuardian'
 
 // Build profile: 'coreonly' builds only :core (fast iteration on the engine);
 // 'mc1211' adds 1.21.1 NeoForge + Fabric; 'mc2612' adds 26.1.2 NeoForge;
-// 'all' adds every MC version + loader
+// 'mc263fabric' / 'mc263' adds 26.3 Fabric (Loom 1.17, Gradle 9.6.0+);
+// 'all' adds every MC version + loader except 26.3 Fabric (Loom 1.17 cannot
+// share a Gradle invocation with fabric-loom 1.7.x on older cells).
 // (default when unset, except metadata-only root tasks like printVersion).
 // 'forgeonly' = every Forge + NeoForge module, skipping Fabric (avoids the
 // fabric-loom classloader conflict during cross-version builds).
@@ -61,6 +63,14 @@ if (profile == 'mc2612' || profile == 'all' || profile == 'forgeonly') {
 if (profile == 'mc1211' || profile == 'all') {
     include ':mc-1.21.1:fabric'
     includeVersionCommonIfPresent('1.21.1')
+}
+
+// Fabric 26.3 is a dedicated profile: Loom 1.17 + Gradle 9.6.0+ + Java 25.
+// Kept out of 'all' so existing Gradle 8.10.2 / fabric-loom 1.7.x profiles
+// continue to configure.
+if (profile == 'mc263fabric' || profile == 'mc263') {
+    include ':mc-26.3:fabric'
+    includeVersionCommonIfPresent('26.3')
 }
 
 if (profile == 'mc1201' || profile == 'all' || profile == 'forgeonly') {

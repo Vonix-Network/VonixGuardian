@@ -8,6 +8,7 @@ java-1_21 = "21"
 # Gradle plugins
 shadow = "8.1.1"
 loom = "1.7-SNAPSHOT"           # fabric-loom 1.7.x supports MC 1.18.2 -> 1.21.x via channels
+loom-26_3 = "1.17-SNAPSHOT"     # fabric-loom 1.17.x for MC 26.3 (non-obfuscated)
 forgegradle = "[6.0,6.2)"
 neogradle = "7.0.165"
 
@@ -15,6 +16,11 @@ neogradle = "7.0.165"
 fabric-loader-1_21 = "0.16.5"
 fabric-api-1_21 = "0.116.4+1.21.1"
 neoforge-1_21 = "21.1.93"
+
+# Loader / API: MC 26.3 (Wilderness Bound)
+java-26_3 = "25"
+fabric-loader-26_3 = "0.19.5"
+fabric-api-26_3 = "0.161.0+26.3"
 
 # Loader / API: MC 1.20.1
 fabric-loader-1_20 = "0.15.11"

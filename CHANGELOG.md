@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+
+- Fabric 26.3 cell (`mc-26.3/common` + `mc-26.3/fabric`) as a 1:1 port of the 1.21.1 Fabric lane onto Minecraft 26.3 ("Wilderness Bound"): 40 action types, 31 mixins (22 shared + 9 Fabric-only) plus `api/LocationalInventory`, Fabric Loader 0.19.5, Fabric API `0.161.0+26.3`, Loom 1.17.x, Java 25. Build with `-PbuildProfile=mc263fabric` on Gradle 9.6.0+.
 
 ## [2.1.1] - 2026-09-08
 

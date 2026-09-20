@@ -7,7 +7,7 @@
 
 **A blazing-fast server-side block/inventory/entity audit & rollback tool for modded Minecraft.**
 
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
+Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane and the 26.3 Fabric lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
@@ -66,13 +66,14 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 | MC Version | Fabric | Forge | NeoForge |
 |-----------:|:------:|:-----:|:--------:|
+| 26.3       |   ✅   |   —   |    —     |
 | 26.1.2     |   —    |   —   |    ✅    |
 | 1.21.1     |   ✅   |   —   |    ✅    |
 | 1.20.1     |   ✅   |   ✅  |    —     |
 | 1.19.2     |   ✅   |   ✅  |    —     |
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
-Nine loader cells. NeoForge did not exist before 1.20.4; the 1.21.1 and 26.1 jars replace Forge on those versions per the loader split.
+Ten loader cells. NeoForge did not exist before 1.20.4; the 1.21.1 and 26.1 jars replace Forge on those versions per the loader split. Fabric 26.3 is a new lane (no Fabric 26.1.2 cell).
 
 ## Architecture
 
@@ -103,6 +104,9 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1201 :mc-1.20.1:fabric:build :mc-1.20.1:forge:build
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ./gradlew -PbuildProfile=mc2612  :mc-26.1.2:neoforge:build
+# Fabric 26.3 requires Gradle 9.6.0+ and JDK 25 (Loom 1.17). The wrapper stays
+# 8.10.2 for older cells; use a 9.6.0 Gradle install for this profile:
+#   gradle-9.6.0 -PbuildProfile=mc263fabric :mc-26.3:fabric:build
 ```
 
 Produces 9 jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
