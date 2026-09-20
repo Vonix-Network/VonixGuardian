@@ -48,17 +48,17 @@ mc-<ver>/
 
 `settings.gradle` includes `core` and `mc-<ver>/<loader>` for each requested cell. It also includes `mc-<ver>/common` **when that directory exists and contains `build.gradle`**.
 
-`mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
+`mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. `mc-26.2/common` is consumed the same way by 26.2 Fabric (and, after merge, 26.2 NeoForge). Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
 
-Do not invent Fabric 26.1.2 or Forge 1.21.1 cells.
+Do not invent Fabric 26.1.2 or Forge 1.21.1 cells. Fabric 26.2 is a new loader cell (`mc-26.2/fabric`), not a rename of 26.1.2.
 
 ### Loader-specific ActionType coverage (requested cells)
 
 Capture **mechanisms** differ by loader and must not be copied blindly:
 
-| Surface | 1.21.1 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge |
-|---|---|---|---|
-| Explosions, pistons, signs, item toss/pickup, craft, container slot, block-place-by-entity, living-destroy | Mixins (`ExplosionMixin`, `PistonMixin`, `SignChangeMixin`, `ItemTossMixin`, `ItemPickupMixin`, `CraftItemMixin`, `ContainerMixin`, `BlockPlaceMixin`, `LivingDestroyBlockMixin`) plus `FabricMixinBridge` | Event-bus adapters in `NeoForgeEvents` (`ExplosionEvent`, `PistonEvent`, item/container/chat/command handlers) | Same NeoForge event-bus adapters |
+| Surface | 1.21.1 Fabric | 26.2 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge |
+|---|---|---|---|---|
+| Explosions, pistons, signs, item toss/pickup, craft, container slot, block-place-by-entity, living-destroy | Mixins (`ExplosionMixin`, `PistonMixin`, `SignChangeMixin`, `ItemTossMixin`, `ItemPickupMixin`, `CraftItemMixin`, `ContainerMixin`, `BlockPlaceMixin`, `LivingDestroyBlockMixin`) plus `FabricMixinBridge` | Same Fabric mixin set, retargeted to 26.x Mojmap (`mc.v26_2`) | Event-bus adapters in `NeoForgeEvents` (`ExplosionEvent`, `PistonEvent`, item/container/chat/command handlers) | Same NeoForge event-bus adapters |
 | Environment griefing (fire, ice, leaves, liquid, lightning, ravager, silverfish, snow golem, TNT, hopper, fill/setblock, portal, falling block, dragon) | Mixins registered in `vg.mixins.json` | Mixins registered in `vg-neoforge.mixins.json` (includes `RavagerMixin`) | Same NeoForge mixin set |
 | Milk bucket empty | Fabric `BucketItemMixin` path only; no `MilkBucketItemMixin` | `MilkBucketItemMixin` (FillBucketEvent was removed upstream) | `MilkBucketItemMixin` |
 | Container position marker | `LocationalInventory` in `fabric.api` + `BaseContainerBlockEntityMixin` | Event-bus open/close snapshot; no LocationalInventory mixin | Same as 1.21.1 NeoForge |

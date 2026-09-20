@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+
+- **Fabric 26.2 loader cell.** New `mc-26.2/fabric` lane (package `mc.v26_2`) ported from `mc-1.21.1/fabric` onto 26.x Mojmap, Loom 1.17.21, Fabric Loader 0.19.5, Fabric API `0.161.0+26.2`, Java 25. Shares a cell-local `mc-26.2/common` copy with the forthcoming NeoForge 26.2 tree. Build profile: `-PbuildProfile=mc262fabric`.
 
 ## [2.1.1] - 2026-09-08
 

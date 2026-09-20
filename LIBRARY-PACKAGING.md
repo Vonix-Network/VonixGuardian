@@ -40,7 +40,7 @@ The loader extracts these at runtime, dedups across all installed mods by Maven 
 
 ## Fabric: Loom JarInJar
 
-All four Fabric cells use Fabric Loom's supported `include modImplementation(...)`
+All Fabric cells (1.18.2–1.21.1 plus 26.2) use Fabric Loom's supported `include modImplementation(...)`
 configuration. The final remapped artifact contains the unmodified dependencies under
 `META-INF/jars/`; JDBC classes and `META-INF/services/java.sql.Driver` therefore remain in
 their canonical packages inside the nested jars. The Hikari include excludes the loader-owned
@@ -89,7 +89,7 @@ unzip -l /tmp/sqlite.jar | grep 'META-INF/services/java.sql.Driver'
 
 # 5. Deterministic outer/nested check for each Fabric cell:
 ./gradlew -PbuildProfile=mc1182 :mc-1.18.2:fabric:verifyJarInJarPackaging
-# Repeat with mc1192, mc1201, and mc1211 profiles/cells.
+# Repeat with mc1192, mc1201, mc1211, and mc262fabric profiles/cells.
 ```
 
 ## Pitfalls
