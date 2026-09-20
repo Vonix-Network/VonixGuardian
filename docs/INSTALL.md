@@ -8,17 +8,18 @@ This guide covers a clean install of v2.1.0 on a dedicated server.
 
 - A **Minecraft server** running one of the supported loader + version combinations below.
 - **Java** matching the Minecraft version:
-  - Minecraft **26.1.2** → **Java 25**
+  - Minecraft **26.2** / **26.1.2** → **Java 25**
   - Minecraft **1.21.1** → **Java 21**
   - Minecraft **1.20.1 / 1.19.2 / 1.18.2** → **Java 17**
-- For source builds only, the Minecraft 26.1.2 NeoForge lane uses **Gradle 9.2.0**; operators installing published jars do not need Gradle.
+- For source builds only, the Minecraft 26.1.2 and 26.2 NeoForge lanes use **Gradle 9.2.0+**; operators installing published jars do not need Gradle.
 - Write access to the server directory (the mod creates `config/`, `logs/`, and a SQLite DB file).
 - A few hundred MB of free disk for the audit database (grows with activity).
 
-Supported loader + MC matrix for v2.1.0:
+Supported loader + MC matrix (this tree adds NeoForge 26.2; published v2.1.0 is the nine-cell set without 26.2):
 
 | Minecraft | Fabric | Forge | NeoForge |
 |-----------|--------|-------|----------|
+| 26.2      | —      | —     | ✅       |
 | 26.1.2    | —      | —     | ✅       |
 | 1.21.1    | ✅     | —     | ✅       |
 | 1.20.1    | ✅     | ✅    | —        |

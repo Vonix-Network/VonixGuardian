@@ -1,13 +1,13 @@
 # VonixGuardian
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Minecraft](https://img.shields.io/badge/Minecraft-1.18.2%20%7C%201.19.2%20%7C%201.20.1%20%7C%201.21.1-green.svg)]()
+[![Minecraft](https://img.shields.io/badge/Minecraft-1.18.2%20%7C%201.19.2%20%7C%201.20.1%20%7C%201.21.1%20%7C%2026.1.2%20%7C%2026.2-green.svg)]()
 [![Loaders](https://img.shields.io/badge/loaders-Fabric%20%7C%20Forge%20%7C%20NeoForge-orange.svg)]()
 [![Build](https://github.com/Vonix-Network/VonixGuardian/actions/workflows/build.yml/badge.svg)](https://github.com/Vonix-Network/VonixGuardian/actions/workflows/build.yml)
 
 **A blazing-fast server-side block/inventory/entity audit & rollback tool for modded Minecraft.**
 
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
+Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 and 26.2 NeoForge lanes. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
@@ -52,7 +52,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 - **Public Java API**: `network.vonix.guardian.core.api.VonixGuardianAPI` — typed result classes (`BlockLookupResult`, `ContainerLookupResult`, `ItemLookupResult`, `InventoryLookupResult`, `SessionLookupResult`, `UsernameLookupResult`, `MessageLookupResult`, `SignLookupResult`) + `hasPlaced`, `hasRemoved`, `queueLookup`, `logChat`, `logCommand`, `logPlacement`, `logRemoval`. See `docs/API.md`.
 
-- **Extensibility**: soft-dep pattern via reflection. Third-party mods can subscribe to `PreLogEvent` on any of the 9 loader cells to cancel or annotate audit entries. See `docs/PLUGINS.md`.
+- **Extensibility**: soft-dep pattern via reflection. Third-party mods can subscribe to `PreLogEvent` on any of the loader cells to cancel or annotate audit entries. See `docs/PLUGINS.md`.
 
 - **i18n**: 14 language bundles ported from CoreProtect (en, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh-cn, zh-tw). Select via `config.language`.
 
@@ -66,13 +66,14 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 | MC Version | Fabric | Forge | NeoForge |
 |-----------:|:------:|:-----:|:--------:|
+| 26.2       |   —    |   —   |    ✅    |
 | 26.1.2     |   —    |   —   |    ✅    |
 | 1.21.1     |   ✅   |   —   |    ✅    |
 | 1.20.1     |   ✅   |   ✅  |    —     |
 | 1.19.2     |   ✅   |   ✅  |    —     |
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
-Nine loader cells. NeoForge did not exist before 1.20.4; the 1.21.1 and 26.1 jars replace Forge on those versions per the loader split.
+Ten loader cells in this tree (stable `2.1.0` published nine). NeoForge did not exist before 1.20.4; the 1.21.1, 26.1.2, and 26.2 jars replace Forge on those versions per the loader split.
 
 ## Architecture
 
@@ -103,9 +104,10 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1201 :mc-1.20.1:fabric:build :mc-1.20.1:forge:build
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ./gradlew -PbuildProfile=mc2612  :mc-26.1.2:neoforge:build
+./gradlew -PbuildProfile=mc262   :mc-26.2:neoforge:build
 ```
 
-Produces 9 jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
+Produces the selected profile's jars under `<module>/build/libs/`. Fabric cells nest `core` and runtime libraries
 through Loom JarInJar under `META-INF/jars/`; Forge-family cells use their loader-supported
 packaging. The root `build` task configures every loader cell and is intentionally avoided in
 CI/release flows because multiple Fabric Loom versions can conflict when configured in one

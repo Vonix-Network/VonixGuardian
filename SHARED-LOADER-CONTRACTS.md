@@ -48,26 +48,26 @@ mc-<ver>/
 
 `settings.gradle` includes `core` and `mc-<ver>/<loader>` for each requested cell. It also includes `mc-<ver>/common` **when that directory exists and contains `build.gradle`**.
 
-`mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
+`mc-1.21.1/common` is a real Gradle module consumed by 1.21.1 Fabric and NeoForge via `compileOnly project(':mc-1.21.1:common')` plus `sourceSets.main.java.srcDir` pointing at the common sources. `mc-26.1.2/common` is consumed the same way by 26.1.2 NeoForge only. `mc-26.2/common` is consumed the same way by 26.2 NeoForge only. Mojmap-common compilation units live in `network.vonix.guardian.mc.<ver>.common` under those modules, preserving package identity. Loader adapters (mixins, events, WorldMutator, attribution resolvers, entrypoints, registries) remain in loader modules. Common modules do not apply Fabric/Forge/NeoForge plugins or import those APIs.
 
-Do not invent Fabric 26.1.2 or Forge 1.21.1 cells.
+Do not invent Fabric 26.x or Forge 1.21.1 cells.
 
 ### Loader-specific ActionType coverage (requested cells)
 
 Capture **mechanisms** differ by loader and must not be copied blindly:
 
-| Surface | 1.21.1 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge |
-|---|---|---|---|
-| Explosions, pistons, signs, item toss/pickup, craft, container slot, block-place-by-entity, living-destroy | Mixins (`ExplosionMixin`, `PistonMixin`, `SignChangeMixin`, `ItemTossMixin`, `ItemPickupMixin`, `CraftItemMixin`, `ContainerMixin`, `BlockPlaceMixin`, `LivingDestroyBlockMixin`) plus `FabricMixinBridge` | Event-bus adapters in `NeoForgeEvents` (`ExplosionEvent`, `PistonEvent`, item/container/chat/command handlers) | Same NeoForge event-bus adapters |
-| Environment griefing (fire, ice, leaves, liquid, lightning, ravager, silverfish, snow golem, TNT, hopper, fill/setblock, portal, falling block, dragon) | Mixins registered in `vg.mixins.json` | Mixins registered in `vg-neoforge.mixins.json` (includes `RavagerMixin`) | Same NeoForge mixin set |
-| Milk bucket empty | Fabric `BucketItemMixin` path only; no `MilkBucketItemMixin` | `MilkBucketItemMixin` (FillBucketEvent was removed upstream) | `MilkBucketItemMixin` |
-| Container position marker | `LocationalInventory` in `fabric.api` + `BaseContainerBlockEntityMixin` | Event-bus open/close snapshot; no LocationalInventory mixin | Same as 1.21.1 NeoForge |
+| Surface | 1.21.1 Fabric | 1.21.1 NeoForge | 26.1.2 NeoForge | 26.2 NeoForge |
+|---|---|---|---|---|
+| Explosions, pistons, signs, item toss/pickup, craft, container slot, block-place-by-entity, living-destroy | Mixins (`ExplosionMixin`, `PistonMixin`, `SignChangeMixin`, `ItemTossMixin`, `ItemPickupMixin`, `CraftItemMixin`, `ContainerMixin`, `BlockPlaceMixin`, `LivingDestroyBlockMixin`) plus `FabricMixinBridge` | Event-bus adapters in `NeoForgeEvents` (`ExplosionEvent`, `PistonEvent`, item/container/chat/command handlers) | Same NeoForge event-bus adapters | Same as 26.1.2 NeoForge |
+| Environment griefing (fire, ice, leaves, liquid, lightning, ravager, silverfish, snow golem, TNT, hopper, fill/setblock, portal, falling block, dragon) | Mixins registered in `vg.mixins.json` | Mixins registered in `vg-neoforge.mixins.json` (includes `RavagerMixin`) | Same NeoForge mixin set | Same as 26.1.2 NeoForge |
+| Milk bucket empty | Fabric `BucketItemMixin` path only; no `MilkBucketItemMixin` | `MilkBucketItemMixin` (FillBucketEvent was removed upstream) | `MilkBucketItemMixin` | `MilkBucketItemMixin` |
+| Container position marker | `LocationalInventory` in `fabric.api` + `BaseContainerBlockEntityMixin` | Event-bus open/close snapshot; no LocationalInventory mixin | Same as 1.21.1 NeoForge | Same as 26.1.2 NeoForge |
 
-Sign edits (`ActionType.SIGN`) are produced on Fabric 1.21.1 via `SignChangeMixin`. NeoForge 1.21.1 and 26.1.2 have no `SignChangeEvent` (removed in 1.20+) and no sign mixin; that absence is preserved rather than copying the Fabric mixin onto NeoForge.
+Sign edits (`ActionType.SIGN`) are produced on Fabric 1.21.1 via `SignChangeMixin`. NeoForge 1.21.1 / 26.1.2 / 26.2 have no `SignChangeEvent` (removed in 1.20+); those NeoForge cells register `SignChangeMixin` in `vg-neoforge.mixins.json` as the producer.
 
 `ActionType.USERNAME_CHANGE`, `STRUCTURE_GROW`, and `CHUNK_POPULATE` are lookup/rollback API types with no producer on the requested cells. Do not delete NeoForge event adapters or Fabric mixins to force identical files. Register or delete a mixin only when that cell's source and mixin JSON both prove it is stale.
 
-P1-G-003 (Gradle 8.10.2 root wrapper vs 26.1.2 ModDevGradle/Java 25) is disposition-only: do not globally bump the root wrapper.
+P1-G-003 (Gradle 8.10.2 root wrapper vs 26.1.2/26.2 ModDevGradle/Java 25) is disposition-only: do not globally bump the root wrapper. Invoke Gradle 9.2.0+ for the 26.x NeoForge lanes.
 
 ---
 
@@ -389,6 +389,12 @@ public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock e) {
 - Lifecycle stays on the NeoForge runtime bus: `ServerAboutToStartEvent` → `NeoForgeBootstrap.onServerStarting`, `ServerStoppingEvent` → `NeoForgeBootstrap.onServerStopping`. Do not replace this with Fabric `SERVER_STARTING` / `SERVER_STOPPING`.
 - `RegisterCommandsEvent` for the command tree; `NeoForge.EVENT_BUS.register(NeoForgeEvents.class)` for capture.
 - Java 25 toolchain on this cell only. P1-G-003 (root wrapper Gradle 8.10.2 vs ModDevGradle 2.0.140 / Java 25) is disposition-only — do not globally bump `gradle/wrapper`.
+
+### 26.2 NeoForge
+- Native NeoForge cell; there is no Fabric 26.2 counterpart. 1:1 port of the 26.1.2 lane onto Minecraft 26.2 / NeoForge 26.2.0.88.
+- Mod entry, lifecycle, command registration, and event-bus capture match 26.1.2 NeoForge (`VonixGuardianNeoForge`, `NeoForgeBootstrap`, `NeoForgeEvents`, `NeoForgePreLogBridge`).
+- Package suffix is `mc.v26_2`. Mixin config remains `vg-neoforge.mixins.json` with `compatibilityLevel: JAVA_25`.
+- Java 25 toolchain, ModDevGradle 2.0.147, Shadow 8.3.9. Build with Gradle 9.2.0+ via profile `mc262`. Do not globally bump `gradle/wrapper`.
 
 ### 1.20.1 Forge
 - Mod entry: `@Mod("vonixguardian")`.

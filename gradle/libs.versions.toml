@@ -4,6 +4,7 @@ java-1_18 = "17"
 java-1_19 = "17"
 java-1_20 = "17"
 java-1_21 = "21"
+java-26_2 = "25"
 
 # Gradle plugins
 shadow = "8.1.1"
@@ -15,6 +16,9 @@ neogradle = "7.0.165"
 fabric-loader-1_21 = "0.16.5"
 fabric-api-1_21 = "0.116.4+1.21.1"
 neoforge-1_21 = "21.1.93"
+
+# Loader / API: MC 26.2 (cell uses inline pins in mc-26.2/neoforge/build.gradle)
+neoforge-26_2 = "26.2.0.88"
 
 # Loader / API: MC 1.20.1
 fabric-loader-1_20 = "0.15.11"

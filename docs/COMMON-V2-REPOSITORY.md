@@ -13,6 +13,7 @@ This repository is the single source tree for the VonixGuardian common-generatio
 | 1.20.1 | Fabric, Forge | 17 | `mc-1.20.1/` |
 | 1.21.1 | Fabric, NeoForge | 21 | `mc-1.21.1/` |
 | 26.1.2 | NeoForge | 25 | `mc-26.1.2/` |
+| 26.2 | NeoForge | 25 | `mc-26.2/` |
 
 The root `core/` module contains the storage, queue, audit, query, rollback, schema, and test surface. Each `mc-<version>/` directory contains the shared target code plus its loader adapters. Minecraft versions remain together in one repository by design.
 
@@ -33,9 +34,10 @@ Use the exact build profiles documented in the root README and [`docs/DEVELOPMEN
 ./gradlew -PbuildProfile=coreonly :core:test
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ./gradlew -PbuildProfile=mc2612 :mc-26.1.2:neoforge:build
+./gradlew -PbuildProfile=mc262 :mc-26.2:neoforge:build
 ```
 
-The 26.1.2 NeoForge lane requires Java 25. The 1.21.1 Fabric/NeoForge lane uses its compatible Gradle/Loom toolchain.
+The 26.1.2 and 26.2 NeoForge lanes require Java 25 and Gradle 9.2.0+. The 1.21.1 Fabric/NeoForge lane uses its compatible Gradle/Loom toolchain.
 
 ## Release naming
 

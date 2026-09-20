@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+
+- NeoForge 26.2 cell (`mc-26.2/common` + `mc-26.2/neoforge`) targeting Minecraft 26.2 / NeoForge 26.2.0.88. 1:1 port of the 26.1.2 lane (same 40 action types, command surface, DB schema, and config keys). Java 25, ModDevGradle 2.0.147, Mixin `JAVA_25`, Shadow 8.3.9. Loader ranges: NeoForge `[26.2.0.88,26.3)`, Minecraft `[26.2,26.3)`. Build profile `mc262`.
 
 ## [2.1.1] - 2026-09-08
 
