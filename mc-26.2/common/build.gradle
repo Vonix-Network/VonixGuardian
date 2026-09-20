@@ -1,9 +1,9 @@
 /*
  * VonixGuardian — mc-26.2 :common
  *
- * Mojmap-only compilation units consumed by 26.2 NeoForge. There is no
- * Fabric 26.2 cell. Loaders compile these sources against their own
- * Minecraft classpath via sourceSets; this module does not apply NeoForge APIs.
+ * Mojmap-only compilation units consumed by 26.2 NeoForge and 26.2 Fabric.
+ * Loaders compile these sources against their own Minecraft classpath via
+ * sourceSets; this module does not apply NeoForge or Fabric APIs.
  */
 
 plugins {

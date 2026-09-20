@@ -10,12 +10,18 @@ java-26_3 = "25"
 # Loader / API: MC 26.3 (NeoForge beta — re-pin when stable 26.3 lands)
 neoforge-26_3 = "26.3.0.6-beta"
 moddevgradle-26_3 = "2.0.147"
+java-26 = "25"
 
 # Gradle plugins
 shadow = "8.1.1"
 loom = "1.7-SNAPSHOT"           # fabric-loom 1.7.x supports MC 1.18.2 -> 1.21.x via channels
+loom-26 = "1.17.21"             # fabric-loom 1.17.x for unobfuscated MC 26.2/26.3
 forgegradle = "[6.0,6.2)"
 neogradle = "7.0.165"
+
+# Loader / API: MC 26.2
+fabric-loader-26_2 = "0.19.5"
+fabric-api-26_2 = "0.161.0+26.2"
 
 # Loader / API: MC 1.21.1
 fabric-loader-1_21 = "0.16.5"
