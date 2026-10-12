@@ -108,6 +108,11 @@ class RollbackResultTruthfulnessTest {
             public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
                 return x != 2;
             }
+
+            @Override
+            public boolean tryClearBlock(String worldId, int x, int y, int z) {
+                return x != 2;
+            }
         };
         RollbackEngine engine = new RollbackEngine(dao, mutator, Runnable::run);
 
@@ -134,6 +139,11 @@ class RollbackResultTruthfulnessTest {
             @Override
             public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
                 // Loader contract: vanilla setBlock false + already-matching state → true.
+                return true;
+            }
+
+            @Override
+            public boolean tryClearBlock(String worldId, int x, int y, int z) {
                 return true;
             }
         };
@@ -240,6 +250,11 @@ class RollbackResultTruthfulnessTest {
     private static class AlwaysApplyMutator implements WorldMutator {
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+            return true;
+        }
+
+        @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
             return true;
         }
     }

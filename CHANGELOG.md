@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-12
+
+### Fixed
+
+- **Orphaned block entities after rollback (`OE1`).** A rollback that cleared or replaced a block used `trySetBlock(..., AIR, null)`. Vanilla `Level.setBlock(pos, state, UPDATE_ALL)` only removes a block entity as a side effect of a `BlockEntity`-owning block-state change, so a stale block entity at the position survived the write, was re-serialised into the region file, and on the next chunk load reconstructed its recorded id (`minecraft:bed` / `minecraft:banner`) against an unrelated block state. That throws `ClassCastException` inside `BedBlockEntity` / `BannerBlockEntity`, aborts the block entity, and repeats per affected position on every chunk load — observed live as 142 console errors from a single affected area, with permanent cosmetic loss of bed colour and banner pattern.
+  - New `WorldMutator#tryClearBlock` (fail-closed default) removes the block entity and then clears the block; the engine routes **every** removing inverse (`BLOCK_PLACE`, `IGNITE`/`BUCKET_EMPTY`/`STRUCTURE_GROW`/`PORTAL_CREATE`/`FLUID_FLOW`, `BURN`/`FADE`/`LEAVES_DECAY`/`BUCKET_FILL`, and explosion block clears) through it instead of a plain air `setBlock`.
+  - `trySetBlock` now clears a stale block entity explicitly whenever the target block owns none, and captures the prior block state and block-entity NBT on **every** mutation path so the existing compensation logic can restore them.
+  - Implemented across all 13 loader cells.
+
+### Added
+
+- `OrphanedBlockEntityClearTest` regression pin: proves the engine dispatches no plain air `setBlock` inverse, that a failed clear is reported rather than counted as applied, and that every shipped loader cell implements the clearing path.
+
+### Changed
+
+- NBT-less rollback of a block position now performs read-back of the block state and reports failure when the clear does not land, instead of optimistically reporting success.
+
 ### Added
 
 - NeoForge 26.2 cell (`mc-26.2/common` + `mc-26.2/neoforge`) targeting Minecraft 26.2 / NeoForge 26.2.0.88. 1:1 port of the 26.1.2 lane (same 40 action types, command surface, DB schema, and config keys). Java 25, ModDevGradle 2.0.147, Mixin `JAVA_25`, Shadow 8.3.9. Loader ranges: NeoForge `[26.2.0.88,26.3)`, Minecraft `[26.2,26.3)`. Build profile `mc262`.

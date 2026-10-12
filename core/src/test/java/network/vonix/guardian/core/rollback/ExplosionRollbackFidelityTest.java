@@ -285,6 +285,12 @@ class ExplosionRollbackFidelityTest {
         }
 
         @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            setBlockCalls.add(worldId + "|" + x + "|" + y + "|" + z + "|minecraft:air");
+            return true;
+        }
+
+        @Override
         public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {return true; }
 
         @Override

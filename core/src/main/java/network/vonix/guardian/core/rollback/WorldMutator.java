@@ -68,6 +68,35 @@ public interface WorldMutator {
         return false;
     }
 
+    /**
+     * Checked clear-to-air path used by RollbackEngine for every inverse that
+     * removes a block.
+     *
+     * <p>v2.2.0 OE1: {@code trySetBlock(..., AIR, null)} alone is not sufficient
+     * to clear a position. Vanilla {@code Level.setBlock} removes the block
+     * entity only as a side effect of a {@code BlockEntity}-owning block state
+     * change; a stale block entity at a position whose new state does not own
+     * one (gravel, fluid, kelp, air, a rotated pillar) can survive the write and
+     * then be serialised back to disk. On the next chunk load
+     * {@code BlockEntity.loadStatic} reconstructs the recorded id
+     * ({@code minecraft:bed} / {@code minecraft:banner}) against the mismatched
+     * block state and throws {@code ClassCastException}, which aborts the block
+     * entity and spams the console per affected position.
+     *
+     * <p>Implementations MUST remove any block entity at the position before or
+     * as part of clearing the block, and MUST report {@code false} when the
+     * world is unavailable, the block entity cannot be removed, or the final
+     * state is not the requested clear target. Reporting {@code true} on a
+     * partially-applied clear reintroduces the orphaned-block-entity defect.
+     *
+     * <p>The default is fail-closed: a legacy implementation that cannot clear
+     * block entities returns {@code false} so the rollback reports
+     * {@code REPAIR_REQUIRED} rather than silently leaving corruption behind.
+     */
+    default boolean tryClearBlock(String worldId, int x, int y, int z) {
+        return false;
+    }
+
     /** Stable legacy ABI: remove a quantity from a container. */
     default void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
         // Compatibility default for new implementations; checked loader paths override tryRemoveFromContainer.

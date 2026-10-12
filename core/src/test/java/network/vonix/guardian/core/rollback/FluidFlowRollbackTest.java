@@ -46,7 +46,7 @@ class FluidFlowRollbackTest {
     }
 
     @Test
-    void rollbackFluidFlowClearsCellToAir() throws Exception {
+    void rollbackFluidFlowClearsCellAndEntity() throws Exception {
         GuardianDao dao = mock(GuardianDao.class);
         RecordingMutator mutator = new RecordingMutator();
         Executor sync = Runnable::run;
@@ -63,8 +63,8 @@ class FluidFlowRollbackTest {
 
         assertThat(result.dispatchedSteps()).isEqualTo(2);
         assertThat(mutator.calls).containsExactly(
-                "setBlock|w|10|64|10|minecraft:air|null",
-                "setBlock|w|11|64|10|minecraft:air|null"
+                "clearBlock|w|10|64|10",
+                "clearBlock|w|11|64|10"
         );
     }
 
@@ -108,6 +108,12 @@ class FluidFlowRollbackTest {
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
             calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
+        }
+
+        @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            calls.add("clearBlock|" + worldId + "|" + x + "|" + y + "|" + z);
+            return true;
         }
 
         @Override

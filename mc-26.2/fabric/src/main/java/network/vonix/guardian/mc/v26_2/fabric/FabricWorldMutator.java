@@ -132,6 +132,36 @@ public final class FabricWorldMutator implements WorldMutator {
     }
 
     @Override
+    public boolean tryClearBlock(String worldId, int x, int y, int z) {
+        // v2.2.0 OE1: clearing a position must remove the block entity as well.
+        // Level.setBlock(..., UPDATE_ALL) only drops a block entity as a side
+        // effect of a BlockEntity-owning block-state change; a stale block entity
+        // at a position whose new state does not own one survives and is
+        // re-serialised, then throws ClassCastException on the next chunk load.
+        try {
+            ServerLevel level = level(worldId);
+            if (level == null) return false;
+            BlockPos pos = new BlockPos(x, y, z);
+            if (level.getBlockEntity(pos) != null) {
+                level.removeBlockEntity(pos);
+                if (level.getBlockEntity(pos) != null) {
+                    LOG.warn(Guardian.MARKER,
+                        "clearBlock left a block entity behind at {} {},{},{}", worldId, x, y, z);
+                    return false;
+                }
+            }
+            BlockState air = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+            boolean changed = level.setBlock(pos, air, Block.UPDATE_ALL);
+            BlockState now = level.getBlockState(pos);
+            if (!now.isAir() && !now.equals(air)) return false;
+            return changed || now.equals(air);
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "clearBlock failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
+        }
+    }
+
+    @Override
     public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
         try {
             ServerLevel level = level(worldId);
@@ -355,17 +385,37 @@ public final class FabricWorldMutator implements WorldMutator {
             }
 
             BlockPos pos = new BlockPos(x, y, z);
-            if (decodedBlockEntityNbt != null) {
-                previousState = level.getBlockState(pos);
-                BlockEntity previousBlockEntity = level.getBlockEntity(pos);
-                if (previousBlockEntity != null) {
-                    previousBlockEntityNbt = previousBlockEntity.saveCustomOnly(level.registryAccess());
-                }
+            // Capture the prior BE for compensation on every path that may remove
+            // it — both the NBT-apply path and the stale-BE clear path.
+            previousState = level.getBlockState(pos);
+            BlockEntity previousBlockEntity = level.getBlockEntity(pos);
+            if (previousBlockEntity != null) {
+                previousBlockEntityNbt = previousBlockEntity.saveCustomOnly(level.registryAccess());
             }
 
             mutationStarted = true;
             boolean placed = level.setBlock(pos, state, Block.UPDATE_ALL);
             if (!placed && level.getBlockState(pos).equals(state)) placed = true;
+
+            // v2.2.0 OE1: a plain setBlock only removes a block entity as a side
+            // effect of a BlockEntity-owning state change. When the target block
+            // owns no block entity, a stale one at this position must be removed
+            // explicitly or it is re-serialised and throws ClassCastException on
+            // the next chunk load (minecraft:bed / minecraft:banner over an
+            // unrelated block state).
+            if (placed && decodedBlockEntityNbt == null) {
+                BlockEntity stale = level.getBlockEntity(pos);
+                if (stale != null) {
+                    level.removeBlockEntity(pos);
+                    if (level.getBlockEntity(pos) != null) {
+                        LOG.warn(Guardian.MARKER,
+                            "setBlock could not clear stale block entity at {} {},{},{}",
+                            worldId, x, y, z);
+                        restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+                        return false;
+                    }
+                }
+            }
 
             if (!placed) {
                 restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);

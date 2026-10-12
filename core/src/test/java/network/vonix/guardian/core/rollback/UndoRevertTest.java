@@ -82,7 +82,7 @@ class UndoRevertTest {
         verify(dao).markRolledBack(List.of(1L), true);
         // rollback of BLOCK_PLACE = set air.
         assertThat(mutator.calls).containsExactly(
-            "setBlock|w|5|64|7|minecraft:air|null"
+            "clearBlock|w|5|64|7"
         );
 
         // Command layer would push this result onto UndoStack.
@@ -102,7 +102,7 @@ class UndoRevertTest {
         verify(dao).markRolledBack(List.of(1L), false);
         // Restoring the BLOCK_PLACE re-places the stone.
         assertThat(mutator.calls).containsExactly(
-            "setBlock|w|5|64|7|minecraft:air|null",
+            "clearBlock|w|5|64|7",
             "setBlock|w|5|64|7|minecraft:stone|null"
         );
 
@@ -171,6 +171,12 @@ class UndoRevertTest {
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
             calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
+        }
+
+        @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            calls.add("clearBlock|" + worldId + "|" + x + "|" + y + "|" + z);
+            return true;
         }
         @Override
         public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
