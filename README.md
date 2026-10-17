@@ -169,7 +169,7 @@ First boot writes `config/vonixguardian/config.json`:
   "permissions": { "useLuckPerms": true, "defaultOpLevel": 3 },
   "lookup": { "defaultPageSize": 7, "maxRadius": 10000, "maxResultRows": 100000, "maxConcurrent": 4 },
   "privacy": { "hashIps": false, "salt": "vonix-guardian-default-salt-CHANGE-ME" },
-  "purge": { "minAgeSecondsConsole": 86400, "minAgeSecondsInGame": 2592000 },
+  "purge": { "minAgeSecondsConsole": 86400, "minAgeSecondsInGame": 2592000, "autoPurgeSeconds": 7776000, "autoPurgeTime": "03:30" },
   "theme": "aqua"
 }
 ```

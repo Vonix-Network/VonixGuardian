@@ -125,7 +125,8 @@ public final class ConfigLoader {
         // Purge forward-compat: older configs pre-W3-B4 have no autoPurgeTime
         // (Gson deserialises absent String to null) — backfill "03:30" to keep
         // validation from firing on the first startup after upgrade.
-        // autoPurgeSeconds defaults to 0 (disabled), which is the safe default.
+        // autoPurgeSeconds remains whatever the config provides; a missing field is
+        // supplied by the record's 90-day default during first-boot config creation.
         GuardianConfig work = cfg;
         if (work.purge() != null && work.purge().autoPurgeTime() == null) {
             var p = work.purge();

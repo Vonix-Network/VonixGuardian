@@ -141,6 +141,9 @@ public record GuardianConfig(
     /** Default placeholder salt value — validate() emits a WARN if this ships to production with hashIps=true. */
     public static final String DEFAULT_PRIVACY_SALT = "vonix-guardian-default-salt-CHANGE-ME";
 
+    /** Default bounded database retention: 90 days, preventing unbounded first-boot growth. */
+    public static final long DEFAULT_AUTO_PURGE_SECONDS = 7_776_000L;
+
     /** Known theme keys (matches the theme registry shipped in {@code core.theme}). */
     public static final Set<String> KNOWN_THEMES =
         Set.of("aqua", "blue", "gold", "green", "purple", "red", "white");
@@ -819,7 +822,7 @@ public record GuardianConfig(
             new Permissions(true, 3, java.util.Map.of()),
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
-            new Purge(86_400L, 2_592_000L, 0L, "03:30"),
+            new Purge(86_400L, 2_592_000L, DEFAULT_AUTO_PURGE_SECONDS, "03:30"),
             Storage.defaults(),
             Rollback.defaults(),
             "aqua",

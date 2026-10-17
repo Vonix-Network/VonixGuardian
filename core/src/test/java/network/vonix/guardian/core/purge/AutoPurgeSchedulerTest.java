@@ -116,7 +116,13 @@ class AutoPurgeSchedulerTest {
 
     @Test
     void disabled_when_autoPurgeSeconds_is_zero() throws Exception {
-        GuardianConfig cfg = GuardianConfig.defaults(); // autoPurgeSeconds=0
+        GuardianConfig defaults = GuardianConfig.defaults();
+        GuardianConfig cfg = withPurge(defaults,
+                new GuardianConfig.Purge(
+                        defaults.purge().minAgeSecondsConsole(),
+                        defaults.purge().minAgeSecondsInGame(),
+                        0L,
+                        defaults.purge().autoPurgeTime()));
         AutoPurgeScheduler sched = AutoPurgeScheduler.create(cfg, engine, dao);
         assertThat(sched.isEnabled()).isFalse();
         assertThat(sched.runNow()).isEqualTo(0L);

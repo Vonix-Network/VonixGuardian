@@ -254,14 +254,17 @@ salt:
 
 ---
 
-## 9. `purge` — `/vg purge` safety floors
+## 9. `purge` — `/vg purge` safety floors and retention
 
-| Field                   | Type | Default      | Valid range  | Controls                                                          |
-|-------------------------|------|--------------|--------------|-------------------------------------------------------------------|
-| `minAgeSecondsConsole`  | long | `86400`      | `>= 60`      | Minimum age (sec) when purge is invoked from the **server console**. |
-| `minAgeSecondsInGame`   | long | `2592000`    | `>= 3600`    | Minimum age (sec) when purge is invoked **in-game**.              |
+| Field                   | Type | Default      | Valid range                         | Controls                                                               |
+|-------------------------|------|--------------|-------------------------------------|------------------------------------------------------------------------|
+| `minAgeSecondsConsole`  | long | `86400`      | `>= 60`                             | Minimum age (sec) when purge is invoked from the **server console**.    |
+| `minAgeSecondsInGame`   | long | `2592000`    | `>= 3600`                           | Minimum age (sec) when purge is invoked **in-game**.                   |
+| `autoPurgeSeconds`      | long | `7776000`    | `0` or `>= 2592000`                 | Background retention horizon; `0` disables automatic database purging. |
+| `autoPurgeTime`         | string | `"03:30"` | strict `HH:mm`                     | Local server time for the daily background purge.                       |
 
-**Defaults in human units:** 1 day (console) / 30 days (in-game).
+**Defaults in human units:** 1 day (console) / 30 days (in-game) / 90 days
+of retained database history, with the automatic purge running at 03:30.
 
 **Safety rationale.** `/vg purge` is destructive and irreversible. Two
 separate floors exist because:
@@ -367,10 +370,12 @@ before saving — `config.json` is parsed as **strict JSON**, not JSON5.
     "salt": "vonix-guardian-default-salt-CHANGE-ME"
   },
 
-  // §9 — /vg purge safety floors. Cannot be lowered below the validator minima.
+  // §9 — /vg purge safety floors + bounded database retention.
   "purge": {
     "minAgeSecondsConsole": 86400,    // 1 day;  floor 60      s
-    "minAgeSecondsInGame": 2592000    // 30 days; floor 3600    s
+    "minAgeSecondsInGame": 2592000,   // 30 days; floor 3600    s
+    "autoPurgeSeconds": 7776000,      // 90 days; 0 disables automatic purge
+    "autoPurgeTime": "03:30"           // server local time, HH:mm
   },
 
   // §10 — Chat theme.
@@ -400,7 +405,7 @@ the reload handler is implemented.
 | `lookup`      | `maxRadius`, `maxResultRows`                           | Reload      | Restart       |
 | `lookup`      | `maxConcurrent`                                        | Restart     | Restart       |
 | `privacy`     | `hashIps`, `salt`                                      | Restart     | Restart       |
-| `purge`       | `minAgeSecondsConsole`, `minAgeSecondsInGame`          | Reload      | Restart       |
+| `purge`       | `minAgeSecondsConsole`, `minAgeSecondsInGame`, `autoPurgeSeconds`, `autoPurgeTime` | Reload | Restart |
 | `theme`       | `theme`                                                | Reload      | Restart       |
 
 ---
