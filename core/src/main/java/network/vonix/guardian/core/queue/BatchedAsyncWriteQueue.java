@@ -302,6 +302,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         recordSubmit(a);
         boolean accepted = offerWrite(new QueuedWrite(a));
         if (!accepted) {
+            journalBeforeDrop(List.of(a));
             recordDrop(a);
             maybeLogHistogram();
             return false;
@@ -318,6 +319,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         recordSubmit(second);
         boolean accepted = offerWrite(new QueuedWrite(first, second));
         if (!accepted) {
+            journalBeforeDrop(List.of(first, second));
             recordDrop(first);
             recordDrop(second);
             maybeLogHistogram();
@@ -436,6 +438,69 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         }
         rateBuckets.tick(nowNs);
         aggregateRate.tick(nowNs);
+    }
+
+    /**
+     * Journal an audit event that never entered the ring buffer, then count it
+     * as dropped. Explosion-join rejection uses this so the drop counter and
+     * the quarantine journal describe the same event.
+     */
+    public void journalRejectedAdmission(Action action) {
+        if (action == null) {
+            return;
+        }
+        journalBeforeDrop(List.of(action));
+        recordDrop(action);
+        maybeLogHistogram();
+    }
+
+    /**
+     * Append to the durable quarantine before {@link #recordDrop(Action)}.
+     * A null store keeps the historical drop-only behaviour and does not
+     * increment {@code quarantineOverflow}. A full journal logs an error with
+     * the action type and coordinates and increments the overflow counter.
+     * A successful append is retried by the existing recovery map.
+     */
+    private void journalBeforeDrop(List<Action> actions) {
+        if (actions == null || actions.isEmpty() || quarantineStore == null) {
+            return;
+        }
+        List<Action> remaining = new ArrayList<>(actions);
+        while (!remaining.isEmpty()) {
+            Action action = remaining.remove(0);
+            Action sibling = InventoryReplacementPairs.siblingOf(action, remaining);
+            List<Action> group = sibling == null ? List.of(action) : List.of(action, sibling);
+            if (sibling != null) {
+                remaining.remove(sibling);
+            }
+            try {
+                List<Long> sequences = group.size() == 1
+                        ? singletonSequence(quarantineStore.append(group.get(0)))
+                        : quarantineStore.appendGroup(group);
+                if (sequences.size() != group.size()) {
+                    quarantineRetentionLimitReached.set(true);
+                    for (Action droppedAction : group) {
+                        quarantineOverflow.incrementAndGet();
+                        LOG.error(MARKER,
+                                "Durable quarantine full; admission drop type={} id={} world={} x={} y={} z={} cannot be retained",
+                                droppedAction.type(), droppedAction.id(), droppedAction.worldId(),
+                                droppedAction.x(), droppedAction.y(), droppedAction.z());
+                    }
+                    continue;
+                }
+                synchronized (recovery) {
+                    for (int i = 0; i < group.size(); i++) {
+                        recovery.put(sequences.get(i), new RecoveryItem(sequences.get(i), group.get(i), 0,
+                                System.nanoTime() + TimeUnit.SECONDS.toNanos(1L), false, false));
+                    }
+                }
+            } catch (IOException e) {
+                quarantineWriteFailures.addAndGet(group.size());
+                LOG.error(MARKER,
+                        "Durable quarantine write failed for admission drop type={} id={} world={} x={} y={} z={}",
+                        action.type(), action.id(), action.worldId(), action.x(), action.y(), action.z(), e);
+            }
+        }
     }
 
     private void recordDrop(Action a) {
@@ -1390,8 +1455,8 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         if (last == Long.MIN_VALUE || now - last >= DROP_LOG_INTERVAL_NS) {
             if (lastDropLogNs.compareAndSet(last, now)) {
                 LOG.warn(MARKER,
-                        "AsyncWriteQueue full — dropping actions (total dropped so far: {})",
-                        totalDropped);
+                        "AsyncWriteQueue full — dropping actions (total dropped so far: {}, quarantine overflow: {})",
+                        totalDropped, quarantineOverflow.get());
             }
         }
     }

@@ -83,11 +83,17 @@ public interface WorldMutator {
      * block state and throws {@code ClassCastException}, which aborts the block
      * entity and spams the console per affected position.
      *
-     * <p>Implementations MUST remove any block entity at the position before or
-     * as part of clearing the block, and MUST report {@code false} when the
-     * world is unavailable, the block entity cannot be removed, or the final
-     * state is not the requested clear target. Reporting {@code true} on a
-     * partially-applied clear reintroduces the orphaned-block-entity defect.
+     * <p>Implementations MUST set the block to air first, while any genuine
+     * block entity is still attached, so vanilla's own removal path runs.
+     * They then perform a non-creating read and explicitly remove a survivor.
+     * Return {@code true} only when the final state is air and that read is
+     * null. Never call an entity-creating block-entity accessor between the
+     * removal and the state write: that lookup recreates an empty entity, the
+     * clear aborts, and the container contents are already gone. If the air
+     * write does not land, do not remove the block entity. Report {@code false}
+     * when the world is unavailable, a survivor cannot be removed, or the
+     * final state is not air. Reporting {@code true} on a partially-applied
+     * clear reintroduces the orphaned-block-entity defect.
      *
      * <p>The default is fail-closed: a legacy implementation that cannot clear
      * block entities returns {@code false} so the rollback reports

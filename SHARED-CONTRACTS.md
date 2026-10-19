@@ -455,7 +455,7 @@ public record GuardianConfig(
 Defaults match `README.md` plus:
 * `actions.logInteractions = true`, `actions.logWorldEvents = true`
 * `lookup.maxResultRows = 100_000`, `lookup.maxConcurrent = 4`
-* `privacy.hashIps = false`, `privacy.salt = "vonix-guardian-default-salt-CHANGE-ME"` (validator WARN if default in production)
+* `privacy.hashIps = false`, `privacy.salt = "vonix-guardian-default-salt-CHANGE-ME"` (`validate()` hard-errors if `hashIps` is true and the salt is still this placeholder)
 * `purge.minAgeSecondsConsole = 86_400`, `purge.minAgeSecondsInGame = 2_592_000`
 
 Gson, pretty-printed, comments stripped at load (lenient parsing).

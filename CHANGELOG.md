@@ -12,24 +12,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Orphaned block entities after rollback (`OE1`).** A rollback that cleared or replaced a block used `trySetBlock(..., AIR, null)`. Vanilla `Level.setBlock(pos, state, UPDATE_ALL)` only removes a block entity as a side effect of a `BlockEntity`-owning block-state change, so a stale block entity at the position survived the write, was re-serialised into the region file, and on the next chunk load reconstructed its recorded id (`minecraft:bed` / `minecraft:banner`) against an unrelated block state. That throws `ClassCastException` inside `BedBlockEntity` / `BannerBlockEntity`, aborts the block entity, and repeats per affected position on every chunk load — observed live as 142 console errors from a single affected area, with permanent cosmetic loss of bed colour and banner pattern.
-  - New `WorldMutator#tryClearBlock` (fail-closed default) removes the block entity and then clears the block; the engine routes **every** removing inverse (`BLOCK_PLACE`, `IGNITE`/`BUCKET_EMPTY`/`STRUCTURE_GROW`/`PORTAL_CREATE`/`FLUID_FLOW`, `BURN`/`FADE`/`LEAVES_DECAY`/`BUCKET_FILL`, and explosion block clears) through it instead of a plain air `setBlock`.
-  - `trySetBlock` now clears a stale block entity explicitly whenever the target block owns none, and captures the prior block state and block-entity NBT on **every** mutation path so the existing compensation logic can restore them.
+  - `WorldMutator#tryClearBlock` sets the block to air first, while the genuine block entity is still attached, so vanilla's own removal path runs. It then reads the position with a non-creating check (`EntityCreationType.CHECK`). A survivor is removed explicitly. The method returns true only when the final state is air and that check read is null. It does not call an entity-creating accessor between the removal and the state write. If the air write does not land, the block entity is left in place so its contents are not discarded. The engine routes every removing inverse (`BLOCK_PLACE`, `IGNITE`/`BUCKET_EMPTY`/`STRUCTURE_GROW`/`PORTAL_CREATE`/`FLUID_FLOW`, `BURN`/`FADE`/`LEAVES_DECAY`/`BUCKET_FILL`, and explosion block clears) through it instead of a plain air `setBlock`.
+  - `trySetBlock` goes through one `placeBlock` helper per cell. After the state write, a non-creating read must be null when the target block owns no block entity. When the target owns one and no NBT was supplied, the fresh entity is not treated as stale. A failed place restores the previous state and returns false.
+  - Container deposit rollback on the 1.18.2, 1.19.2, 1.20.1, and 1.21.1 cells counts matching stacks before it shrinks any of them. A short quantity returns false and leaves the remainder in place. The 26.x cells already did this preflight.
   - Implemented across all 13 loader cells.
-
-### Added
-
-- `OrphanedBlockEntityClearTest` regression pin: proves the engine dispatches no plain air `setBlock` inverse, that a failed clear is reported rather than counted as applied, and that every shipped loader cell implements the clearing path.
+- **Admission drops are journaled before they are counted.** Queue overflow and an explosion-join rejection append to the durable quarantine outbox before the drop counter moves. A full quarantine increments the overflow counter and logs the action type and coordinates. `/vg status` already prints `dropped`, `quarantined`, `qOverflow`, and `qWriteFail`.
+- **Open rollback batches stay open.** Boot does not replay them. `/vg status` lists open batch ids, mode (`ROLLBACK` / `RESTORE`), affected counts, and `vg_repair_required` rows. Staff inspect those rows before re-running a rollback or restore.
 
 ### Changed
 
-- NBT-less rollback of a block position now performs read-back of the block state and reports failure when the clear does not land, instead of optimistically reporting success.
+- NBT-less rollback of a block position reports failure when the clear does not land, instead of reporting success with a stale block entity left behind.
+- `purge.autoPurgeSeconds` stays `0` (`GuardianConfig.DEFAULT_AUTO_PURGE_SECONDS`). `0` means unbounded retention. `7776000` (90 days) is `SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS` and is not written into existing configs. Boot logs one warning when the loaded value is `0`.
+- `rollback.requireConfirm` defaults to `false`. Rollback and restore still apply immediately at op level 3. Setting it to `true` makes `/vg apply` the confirmation. The permission table is unchanged.
+- Privacy docs match the shipped `Privacy(false, …)` default. `hashIps: true` with the placeholder salt is a hard validation error. Hash width and salt handling are unchanged. Schema version stays **9**.
 
 ### Added
 
-- NeoForge 26.2 cell (`mc-26.2/common` + `mc-26.2/neoforge`) targeting Minecraft 26.2 / NeoForge 26.2.0.88. 1:1 port of the 26.1.2 lane (same 40 action types, command surface, DB schema, and config keys). Java 25, ModDevGradle 2.0.147, Mixin `JAVA_25`, Shadow 8.3.9. Loader ranges: NeoForge `[26.2.0.88,26.3)`, Minecraft `[26.2,26.3)`. Build profile `mc262`.
-- Beta NeoForge 26.3 ("Wilderness Bound") cell `mc-26.3/` (common + neoforge), 1:1 port of the 26.1.2 lane. Pins NeoForge `26.3.0.6-beta` / ModDevGradle `2.0.147` / Java 25 / Mixin `JAVA_25`. Artifact and `neoforge.mods.toml` version are cell-local `${mod_version}-beta` (`2.1.2-beta`); root `mod_version` is unchanged. Re-pin when NeoForge cuts stable 26.3. Build with `gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build` (Gradle 9.2.0+). Not part of the stable nine-cell GitHub release matrix.
-- **Fabric 26.2 loader cell.** New `mc-26.2/fabric` lane (package `mc.v26_2`) ported from `mc-1.21.1/fabric` onto 26.x Mojmap, Loom 1.17.21, Fabric Loader 0.19.5, Fabric API `0.161.0+26.2`, Java 25. Shares a cell-local `mc-26.2/common` copy with the forthcoming NeoForge 26.2 tree. Build profile: `-PbuildProfile=mc262fabric`.
-- Fabric 26.3 cell (`mc-26.3/common` + `mc-26.3/fabric`) as a 1:1 port of the 1.21.1 Fabric lane onto Minecraft 26.3 ("Wilderness Bound"): 40 action types, 31 mixins (22 shared + 9 Fabric-only) plus `api/LocationalInventory`, Fabric Loader 0.19.5, Fabric API `0.161.0+26.3`, Loom 1.17.x, Java 25. Build with `-PbuildProfile=mc263fabric` on Gradle 9.6.0+.
+- `OrphanedBlockEntityClearTest` plus fake-level and source-contract tests for the clear/place order, the container preflight, and the Gradle profile split.
+- Thirteen primary jars at `mod_version` `2.2.0`: Fabric and Forge on 1.18.2, 1.19.2, and 1.20.1; Fabric and NeoForge on 1.21.1; NeoForge on 26.1.2; Fabric and NeoForge on 26.2 and 26.3.
+- NeoForge 26.2 cell (`mc-26.2/common` + `mc-26.2/neoforge`) targeting Minecraft 26.2 / NeoForge 26.2.0.88. Java 25, ModDevGradle 2.0.147, Mixin `JAVA_25`, Shadow 8.3.9. Loader ranges: NeoForge `[26.2.0.88,26.3)`, Minecraft `[26.2,26.3)`. Build profile `mc262` on Gradle 9.2.0. The jar version is the root `mod_version`.
+- NeoForge 26.3 cell (`mc-26.3/common` + `mc-26.3/neoforge`) for Minecraft 26.3. The **loader pin** is NeoForge `26.3.0.6-beta` (ModDevGradle 2.0.147, Java 25, Mixin `JAVA_25`). The artifact version is the root `mod_version` (`vonixguardian-neoforge-26.3-2.2.0.jar`), with no extra suffix. Build profile `mc263` on Gradle 9.2.0. Re-pin `neoForge.version` when NeoForge publishes a stable 26.3 loader. This cell is one of the thirteen release jars.
+- Fabric 26.2 cell (`mc-26.2/fabric`, package `mc.v26_2`): Loom 1.17.21, Fabric Loader 0.19.5, Fabric API `0.161.0+26.2`, Java 25. Build profile `mc262fabric` on Gradle 9.6.0. It is not configured by `mc262`.
+- Fabric 26.3 cell (`mc-26.3/fabric`): Fabric Loader 0.19.5, Fabric API `0.161.0+26.3`, Loom 1.17.x, Java 25. Build profile `mc263fabric` on Gradle 9.6.0. It is not configured by `mc263`.
 
 ## [2.1.1] - 2026-09-08
 

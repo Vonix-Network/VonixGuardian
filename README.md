@@ -1,24 +1,21 @@
 # VonixGuardian
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Minecraft](https://img.shields.io/badge/Minecraft-1.18.2%20%7C%201.19.2%20%7C%201.20.1%20%7C%201.21.1%20%7C%2026.1.2%20%7C%2026.2-green.svg)]()
+[![Minecraft](https://img.shields.io/badge/Minecraft-1.18.2%20%7C%201.19.2%20%7C%201.20.1%20%7C%201.21.1%20%7C%2026.1.2%20%7C%2026.2%20%7C%2026.3-green.svg)]()
 [![Loaders](https://img.shields.io/badge/loaders-Fabric%20%7C%20Forge%20%7C%20NeoForge-orange.svg)]()
 [![Build](https://github.com/Vonix-Network/VonixGuardian/actions/workflows/build.yml/badge.svg)](https://github.com/Vonix-Network/VonixGuardian/actions/workflows/build.yml)
 
 **A blazing-fast server-side block/inventory/entity audit & rollback tool for modded Minecraft.**
 
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 and 26.2 NeoForge lanes. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane and a **beta** NeoForge 26.3 ("Wilderness Bound") cell. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane and the 26.2 Fabric lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
-Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across MC 1.18.2 → 1.21.1 plus the 26.1.2 NeoForge lane and the 26.3 Fabric lane. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
+Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, Forge, and NeoForge — across Minecraft 1.18.2, 1.19.2, 1.20.1, 1.21.1, 26.1.2, 26.2, and 26.3. Local SQLite database by default, optional MySQL/Postgres backend, rolling JSON log file, server-thread-friendly async queue, brigadier command tree modelled on CoreProtect's `/co` UX.
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current release:** `2.1.2` (unified across all thirteen loader cells) · **Published stable:** `2.1.0` · **Common repository line:** `2.0.0` → `2.1.0` → `2.1.2`. The published `3.0.0-m1` prerelease remains historical provenance for its separate two-cell preview and is not reclassified by this release.
+> **Current release:** `2.2.0` across thirteen primary jars. The published `3.0.0-m1` preview remains historical provenance for its separate two-cell preview and is not reclassified by this release.
 >
 > **Public wiki:** https://modwiki.vonix.network/mods/vonixguardian/
 
-## Feature surface (`2.1.0` stable release, derived from the v1.4.1 feature line)
+## Feature surface (`2.2.0`)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -59,7 +56,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 - **i18n**: 14 language bundles ported from CoreProtect (en, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh-cn, zh-tw). Select via `config.language`.
 
-- **Performance**: bounded async writer queue with time-budgeted poll, batch INSERTs, prepared statements, indexed by `(world, x, z, y, time)`. Producer-side coalescer against modded event storms (HTTYD dragon 200k+/sec `LivingDestroyBlockEvent` floods). Auto-purge daemon (CP Patreon 24+ parity).
+- **Performance**: bounded async writer queue with time-budgeted poll, batch INSERTs, prepared statements, indexed by `(world, x, z, y, time)`. A producer-side coalescer absorbs event storms such as the pre-coalescer HTTYD dragon flood (about 200k `LivingDestroyBlockEvent` callbacks per second before coalescing). That figure is the flood the coalescer was added to collapse, not a sustained insert rate. Auto-purge is optional: the shipped `purge.autoPurgeSeconds` is `0` (unbounded; the daemon does not run). `7776000` (90 days) is the suggested busy-server horizon.
 
 - **Diagnostics**: `/vg status` is the canonical observability surface. Rate-limited WARN on drops. Rolling audit log side-channel.
 
@@ -77,7 +74,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 | 1.19.2     |   ✅   |   ✅  |    —     |
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
-Thirteen loader cells in this tree: Fabric/Forge on 1.18.2, 1.19.2, 1.20.1; Fabric/NeoForge on 1.21.1; NeoForge on 26.1.2; and Fabric/NeoForge on both 26.2 and 26.3. NeoForge did not exist before 1.20.4, so the 1.21.1 and 26.x jars replace Forge on those versions per the loader split. The 26.3 NeoForge cell is pinned to `26.3.0.6-beta` (no stable 26.3 exists yet) and ships on the pre-release / beta channel until NeoForge cuts a stable 26.3.
+Thirteen primary jars: Fabric and Forge on 1.18.2, 1.19.2, and 1.20.1; Fabric and NeoForge on 1.21.1; NeoForge on 26.1.2; Fabric and NeoForge on 26.2; Fabric and NeoForge on 26.3. NeoForge did not exist before 1.20.4, so the 1.21.1 and 26.x jars replace Forge on those versions. Every jar embeds `mod_version` `2.2.0`. The 26.3 NeoForge cell's **loader pin** is NeoForge `26.3.0.6-beta` (no stable 26.3 loader exists yet). That pin is the NeoForge version the cell compiles against. The jar is `vonixguardian-neoforge-26.3-2.2.0.jar`, with no extra version suffix.
 
 ## Architecture
 
@@ -109,7 +106,7 @@ No architectury runtime — `core` is plain Java and loader modules import it di
 ./gradlew -PbuildProfile=mc1211 :mc-1.21.1:fabric:build :mc-1.21.1:neoforge:build
 ./gradlew -PbuildProfile=mc2612  :mc-26.1.2:neoforge:build
 ./gradlew -PbuildProfile=mc262   :mc-26.2:neoforge:build
-# 26.3 NeoForge is a beta pin; requires Gradle 9.2.0+ (root wrapper stays 8.10.2)
+# 26.3 NeoForge loader pin is 26.3.0.6-beta. Gradle 9.2.0 (root wrapper stays 8.10.2).
 gradle -PbuildProfile=mc263 :mc-26.3:neoforge:build
 # Fabric 26.2 requires Gradle 9.6+ / Java 25 / Loom 1.17 (do not use the 8.10.2 wrapper):
 gradle -PbuildProfile=mc262fabric :mc-26.2:fabric:build
@@ -124,7 +121,7 @@ packaging. The root `build` task configures every loader cell and is intentional
 CI/release flows because multiple Fabric Loom versions can conflict when configured in one
 Gradle invocation. Classifier artifacts such as `-shadow`, `-all`, and `-slim` are not release assets.
 
-CI historically built an 8-jar matrix; stable `2.1.0` publishes **nine** primary artifacts (Fabric/Forge 1.18.2, 1.19.2, 1.20.1; Fabric/NeoForge 1.21.1; NeoForge 26.1.2). The release assets and checksums are the authoritative distribution package.
+The release workflow publishes **thirteen** primary jars for `2.2.0` (the matrix above) plus `SHA256SUMS`. NeoForge 26.2 and 26.3 build on Gradle 9.2.0 under profiles `mc262` and `mc263`. Fabric 26.2 and 26.3 build on Gradle 9.6.0 under `mc262fabric` and `mc263fabric`. Those Fabric cells are not included in the NeoForge profiles.
 
 ## Configuration
 
@@ -169,7 +166,8 @@ First boot writes `config/vonixguardian/config.json`:
   "permissions": { "useLuckPerms": true, "defaultOpLevel": 3 },
   "lookup": { "defaultPageSize": 7, "maxRadius": 10000, "maxResultRows": 100000, "maxConcurrent": 4 },
   "privacy": { "hashIps": false, "salt": "vonix-guardian-default-salt-CHANGE-ME" },
-  "purge": { "minAgeSecondsConsole": 86400, "minAgeSecondsInGame": 2592000 },
+  "purge": { "minAgeSecondsConsole": 86400, "minAgeSecondsInGame": 2592000, "autoPurgeSeconds": 0, "autoPurgeTime": "03:30" },
+  "rollback": { "explosionSupplementalReach": 16, "mutationBatchSize": 1000, "requireConfirm": false },
   "theme": "aqua"
 }
 ```

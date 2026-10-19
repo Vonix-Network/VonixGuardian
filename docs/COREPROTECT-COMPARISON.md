@@ -1,6 +1,6 @@
 # VonixGuardian vs CoreProtect — Complete Difference Matrix
 
-**Current `2.1.0` stable release (2026-09-07):** VonixGuardian's nine-cell stateful-container, hopper-transfer, NBT-fidelity, rollback-safety, schema/migration, null-key recovery, and Fabric descriptor-repair update. The published `3.0.0-m1` entry remains a separate two-cell prerelease milestone and is preserved below as historical provenance; this release does not relabel or erase it. Schema **v8**. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`.
+**Current `2.2.0` release:** thirteen primary jars (Fabric and Forge on 1.18.2, 1.19.2, and 1.20.1; Fabric and NeoForge on 1.21.1; NeoForge on 26.1.2; Fabric and NeoForge on 26.2 and 26.3). Schema **v9** (`Schema.CURRENT_VERSION`). The published `3.0.0-m1` entry remains a separate two-cell preview milestone and is preserved below as historical provenance; this release does not relabel or erase it. CoreProtect reference pin remains public tag `v24.0` commit `b5f534fd2c735c6f094cda8ca50a66324e81b048`. The NeoForge 26.3 cell compiles against loader pin `26.3.0.6-beta`; the jar version is `2.2.0`.
 
 ### Historical prerelease provenance
 
@@ -12,7 +12,7 @@ This file still contains a historical v1.2.0 / 2026-07-02 matrix below. Where th
 
 Implemented on this tree and **not** complete CoreProtect v24 parity:
 
-- Nine loader jars, schema v7 `pair_id`/`inventory_slot` plus v8 `vg_repair_required` / `vg_sink_outbox`.
+- Thirteen primary jars. Schema v7 `pair_id` / `inventory_slot`, v8 `vg_repair_required` / `vg_sink_outbox`, and v9 `vg_actions(ts, id)`. Current schema version is 9.
 - Player-inventory identity replacements are pair-atomic at admission, JDBC insert, quarantine group write, and group ACK. Rollback compensates a failed second half when possible and otherwise persists repair-required rows.
 - `/vg reload`, `/vg undo` (world revert for non-legacy entries), `/vg migrate-db`, `/vg teleport`, `/vg give`, auto-purge, PreLogEvent, 40 action types, and sign/NBT columns exist.
 
@@ -360,7 +360,7 @@ VG-only:
 | Language | ✅ 100+ ISO codes via Google Translate | 🟥 English-only |
 | Live reload | ✅ (`/co reload` reads file) | 🟥 stub in 1.0.0 — every field is currently restart-required |
 | Category toggles | ✅ | ✅ 11 booleans (`logBlocks`, `logContainers`, `logItems`, `logEntities`, `logExplosions`, `logChat`, `logCommands`, `logSessions`, `logSigns`, `logInteractions`, `logWorldEvents`) — note `logWorldEvents=true` is a lie today (see § 2.6 last row) |
-| IP hashing | ❓ not in snapshot | ✅ `privacy.hashIps` + `privacy.salt` (default salt is trivially weak; validator only WARNs) |
+| IP hashing | ❓ not in snapshot | ✅ `privacy.hashIps` defaults **false** (raw address stored). Enabling it with the placeholder salt is a hard `validate()` error, not a warning. `IpHasher` stores `sha256:` plus a 16-hex (64-bit) prefix. |
 | Config sub-blocks (VG only) | | `queue.maxSize/flushIntervalMs/batchSize`, `lookup.defaultPageSize/maxRadius/maxResultRows/maxConcurrent`, `purge.minAgeSecondsConsole/minAgeSecondsInGame`, `logFile.enabled/directory/gzipRotated/retentionDays` |
 | Migration on load | ❓ not documented | ✅ `ConfigLoader.migrateForwardCompat` backfills 1.1.4 coalescer defaults + 1.1.5 allowlist to sensible values for pre-1.1.4/1.1.5 configs. Treats `0` as "unset"; negative to actually disable (deliberate footgun-prevention) |
 

@@ -228,29 +228,30 @@ A single INFO line at startup records which path was chosen.
 
 | Field      | Type    | Default                                  | Valid range                          | Controls                                                  |
 |------------|---------|------------------------------------------|--------------------------------------|-----------------------------------------------------------|
-| `hashIps`  | boolean | `false`                                  | —                                    | When `true`, IP and hostname are hashed on `SESSION_JOIN`. |
-| `salt`     | string  | `"vonix-guardian-default-salt-CHANGE-ME"` | length `>= 16` when `hashIps` is true | HMAC-style salt prefix used by `IpHasher`.                |
+| `hashIps`  | boolean | `false`                                  | —                                    | When `true`, the `SESSION_JOIN` target is passed through `IpHasher` before it is stored. |
+| `salt`     | string  | `"vonix-guardian-default-salt-CHANGE-ME"` | length `>= 16` when `hashIps` is true | Prefix mixed into the SHA-256 input by `IpHasher`. Ignored while `hashIps` is false. |
 
-**⚠ Security warning — default salt.**
+**Shipped default.** `hashIps` is **false**. `SESSION_JOIN` then stores the
+raw remote address (`SocketAddress.toString()`) in `target` / `targetId`.
+The JSON-lines audit file writes that same `target` string. It does not hash
+on its own.
 
-The shipped `salt` value `vonix-guardian-default-salt-CHANGE-ME` is a
-**placeholder**. If you enable `hashIps = true` and forget to rotate the
-salt:
+**Placeholder salt is a hard error, not a warning.** The shipped `salt`
+value `vonix-guardian-default-salt-CHANGE-ME` is a placeholder. If
+`hashIps` is `true` and the salt is still that placeholder,
+`GuardianConfig.validate()` refuses to boot. It does not log a warning and
+continue. The same refusal applies when the salt is null or shorter than 16
+characters while hashing is on. Leave `hashIps` false to keep the raw
+address, or set a salt of at least 16 characters before enabling hashing.
 
-- The validator logs a `WARN` at every startup.
-- Hashes are stable across **every** VonixGuardian deployment that ships
-  with the same default — i.e. an attacker who knows the default can mount
-  a rainbow-table attack on `/24` or `/16` ranges trivially.
+**Effect of `hashIps = true`:** `IpHasher.hash` returns `sha256:` plus the
+first 16 hex characters of SHA-256 over the UTF-8 salt bytes followed by the
+UTF-8 address bytes. That is a 64-bit prefix of the digest. It is not an
+HMAC and it is not the full 256-bit digest. Only the `SESSION_JOIN` target
+is rewritten. The JSON log stores that same rewritten value.
 
-**Recommended salt:** ≥ 32 random bytes, base64-encoded. Generate with
-`openssl rand -base64 32`. Treat it as a secret on par with your DB password.
-
-**Effect of `hashIps = true`:**
-- `SESSION_JOIN.ip`        → `sha256(salt || ip)` (hex)
-- `SESSION_JOIN.hostname`  → `sha256(salt || hostname)` (hex)
-- All other action types are unaffected.
-
-**Reload:** ❌ Restart — IP hasher singleton is bound at boot.
+**Reload:** ❌ Restart — the hasher is read from the config that booted the
+session capture.
 
 ---
 
@@ -260,8 +261,24 @@ salt:
 |-------------------------|------|--------------|--------------|-------------------------------------------------------------------|
 | `minAgeSecondsConsole`  | long | `86400`      | `>= 60`      | Minimum age (sec) when purge is invoked from the **server console**. |
 | `minAgeSecondsInGame`   | long | `2592000`    | `>= 3600`    | Minimum age (sec) when purge is invoked **in-game**.              |
+| `autoPurgeSeconds`      | long | `0`          | `0` or `>= 2592000` | Retention horizon for the daily daemon. `0` means unbounded: the daemon does not run and existing rows are kept. |
+| `autoPurgeTime`         | string | `"03:30"` | `HH:mm`    | Server-local time of day the daemon runs, when `autoPurgeSeconds` is not `0`. |
 
-**Defaults in human units:** 1 day (console) / 30 days (in-game).
+**Defaults in human units:** 1 day (console) / 30 days (in-game). The shipped
+`autoPurgeSeconds` is the named constant
+`GuardianConfig.DEFAULT_AUTO_PURGE_SECONDS` (`0`). `0` means unbounded
+retention. `7776000` (90 days) is
+`GuardianConfig.SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS`, a horizon a busy
+server can set explicitly. It is not applied to new or existing configs.
+Saving or reloading the config does not rewrite a file that already has a
+value, and a missing key still deserialises as `0`.
+
+When the **loaded** value is `0`, boot logs one warning
+(`autoPurgeSeconds is 0 (unbounded retention...)`) and `/vg status` prints
+an Auto-purge section that says the daemon is off and quotes the 90-day
+suggestion. The warning follows the loaded value, so an operator who sets
+`7776000` does not see it. `/vg reload` rebuilds the scheduler when
+`autoPurgeSeconds` or `autoPurgeTime` changes.
 
 **Safety rationale.** `/vg purge` is destructive and irreversible. Two
 separate floors exist because:
@@ -279,7 +296,28 @@ The validator refuses to load a config that goes below either floor. There
 is **no** kill-switch to bypass the floors at runtime — change the config
 and restart.
 
-**Reload:** ❌ Restart — floors are read once at boot by the purge command.
+**Reload:** the two age floors are read when a purge command runs. The
+daemon schedule rebuilds on `/vg reload`.
+
+---
+
+## 9b. `rollback` — engine knobs
+
+| Field | Type | Default | Controls |
+|-------|------|---------|----------|
+| `explosionSupplementalReach` | int | `16` | Extra blocks added to the supplemental explosion scan. |
+| `mutationBatchSize` | int | `1000` | Mutations applied per tick during rollback and restore. |
+| `requireConfirm` | boolean | `false` | When `true`, `/vg rollback` and `/vg restore` stop after the preview. `/vg apply` is the confirmation. |
+
+**Shipped behaviour is unchanged.** `requireConfirm` defaults to `false`,
+including when the key is absent from an existing `config.json`. At op level
+3, rollback and restore still apply immediately. The permission and op-level
+table is not changed.
+
+**Recommended fleet setting:** `"rollback": { "requireConfirm": true }` (keep
+the other two fields). Staff then see the preview and must run `/vg apply`.
+Turn this on deliberately. `/vg reload` picks the new value up
+(`rollback.requireConfirm` is in the hot-swap set).
 
 ---
 
@@ -370,7 +408,16 @@ before saving — `config.json` is parsed as **strict JSON**, not JSON5.
   // §9 — /vg purge safety floors. Cannot be lowered below the validator minima.
   "purge": {
     "minAgeSecondsConsole": 86400,    // 1 day;  floor 60      s
-    "minAgeSecondsInGame": 2592000    // 30 days; floor 3600    s
+    "minAgeSecondsInGame": 2592000,   // 30 days; floor 3600    s
+    "autoPurgeSeconds": 0,            // 0 = unbounded; 7776000 = suggested 90-day horizon
+    "autoPurgeTime": "03:30"
+  },
+
+  // rollback.requireConfirm defaults false. Recommended fleet setting is true.
+  "rollback": {
+    "explosionSupplementalReach": 16,
+    "mutationBatchSize": 1000,
+    "requireConfirm": false
   },
 
   // §10 — Chat theme.

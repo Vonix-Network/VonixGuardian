@@ -5,10 +5,11 @@
  * Bundles `core` + shared common code + sqlite-jdbc (the default DB driver)
  * via Shadow into a single drop-in jar.
  *
- * NeoForge has no stable 26.3 release; this cell pins 26.3.0.6-beta and is
- * published on the pre-release / beta channel. The artifact version is the
- * unified root `mod_version` (no per-cell suffix). Re-pin neoForge.version
- * (and the mods.toml neoforge range) when stable 26.3 lands.
+ * NeoForge has no stable 26.3 loader; this cell's loader pin is 26.3.0.6-beta.
+ * The artifact version is the unified root `mod_version` (no per-cell suffix)
+ * and the jar is one of the thirteen 2.2.0 release jars. Re-pin
+ * neoForge.version (and the mods.toml neoforge range) when a stable 26.3
+ * loader lands.
  *
  * MySQL/Postgres drivers are NOT shaded — operators using those backends drop
  * the driver jar alongside ours.

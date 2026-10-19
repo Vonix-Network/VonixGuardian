@@ -4,6 +4,7 @@ import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.perms.OpLevelFallback;
 import network.vonix.guardian.core.rollback.WorldMutator;
+import network.vonix.guardian.core.storage.GuardianDao;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -77,7 +78,22 @@ class GuardianStatusTest {
                     "minecraft:dirt", "minecraft:air", "test");
             }
 
+            long batchId = g.dao().openRollbackBatch(null, 1, "{}", java.util.List.of(1L, 2L));
+            g.dao().markRepairRequired(java.util.List.of(
+                    new GuardianDao.RepairRequired(9L, null, batchId, "clear failed", 1L)));
+
             String report = String.join("\n", GuardianStatus.render(g));
+
+            assertThat(report).contains("batch " + batchId);
+            assertThat(report).contains("mode=RESTORE");
+            assertThat(report).contains("affected=2");
+            assertThat(report).contains("repair action 9");
+            assertThat(report).contains("inspect with /vg lookup before re-running");
+            assertThat(report).contains("0 = unbounded");
+            g.rollbackEngine().recoverIncompleteBatches();
+            assertThat(g.dao().findOpenRollbackBatches(20))
+                    .extracting(GuardianDao.OpenRollbackBatch::id)
+                    .contains(batchId);
 
             assertThat(report).contains("§ Coalescer");
             assertThat(report).contains("sinkDrops");

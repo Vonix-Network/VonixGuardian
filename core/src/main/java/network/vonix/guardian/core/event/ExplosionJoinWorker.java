@@ -4,6 +4,8 @@
  */
 package network.vonix.guardian.core.event;
 
+import network.vonix.guardian.core.action.Action;
+import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.event.EventSubmitter;
 import network.vonix.guardian.core.event.Sentinel;
 import network.vonix.guardian.core.rollback.ExplosionAffectedList;
@@ -15,6 +17,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -96,6 +99,13 @@ public final class ExplosionJoinWorker implements AutoCloseable {
 
     private final ExecutorService worker;
 
+    /**
+     * Called when the worker rejects a handoff, before the rejection is only a
+     * log line. Production journals the center event through the write queue.
+     * Null in unit tests that do not supply a queue.
+     */
+    private final Consumer<Action> rejectedHandoff;
+
     /** Wall-time (ns) sink for the join step. Read from tests / benchmarks. */
     private volatile long lastJoinNanos;
 
@@ -106,7 +116,29 @@ public final class ExplosionJoinWorker implements AutoCloseable {
     private volatile long chunkCount;
 
     public ExplosionJoinWorker() {
-        this(new ThreadPoolExecutor(
+        this((Consumer<Action>) null);
+    }
+
+    /**
+     * Production constructor. {@code rejectedHandoff} journals an explosion
+     * whose join could not be queued. It runs on the server thread.
+     */
+    public ExplosionJoinWorker(Consumer<Action> rejectedHandoff) {
+        this(defaultExecutor(), rejectedHandoff);
+    }
+
+    /** Test hook — inject a same-thread executor to observe join synchronously. */
+    ExplosionJoinWorker(ExecutorService worker) {
+        this(worker, null);
+    }
+
+    ExplosionJoinWorker(ExecutorService worker, Consumer<Action> rejectedHandoff) {
+        this.worker = Objects.requireNonNull(worker, "worker");
+        this.rejectedHandoff = rejectedHandoff;
+    }
+
+    private static ExecutorService defaultExecutor() {
+        return new ThreadPoolExecutor(
                 1, 1, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(MAX_PENDING_TASKS),
                 r -> {
@@ -114,12 +146,7 @@ public final class ExplosionJoinWorker implements AutoCloseable {
                     t.setDaemon(true);
                     return t;
                 },
-                new ThreadPoolExecutor.AbortPolicy()));
-    }
-
-    /** Test hook — inject a same-thread executor to observe join synchronously. */
-    ExplosionJoinWorker(ExecutorService worker) {
-        this.worker = Objects.requireNonNull(worker, "worker");
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     /**
@@ -182,7 +209,20 @@ public final class ExplosionJoinWorker implements AutoCloseable {
             worker.execute(() -> joinAndSubmit(submitter, au, an, wid, fcx, fcy, fcz, st,
                     fxs, fys, fzs, fids, fmetas, fnbts, fn));
         } catch (RejectedExecutionException rex) {
-            LOG.warn("Guardian ExplosionJoinWorker: worker rejected explosion handoff for {} entries", fn, rex);
+            if (rejectedHandoff != null) {
+                Action audit = new Action(
+                        0L, System.currentTimeMillis(), ActionType.EXPLOSION,
+                        au, an, wid, fcx, fcy, fcz,
+                        "entries=" + fn, null, fn, false, st);
+                try {
+                    rejectedHandoff.accept(audit);
+                } catch (Throwable t) {
+                    LOG.error("Guardian ExplosionJoinWorker: rejected explosion at {} {},{},{} could not be journaled",
+                            wid, fcx, fcy, fcz, t);
+                }
+            }
+            LOG.warn("Guardian ExplosionJoinWorker: worker rejected explosion handoff for {} entries at {} {},{},{}",
+                    fn, wid, fcx, fcy, fcz, rex);
         }
     }
 

@@ -3,70 +3,70 @@
 ## Repository identity
 
 - **Repository:** `Vonix-Network/VonixGuardian`
-- **Canonical source lineage:** existing owner-authorized VonixGuardian checkout; this file may be copied into a temporary release candidate and must not be mistaken for a separate repository lineage
 - **Default branch:** `main`
-- **Project release:** **`2.1.1`** candidate successor to stable `2.1.0`
-- **Common-generation lineage:** begins at `2.0.0`
+- **Project release:** **`2.2.0`** (`mod_version` in `gradle.properties`)
+- **Schema:** **9** (`Schema.CURRENT_VERSION`)
+- **Primary jars:** **13**
 - **Project role:** server-side audit, attribution, lookup, rollback, purge, and database utilities for modded Minecraft
 
-This repository contains all supported Minecraft/loader lanes in one repository. It is independent of VSU and Viscord version numbering. Historical common-generation release `2.0.0` established the shared line; stable `2.1.0` advances the accepted container-fidelity, hopper-transfer, NBT, rollback, schema/migration, recovery, and packaging work across the full nine-cell matrix. The published `3.0.0-m1` preview remains separate historical provenance and is not relabeled by this release.
+This repository contains every supported Minecraft/loader lane. It is independent of VSU and Viscord version numbering. The published `3.0.0-m1` preview remains separate historical provenance and is not relabeled by `2.2.0`. Historical `2.1.x` changelog sections stay historical.
 
 ## Read first
 
 1. `AGENTS.md` (this file)
 2. `README.md`
-3. `CHANGELOG.md`
-4. Root `gradle.properties`, `settings.gradle`, and `gradle/libs.versions.toml`
+3. `CHANGELOG.md` section `[2.2.0]`
+4. Root `gradle.properties`, `settings.gradle`, and `.github/workflows/release.yml`
 5. The selected `mc-<version>/` module's `build.gradle`
-6. Relevant docs, tests, and `.github/workflows/release.yml`
-7. Source and database/schema contracts before changing behavior
+6. `core/src/main/java/network/vonix/guardian/core/storage/Schema.java` before any storage change
 
-## Supported repository layout
+## Supported matrix
 
-| Minecraft | Loaders | Directory |
-|---|---|---|
-| 1.18.2 | Fabric, Forge | `mc-1.18.2/` |
-| 1.19.2 | Fabric, Forge | `mc-1.19.2/` |
-| 1.20.1 | Fabric, Forge | `mc-1.20.1/` |
-| 1.21.1 | Fabric, NeoForge | `mc-1.21.1/` |
-| 26.1.2 | NeoForge | `mc-26.1.2/` |
-| 26.2 | NeoForge | `mc-26.2/` |
-| 26.2 | Fabric | `mc-26.2/` |
-| 26.3 | Fabric | `mc-26.3/` |
+| Minecraft | Loaders | Directory | Release profile | JDK | Gradle |
+|---|---|---|---|---|---|
+| 1.18.2 | Fabric, Forge | `mc-1.18.2/` | `mc11xx` | 17 | 8.10.2 |
+| 1.19.2 | Fabric, Forge | `mc-1.19.2/` | `mc11xx` | 17 | 8.10.2 |
+| 1.20.1 | Fabric, Forge | `mc-1.20.1/` | `mc11xx` | 17 | 8.10.2 |
+| 1.21.1 | Fabric, NeoForge | `mc-1.21.1/` | `mc1211` | 21 | 8.10.2 |
+| 26.1.2 | NeoForge | `mc-26.1.2/` | `mc2612` | 25 | 9.2.0 |
+| 26.2 | NeoForge | `mc-26.2/` | `mc262` | 25 | 9.2.0 |
+| 26.2 | Fabric | `mc-26.2/` | `mc262fabric` | 25 | 9.6.0 |
+| 26.3 | NeoForge | `mc-26.3/` | `mc263` | 25 | 9.2.0 |
+| 26.3 | Fabric | `mc-26.3/` | `mc263fabric` | 25 | 9.6.0 |
 
-The repository-level `core/` module owns loader-neutral storage, audit, rollback, schema, API, and query contracts. Version modules consume that core through their settings/dependency wiring. The 26.1.2 and 26.2 NeoForge lanes use Java 25 and the ModDevGradle/Shadow/Jar-in-Jar packaging path described in `LIBRARY-PACKAGING.md`.
-| 26.3 | NeoForge (**beta**) | `mc-26.3/` |
-The repository-level `core/` module owns loader-neutral storage, audit, rollback, schema, API, and query contracts. Version modules consume that core through their settings/dependency wiring. The 26.1.2 and 26.3 NeoForge lanes use Java 25 and the ModDevGradle/Shadow/Jar-in-Jar packaging path described in `LIBRARY-PACKAGING.md`. The 26.3 cell pins NeoForge `26.3.0.6-beta` (no stable 26.3 exists) and embeds a cell-local `-beta` artifact version; re-pin when NeoForge cuts stable 26.3.
+That is thirteen primary jars. Every jar embeds root `mod_version` `2.2.0`. Do not add a per-cell `-beta` suffix.
+
+The 26.3 NeoForge **loader pin** is `26.3.0.6-beta` (`mc-26.3/neoforge/build.gradle`). That pin is the NeoForge version the cell compiles against. The published jar name is `vonixguardian-neoforge-26.3-2.2.0.jar`.
+
+Fabric 26.2 is included only under `mc262fabric`. Fabric 26.3 is included only under `mc263fabric`. Loom 1.17.21 requires Gradle 9.5+, so those Fabric cells must not be configured by `mc262`, `mc263`, or `all` (those profiles run on Gradle 9.2.0 or 8.10.2). Do not bump the root 8.10.2 wrapper to satisfy one cell.
+
+`core/` is loader-neutral storage, audit, rollback, schema, API, and query code. Version modules depend on it. There is no Architectury runtime.
 
 ## Version contract
 
-- The Milestone 1 preview artifact embeds **`3.0.0-m1`**.
-- The GitHub pre-release tag and title are **`v3.0.0-m1`**.
-- Historical releases such as `v1.0.0`, `v1.4.1`, and `v1.4.3` remain immutable.
-- Keep root `gradle.properties`, `GuardianAPI.PLUGIN_VERSION`, Fabric nested-core metadata, NeoForge metadata expansion, tests, README, docs, and changelog aligned for any versioned release successor.
-- Do not add Minecraft or loader suffixes to the embedded public version; those belong in artifact names and the release matrix.
+- `2.2.0` is the embedded public version on every current cell.
+- The historical Milestone 1 preview artifact embeds `3.0.0-m1`. Leave that provenance immutable.
+- Historical tags such as `v1.0.0`, `v1.4.1`, `v1.4.3`, and `v2.1.0` stay immutable.
+- Do not add Minecraft or loader suffixes to the embedded public version. Those belong in artifact names.
+- Do not bump `mod_version` or `Schema.CURRENT_VERSION` as a drive-by.
 
 ## Build and CI
 
 The authoritative release workflow is `.github/workflows/release.yml`.
 
-- `workflow_dispatch` runs the nine-lane build matrix only; the release job is guarded to `refs/tags/v*` and must not publish a release for a branch dispatch.
-- Pushing the owner-authorized stable tag (for this release, `v2.1.0`) runs all nine cells and publishes the GitHub release only after the matrix succeeds.
-- 1.18.2–1.20.1 lanes use Java 17 with Gradle 8.10.2.
-- 1.21.1 lanes use Java 21 with Gradle 8.10.2.
-- 26.1.2 and 26.2 NeoForge use Java 25 with Gradle 9.2.0+. Gradle 8.x cannot load Java 25 bytecode and must not be used for those lanes.
-- 26.1.2 and 26.3 NeoForge use Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for those lanes. The 26.3 cell is a beta-channel extra (not part of the stable nine-cell GitHub release matrix).
-- 26.1.2 NeoForge uses Java 25 with Gradle 9.2.0. Gradle 8.x cannot load Java 25 bytecode and must not be used for that lane.
-- 26.2 Fabric uses Java 25, Fabric Loom 1.17.x, and **Gradle 9.6.0+**. Do not globally bump the 8.10.2 wrapper (it still serves 1.18–1.21 Loom 1.7.4). Invoke Gradle 9.6+ with `-PbuildProfile=mc262fabric`.
-- 26.3 Fabric uses Java 25 with Gradle 9.6.0+ and Fabric Loom 1.17.x (`-PbuildProfile=mc263fabric`). Do not configure it in the same Gradle invocation as fabric-loom 1.7.x cells.
-- CI provisions Gradle explicitly with `gradle/actions/setup-gradle`; do not assume wrapper binaries are committed.
-- Each matrix job selects one release JAR and uploads it. The release job requires exactly nine JARs and writes `SHA256SUMS`.
-- CI does not deploy, activate, restart, or migrate a live server/database.
+- `workflow_dispatch` builds the matrix and does not publish.
+- A `v*` tag without a hyphen runs the release job. `prerelease` stays false.
+- The release job requires exactly **13** jars and writes `SHA256SUMS`.
+- Release notes are extracted from the `## [2.2.0]` changelog section. Do not hardcode an older release's highlights.
+- NeoForge 26.2 and 26.3 jobs stay on Gradle 9.2.0. Fabric 26.2 and 26.3 jobs stay on Gradle 9.6.0.
+- Gradle 8.x cannot load Java 25 bytecode.
+- CI does not deploy, restart, or migrate a live server or database.
 
-Useful scoped commands, when the declared local toolchain is available:
+Useful scoped commands:
 
 ```text
-gradle -PbuildProfile=coreonly :core:build --no-daemon
+gradle -PbuildProfile=coreonly :core:test --no-daemon
+gradle -PbuildProfile=mc11xx :mc-1.18.2:forge:build --no-daemon
 gradle -PbuildProfile=mc1211 :mc-1.21.1:neoforge:build --no-daemon
 gradle -PbuildProfile=mc2612 :mc-26.1.2:neoforge:build --no-daemon
 gradle -PbuildProfile=mc262 :mc-26.2:neoforge:build --no-daemon
@@ -75,101 +75,70 @@ gradle -PbuildProfile=mc262fabric :mc-26.2:fabric:build --no-daemon
 gradle -PbuildProfile=mc263fabric :mc-26.3:fabric:build --no-daemon
 ```
 
-Do not infer release readiness from a core-only build. The full nine-cell CI matrix is the publication gate.
+A green core test run is not a dedicated-server boot. A green loader build is not live rollback proof.
 
 ## Runtime and database boundary
 
-- Core schema truth is `core/src/main/java/network/vonix/guardian/core/storage/Schema.java`.
-- Treat database migrations, lookup semantics, rollback safety, purge behavior, and pair-ID admission as correctness-sensitive.
-- Static schema/tests and CI packaging do not prove a production database migration or live server activation.
-- Do not connect to production databases, inspect live worlds, or change Pterodactyl/server state under a source publication task.
-- Runtime testing, deployment, restart, and rollback execution require separate named owner authority and separate evidence.
+- Schema truth is `Schema.java`. Current version is 9. Migrations are additive.
+- Do not change stored data formats, hash width, or salt handling without an explicit schema decision. `IpHasher` stores `sha256:` plus a 16-hex prefix. `privacy.hashIps` defaults to false, so the raw address is what gets stored.
+- `purge.autoPurgeSeconds` ships as `GuardianConfig.DEFAULT_AUTO_PURGE_SECONDS` (`0`, unbounded). `7776000` is the suggested busy-server horizon and is not applied automatically.
+- `rollback.requireConfirm` defaults to false. Do not change the op-level table to add a confirmation.
+- Boot logs open rollback batches. It does not replay them.
+- Static tests and CI packaging do not prove a production migration or a live chest rollback.
+- Do not connect to production databases, inspect live worlds, or change server state under a source task.
 
 ## Packaging rules
 
-- Preserve the loader-specific metadata and exact `2.1.0` expansion for every stable artifact; keep the historical `3.0.0-m1` preview metadata immutable.
+- Preserve loader-specific metadata. Every current artifact expands `2.2.0`.
 - Keep Fabric nested core JAR names synchronized with the core artifact version.
-- Keep NeoForge 26.1.2 / 26.2 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
-- Keep NeoForge 26.1.2 / 26.3 Jar-in-Jar handling and Shadow relocation rules intact; SQLite JNI must not be relocated in a way that breaks native symbol lookup.
-- Exclude module descriptors and signature files only where the existing packaging contract requires it.
-- The release selection must exclude sources/dev/slim/shadow artifacts.
-- Every selected JAR must be archive-valid and contain the expected mod metadata, mod ID, version, loader identity, and required nested dependencies.
+- Keep NeoForge Jar-in-Jar and Shadow relocation rules intact. SQLite JNI must not be relocated in a way that breaks native symbol lookup.
+- The release selection excludes sources, dev, slim, and shadow artifacts.
+- Every selected JAR must be a valid archive with the expected mod id, version, and loader identity.
 
 ## Tests and verification
 
-Before publication, verify:
+Before treating a tree as a release candidate, verify:
 
-- core unit and contract tests;
-- all loader module compilation/package tasks in CI;
-- schema version and pair-ID compatibility checks;
-- archive metadata and nested-JAR contents;
-- exact nine-artifact count and `SHA256SUMS`;
-- remote tag/release commit/tree and uploaded asset digests after publication.
+- core unit and contract tests, including the block-entity clear/place contract and the container preflight;
+- all thirteen loader cells compile and package;
+- schema version still 9;
+- artifact count is 13 and `SHA256SUMS` matches those jars.
 
-Static build/test evidence must be reported separately from runtime or production database evidence.
+Report static build evidence separately from dedicated-server or production-database evidence.
 
 ## Documentation rules
 
-README/docs/changelog must accurately state:
+README, docs, changelog, and release notes must agree on:
 
-- the six supported version directories and ten loader cells (stable `2.1.0` published nine);
-- Guardian's independent `2.0.0` release identity;
-- common-generation origin at `2.0.0` without implying linkage to VSU or Viscord releases;
-- database/schema and rollback safety boundaries;
-- Java/Gradle requirements, including Gradle 9.2.0+ for MC 26.1.2 and 26.2;
-- the six supported version directories, nine stable loader cells, and the extra 26.3 NeoForge beta cell;
-- Java/Gradle requirements, including Gradle 9.2.0 for MC 26.1.2 and MC 26.3;
-- CI release behavior and the fact that no live deployment or migration occurs.
+- release `2.2.0` and schema 9;
+- the thirteen-jar matrix above;
+- the 26.3 NeoForge loader pin `26.3.0.6-beta`, without calling the jar a prerelease;
+- `privacy.hashIps` default **false**, and a hard validation error (not a warning) when hashing is enabled with the placeholder salt;
+- `autoPurgeSeconds` `0` means unbounded, with `7776000` as the suggested busy-server horizon;
+- open rollback batches are inspected, not auto-replayed.
 
-Historical release text must remain historical and must not be rewritten as the current `2.0.0` feature set.
+Do not rewrite historical `2.1.x` changelog sections into the current feature set.
 
 ## Security and protected data
 
 - Never read, print, commit, or transmit JDBC passwords, database URLs, API keys, tokens, private keys, webhook URLs, or authorization headers.
 - Use documentation placeholders only.
-- Do not add GitHub Actions secrets from this candidate.
-- Treat world data, database files, runtime logs, player identities, and production configs as protected and out of scope unless separately authorized through an approved route.
+- Treat world data, database files, runtime logs, player identities, and production configs as protected.
 
 ## Git and change discipline
 
 - Start with `git status --short --branch`.
-- Preserve unrelated work, tags, releases, and sibling projects.
-- Stage explicit paths; exclude `build/`, Gradle caches, runtime worlds, databases, logs, generated evidence, and credentials.
-- Run `git diff --check` before commit.
+- Stage explicit paths. Exclude `build/`, `.gates/`, Gradle caches, jars, logs, and credentials.
 - Never force-push or rewrite immutable release history.
-- A green CI run is not live runtime proof; a GitHub release is not deployment or migration approval.
-
-## Release procedure
-
-1. Verify the release branch, remote identity, current commit/tree, existing tags, and releases.
-2. Confirm every selected stable artifact embeds `2.1.0` and the historical `3.0.0-m1` preview remains unchanged.
-3. Push only the owner-authorized stable release branch/tag; do not rewrite `main` history or any historical tag.
-4. Run the full nine-cell core/loader gates and require fresh Terra acceptance for the exact versioned artifacts.
-5. Push only the exact owner-authorized `v2.1.0` tag.
-6. Verify the GitHub stable release, all nine declared primary JARs, `SHA256SUMS`, notes, and stable-release state.
-7. Independently read back the release commit/tree and every asset digest.
-8. Keep live server/database activation explicitly unperformed unless separately evidenced and authorized.
+- Do not push, tag, or publish unless the owner asked for that exact action.
+- A green CI run is not live runtime proof.
 
 ## Stop conditions
 
 Stop and report on:
 
-- wrong repository/branch/tag identity;
-- inconsistent version metadata or nested core JAR names;
-- missing/failed matrix lane or artifact-count mismatch;
-- Gradle/JDK mismatch for MC 26.1.2 / 26.2;
-- Gradle/JDK mismatch for MC 26.1.2 or MC 26.3;
-- schema/rollback/pair-ID test failure;
-- protected data or credential exposure;
-- request to deploy, restart, migrate, purge, or mutate a live server/database;
-- request to overwrite a historical tag/release.
-
-## Completion checklist
-
-- [ ] Root AGENTS, README, docs, and changelog agree on stable `2.1.0`; historical `3.0.0-m1` text is explicitly marked historical.
-- [ ] All six version directories remain in this repository (26.3 is a beta extra cell).
-- [ ] All nine selected stable artifacts embed `2.1.0`; the separate `3.0.0-m1` preview remains historical provenance.
-- [ ] Manual CI dispatch cannot publish a release.
-- [ ] CI build-only matrix passes 9/9.
-- [ ] `v2.1.0` stable assets and hashes read back remotely.
-- [ ] No live deployment, restart, or production migration is claimed without evidence.
+- a request to deploy, restart, migrate, purge, or mutate a live server or database;
+- a request to overwrite a historical tag or release;
+- a schema or stored-format change that the task did not explicitly authorize;
+- a matrix lane that fails, or an artifact count other than 13;
+- a Gradle/JDK mismatch for a 26.x cell.

@@ -564,12 +564,26 @@ public final class RollbackEngine {
 
     /**
      * Startup recovery: scan for batches that were opened but never closed
-     * (server crashed mid-rollback) and log a WARN per affected action so
-     * operators can decide whether to re-run rollback or accept the state.
+     * (server crashed mid-rollback) and log them. This method is read-only.
+     * It must not replay container or inventory edits on boot. Operators inspect
+     * the open batch ids on {@code /vg status} and decide whether to re-run.
      */
     public void recoverIncompleteBatches() throws Exception {
         List<Long> ids = dao.findIncompleteBatchActionIds();
-        if (ids == null || ids.isEmpty()) {
+        List<GuardianDao.OpenRollbackBatch> open = dao.findOpenRollbackBatches(20);
+        boolean noIds = ids == null || ids.isEmpty();
+        boolean noBatches = open == null || open.isEmpty();
+        if (noIds && noBatches) {
+            return;
+        }
+        if (!noBatches) {
+            for (GuardianDao.OpenRollbackBatch batch : open) {
+                String mode = batch.mode() == 0 ? "ROLLBACK" : batch.mode() == 1 ? "RESTORE" : "mode=" + batch.mode();
+                LOG.warn("RollbackEngine: open batch id={} mode={} affected={} — inspect before re-running",
+                    batch.id(), mode, batch.affected());
+            }
+        }
+        if (noIds) {
             return;
         }
         LOG.warn("RollbackEngine: found {} action(s) in incomplete rollback batches — operator review required",

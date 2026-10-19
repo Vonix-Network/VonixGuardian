@@ -141,14 +141,13 @@ jobs:
             echo
             echo "### Highlights"
             echo
-            echo "- Extends slot-level stateful container and hopper tracking across all supported cells, with exact before/after slot diffs and paired transfer correlation."
-            echo "- Preserves item NBT, block-state properties, block-entity NBT, and entity NBT through capture, queue admission, rollback, and restore; oversized payloads are rejected before decode or admission."
-            echo "- Keeps paired transfers fail-closed: incomplete or stale pairs are not mutated, and second-half failures compensate the first half when possible."
-            echo "- Carries forward additive schema/migration continuity through schema v8 (`pair_id`, `inventory_slot`, `vg_repair_required`, and `vg_sink_outbox`) without a destructive migration."
-            echo "- Fixes null-key recovery for Java-null, blank, and literal `null` actor names, deterministic UUID aliases, valid-name preservation, duplicate-key race recovery, and ItemFrame-style collisions."
-            echo "- Repairs Fabric hopper callback descriptors and mixin visibility/packaging assertions, including the 1.20.1 Container-based callback signature."
+            echo "Taken from CHANGELOG.md section [2.2.0]. Schema version is 9."
             echo
-            echo "This stable release is shared across all supported Fabric, Forge, and NeoForge version/loader cells."
+            awk 'BEGIN{p=0} /^## \[2\.2\.0\]/{p=1; next} /^## \[/{if(p) exit} p' CHANGELOG.md
+            echo
+            echo "Thirteen primary jars share version ${VERSION}. The NeoForge 26.3 cell is built against the NeoForge loader pin \`26.3.0.6-beta\`. The jar name is \`vonixguardian-neoforge-26.3-${VERSION}.jar\`."
+            echo
+            echo "This release covers the thirteen Fabric, Forge, and NeoForge cells below."
             echo
             echo "Public wiki: https://modwiki.vonix.network/mods/vonixguardian/"
             echo

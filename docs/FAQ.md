@@ -251,14 +251,27 @@ policy or jurisdiction prohibits it.
 
 ### Q24. Does VG log player IP addresses?
 
-Only if you explicitly opt in via `privacy.hashIps: false`. The default is
-`hashIps: true` (with our salt) so IPs are stored as a one-way hash —
-sufficient for "is this the same player who connected before?" without
-exposing the raw address.
+Yes, on `SESSION_JOIN`, unless you turn session logging off. The shipped
+default is `privacy.hashIps: false` (`Privacy(false, "vonix-guardian-default-salt-CHANGE-ME")`
+in `GuardianConfig.defaults()`). With that default the raw remote address
+(`SocketAddress.toString()`, host and port) is stored as the action's
+`target` / `targetId`. Hashing is opt-in: set `privacy.hashIps: true` and
+replace the salt.
 
-**Important:** the shipped default salt is
-`"vonix-guardian-default-salt-CHANGE-ME"`. Change it on first boot. A shared
-salt across servers makes hashes correlatable across deployments.
+When hashing is on, `IpHasher` stores `sha256:` plus the first 16 hex
+characters of SHA-256(salt bytes, then address bytes). That is a 64-bit
+prefix, not a full digest. The salt is a prefix of the digest input, not an
+HMAC key. Enabling `hashIps` while the salt is still the shipped placeholder
+is a hard error: `GuardianConfig.validate()` refuses to boot. It does not
+log a warning and continue. Set a salt of at least 16 characters, or leave
+`hashIps` false.
+
+The rolling JSON-lines log (`logs/vonixguardian/audit-YYYY-MM-DD.log`) writes
+the same `target` string the database row stores. It does not keep a second
+copy, and it does not hash on its own. With the shipped default that field
+is the raw address. With hashing on, it is the `sha256:<16 hex>` value.
+Other JSON fields on that line are `ts`, `type`, `actor` (`uuid`, `name`),
+`world`, `pos`, `amount`, `source`, and `meta`.
 
 ### Q25. Can players see other players' actions with `/vg lookup`?
 

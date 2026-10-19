@@ -8,9 +8,11 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -333,6 +335,35 @@ class ExplosionJoinWorkerTest {
         } finally {
             pool.shutdown();
         }
+    }
+
+    @Test
+    void rejectedJoinIsHandedToTheJournalBeforeTheCallReturns() {
+        ExecutorService rejecting = new AbstractExecutorService() {
+            @Override public void shutdown() {}
+            @Override public List<Runnable> shutdownNow() { return List.of(); }
+            @Override public boolean isShutdown() { return false; }
+            @Override public boolean isTerminated() { return false; }
+            @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return true; }
+            @Override public void execute(Runnable command) {
+                throw new RejectedExecutionException("full");
+            }
+        };
+        List<Action> journaled = new ArrayList<>();
+        try (ExplosionJoinWorker worker = new ExplosionJoinWorker(rejecting, journaled::add)) {
+            worker.submit(new NoopEventSubmitter(), UUID.randomUUID(), "creeper", "minecraft:overworld",
+                    5, 70, -3, "#tnt",
+                    new int[]{1, 2}, new int[]{64, 64}, new int[]{3, 4},
+                    new String[]{"minecraft:stone", "minecraft:dirt"}, 2);
+        }
+        assertThat(journaled).hasSize(1);
+        Action audit = journaled.get(0);
+        assertThat(audit.type()).isEqualTo(ActionType.EXPLOSION);
+        assertThat(audit.x()).isEqualTo(5);
+        assertThat(audit.y()).isEqualTo(70);
+        assertThat(audit.z()).isEqualTo(-3);
+        assertThat(audit.amount()).isEqualTo(2);
+        assertThat(audit.worldId()).isEqualTo("minecraft:overworld");
     }
 
     /**
