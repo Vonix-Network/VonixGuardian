@@ -93,6 +93,21 @@ public interface GuardianDao extends AutoCloseable {
     }
 
     /**
+     * Read-only view of a rollback/restore batch that was opened and not closed.
+     * {@code mode} is {@code 0} for rollback and {@code 1} for restore.
+     */
+    record OpenRollbackBatch(long id, int mode, int affected) {}
+
+    /**
+     * Open ({@code completed = 0}) rollback/restore batches, oldest id first.
+     * Default is empty so mocks and partial test DAOs keep compiling. Does not
+     * close, replay, or mutate the batches.
+     */
+    default List<OpenRollbackBatch> findOpenRollbackBatches(int limit) throws Exception {
+        return List.of();
+    }
+
+    /**
      * Insert {@code batch} and stage a JSONL outbox payload in the same JDBC
      * transaction. Default is not atomic; {@code AbstractJdbcDao} overrides.
      * When an outbox row already exists, implementations MUST skip the insert

@@ -165,7 +165,8 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         this.theme = theme;
         this.entityBlockCoalescer = entityBlockCoalescer;
         this.fluidSourceMemory = new network.vonix.guardian.core.attribution.FluidSourceMemory();
-        this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker();
+        this.explosionJoinWorker = new network.vonix.guardian.core.event.ExplosionJoinWorker(
+                queue::journalRejectedAdmission);
         this.tntPrimeMemory = new network.vonix.guardian.core.attribution.TntPrimeMemory();
         this.fireCauserMemory = new network.vonix.guardian.core.attribution.FireCauserMemory();
         this.logFileRef = logFileRef;
@@ -202,6 +203,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         LOG.info(MARKER, "Booting VonixGuardian v{} (db={}, theme={}, queue.max={})",
                 GuardianAPI.PLUGIN_VERSION,
                 config.database().type(), config.theme(), config.queue().maxSize());
+        if (config.purge() != null && config.purge().autoPurgeSeconds() == 0L) {
+            LOG.warn(MARKER,
+                    "autoPurgeSeconds is 0 (unbounded retention; the purge daemon does not run). "
+                            + "Suggested busy-server horizon is {} seconds (90 days). "
+                            + "Set purge.autoPurgeSeconds to enable it. Existing rows are not rewritten.",
+                    GuardianConfig.SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS);
+        }
 
         GuardianDao dao = StorageFactory.open(config);
         dao.init();
@@ -704,6 +712,9 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         }
         if (old.rollback().explosionSupplementalReach() != fresh.rollback().explosionSupplementalReach()) {
             hot.add("rollback.explosionSupplementalReach");
+        }
+        if (old.rollback().requireConfirm() != fresh.rollback().requireConfirm()) {
+            hot.add("rollback.requireConfirm");
         }
         if (!Objects.equals(old.language(), fresh.language())) hot.add("language");
 

@@ -150,6 +150,12 @@ class RollbackExpansionParityTest {
         }
 
         @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            calls.add("clearBlock|" + worldId + "|" + x + "|" + y + "|" + z);
+            return true;
+        }
+
+        @Override
         public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
             calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);            return true;
         }

@@ -564,12 +564,26 @@ public final class RollbackEngine {
 
     /**
      * Startup recovery: scan for batches that were opened but never closed
-     * (server crashed mid-rollback) and log a WARN per affected action so
-     * operators can decide whether to re-run rollback or accept the state.
+     * (server crashed mid-rollback) and log them. This method is read-only.
+     * It must not replay container or inventory edits on boot. Operators inspect
+     * the open batch ids on {@code /vg status} and decide whether to re-run.
      */
     public void recoverIncompleteBatches() throws Exception {
         List<Long> ids = dao.findIncompleteBatchActionIds();
-        if (ids == null || ids.isEmpty()) {
+        List<GuardianDao.OpenRollbackBatch> open = dao.findOpenRollbackBatches(20);
+        boolean noIds = ids == null || ids.isEmpty();
+        boolean noBatches = open == null || open.isEmpty();
+        if (noIds && noBatches) {
+            return;
+        }
+        if (!noBatches) {
+            for (GuardianDao.OpenRollbackBatch batch : open) {
+                String mode = batch.mode() == 0 ? "ROLLBACK" : batch.mode() == 1 ? "RESTORE" : "mode=" + batch.mode();
+                LOG.warn("RollbackEngine: open batch id={} mode={} affected={} — inspect before re-running",
+                    batch.id(), mode, batch.affected());
+            }
+        }
+        if (noIds) {
             return;
         }
         LOG.warn("RollbackEngine: found {} action(s) in incomplete rollback batches — operator review required",
@@ -1316,7 +1330,7 @@ public final class RollbackEngine {
         boolean nbt = a.hasNbt();
         return switch (a.type()) {
             case BLOCK_PLACE ->
-                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             case BLOCK_BREAK -> {
                 if (nbt) {
                     yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
@@ -1381,7 +1395,7 @@ public final class RollbackEngine {
             }
             // Block was created — inverse is to clear it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
-                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             // --- v0.1.0 expansion: containers ---
             case HOPPER_PUSH -> {
                 if (a.inventorySlot() != null) {
@@ -1497,7 +1511,7 @@ public final class RollbackEngine {
                 }
             }
             case BLOCK_BREAK ->
-                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             case CONTAINER_DEPOSIT -> {
                 if (a.inventorySlot() != null) {
                     yield mutator.tryAddToContainer(a.worldId(), a.x(), a.y(), a.z(),
@@ -1543,7 +1557,7 @@ public final class RollbackEngine {
             }
             // Block was originally destroyed/changed-away — restoring means re-destroying.
             case BURN, FADE, LEAVES_DECAY, BUCKET_FILL ->
-                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), AIR, null);
+                mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             // Block was originally created — restoring means re-placing it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
                 if (nbt) {
@@ -1678,7 +1692,7 @@ public final class RollbackEngine {
         boolean allOk = true;
         for (ExplosionAffectedList.Entry e : list.entries()) {
             // Restore direction: re-clear the affected area (re-apply the blast).
-            if (!mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), AIR, null)) {
+            if (!mutator.tryClearBlock(a.worldId(), e.x(), e.y(), e.z())) {
                 allOk = false;
             }
         }

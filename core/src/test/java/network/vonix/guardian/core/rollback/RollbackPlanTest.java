@@ -150,7 +150,7 @@ class RollbackPlanTest {
         assertThat(r.affectedIds()).containsExactly(4L);
         assertThat(r.originalFilter()).isSameAs(plan.originalFilter());
         assertThat(mutator.calls).containsExactly(
-            "setBlock|w|2|64|0|minecraft:air|null"
+            "clearBlock|w|2|64|0"
         );
         verify(dao).markRolledBack(List.of(4L), true);
         verify(dao).closeRollbackBatch(42L);
@@ -286,6 +286,12 @@ class RollbackPlanTest {
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
             calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
+        }
+
+        @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            calls.add("clearBlock|" + worldId + "|" + x + "|" + y + "|" + z);
+            return true;
         }
 
         @Override

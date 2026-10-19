@@ -55,7 +55,7 @@ class PairedRollbackRestartTest {
         engine.rollback(filter, false);
 
         assertThat(mutator.calls).contains(
-                "setBlock|w|11|64|20|minecraft:air|null",
+                "clearBlock|w|11|64|20",
                 "setBlock|w|10|64|20|minecraft:oak_log|null"
         );
     }
@@ -66,6 +66,12 @@ class PairedRollbackRestartTest {
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
             calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);
+            return true;
+        }
+
+        @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            calls.add("clearBlock|" + worldId + "|" + x + "|" + y + "|" + z);
             return true;
         }
     }

@@ -2,7 +2,9 @@ package network.vonix.guardian.core.diagnostics;
 
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.api.GuardianAPI;
+import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.event.EventHook;
+import network.vonix.guardian.core.storage.GuardianDao;
 import network.vonix.guardian.core.storage.Schema;
 
 import java.util.ArrayList;
@@ -43,6 +45,12 @@ import java.util.Map;
 public final class GuardianStatus {
 
     private GuardianStatus() {}
+
+    private static String batchMode(int mode) {
+        if (mode == 0) return "ROLLBACK";
+        if (mode == 1) return "RESTORE";
+        return "mode=" + mode;
+    }
 
     /**
      * Render the full status report. Never throws; every subsystem is wrapped
@@ -92,6 +100,38 @@ public final class GuardianStatus {
         Map<String, Long> droppedByType = safeMap(() -> g.queue().droppedByTypeSnapshot());
         if (!droppedByType.isEmpty()) {
             line(out, "  drops      " + formatHistogram(droppedByType));
+        }
+
+        // Open rollback batches are read-only here. Boot does not replay them.
+        section(out, "Rollback recovery");
+        try {
+            List<GuardianDao.OpenRollbackBatch> open = g.dao().findOpenRollbackBatches(20);
+            if (open == null || open.isEmpty()) {
+                line(out, "  open batches (none)");
+            } else {
+                line(out, "  open batches " + open.size()
+                        + " — inspect with /vg lookup before re-running rollback or restore");
+                for (GuardianDao.OpenRollbackBatch batch : open) {
+                    line(out, "  batch " + batch.id()
+                            + " mode=" + batchMode(batch.mode())
+                            + " affected=" + batch.affected());
+                }
+            }
+            List<GuardianDao.RepairRequired> repairs = g.dao().findRepairRequired();
+            if (repairs == null || repairs.isEmpty()) {
+                line(out, "  repair required (none)");
+            } else {
+                int shown = Math.min(10, repairs.size());
+                line(out, "  repair required " + repairs.size());
+                for (int i = 0; i < shown; i++) {
+                    GuardianDao.RepairRequired row = repairs.get(i);
+                    line(out, "  repair action " + row.actionId()
+                            + " batch=" + row.batchId()
+                            + " reason=" + row.reason());
+                }
+            }
+        } catch (Throwable t) {
+            line(out, "  (err: " + t.getClass().getSimpleName() + ")");
         }
 
         // ---- 4. Coalescer ----
@@ -187,6 +227,11 @@ public final class GuardianStatus {
                 section(out, "Auto-purge");
                 line(out, "  enabled    yes (keep " + ap.retentionSeconds() + "s)");
                 line(out, "  purged     " + ap.getRowsPurgedSinceRestart() + " rows this restart");
+            } else if (g.config().purge() != null && g.config().purge().autoPurgeSeconds() == 0L) {
+                section(out, "Auto-purge");
+                line(out, "  enabled    no (0 = unbounded; daemon does not run)");
+                line(out, "  suggested  " + GuardianConfig.SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS
+                        + "s (90 days, not applied)");
             }
         } catch (Throwable ignored) { }
 

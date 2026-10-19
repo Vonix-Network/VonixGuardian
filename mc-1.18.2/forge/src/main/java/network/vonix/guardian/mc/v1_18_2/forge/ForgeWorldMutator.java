@@ -110,13 +110,57 @@ public final class ForgeWorldMutator implements WorldMutator {
             if (block == null || !rl.equals(Registry.BLOCK.getKey(block))) return false;
             BlockState state = applyMeta(block.defaultBlockState(), targetMeta);
             BlockPos pos = new BlockPos(x, y, z);
-            boolean changed = level.setBlock(pos, state, Block.UPDATE_ALL);
-            return changed || level.getBlockState(pos).equals(state);
+            BlockState previousState = level.getBlockState(pos);
+            BlockEntity previousBe = blockEntityCheck(level, pos);
+            CompoundTag previousNbt = null;
+            if (previousBe != null) {
+                previousNbt = previousBe.saveWithoutMetadata();
+            }
+            return placeBlock(level, pos, state, null, previousState, previousNbt, worldId, x, y, z);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "setBlock failed at {} {},{},{}", worldId, x, y, z, t);
             return false;
         }
     }
+
+    @Override
+    public boolean tryClearBlock(String worldId, int x, int y, int z) {
+        // Set air first while the genuine block entity is still attached so
+        // vanilla's own removal path runs. A non-creating CHECK read then
+        // removes a survivor. Never call the entity-creating getBlockEntity
+        // between the removal and the state write.
+        try {
+            ServerLevel level = level(worldId);
+            if (level == null) return false;
+            BlockPos pos = new BlockPos(x, y, z);
+            BlockState air = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+            boolean ok = network.vonix.guardian.core.rollback.BlockEntityRestore.clearToAir(
+                    new network.vonix.guardian.core.rollback.BlockEntityRestore.ClearOps() {
+                        @Override public void setAir() {
+                            level.setBlock(pos, air, Block.UPDATE_ALL);
+                        }
+                        @Override public boolean isAir() {
+                            BlockState now = level.getBlockState(pos);
+                            return now.isAir() || now.equals(air);
+                        }
+                        @Override public boolean blockEntityPresent() {
+                            return blockEntityCheck(level, pos) != null;
+                        }
+                        @Override public void removeBlockEntity() {
+                            level.removeBlockEntity(pos);
+                        }
+                    });
+            if (!ok && blockEntityCheck(level, pos) != null) {
+                LOG.warn(Guardian.MARKER,
+                    "clearBlock left a block entity behind at {} {},{},{}", worldId, x, y, z);
+            }
+            return ok;
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "clearBlock failed at {} {},{},{}", worldId, x, y, z, t);
+            return false;
+        }
+    }
+
 
     @Override
     public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
@@ -154,7 +198,15 @@ public final class ForgeWorldMutator implements WorldMutator {
             if (rl == null) return false;
             Item want = Registry.ITEM.get(rl);
             if (want == null || !rl.equals(Registry.ITEM.getKey(want))) return false;
-            int remaining = Math.max(1, amount);
+            int requested = Math.max(1, amount);
+            long available = 0L;
+            for (int slot = 0; slot < c.getContainerSize() && available < requested; slot++) {
+                ItemStack s = c.getItem(slot);
+                if (!s.isEmpty() && s.getItem() == want) available += s.getCount();
+            }
+            // Preflight the full quantity so a failed rollback never partially consumes a container.
+            if (available < requested) return false;
+            int remaining = requested;
             for (int slot = 0; slot < c.getContainerSize() && remaining > 0; slot++) {
                 ItemStack s = c.getItem(slot);
                 if (s.isEmpty() || s.getItem() != want) continue;
@@ -291,7 +343,6 @@ public final class ForgeWorldMutator implements WorldMutator {
         ServerLevel level = null;
         BlockState previousState = null;
         CompoundTag previousBlockEntityNbt = null;
-        boolean mutationStarted = false;
         try {
             level = level(worldId);
             if (level == null) return false;
@@ -314,46 +365,20 @@ public final class ForgeWorldMutator implements WorldMutator {
             }
 
             BlockPos pos = new BlockPos(x, y, z);
-            if (decodedBlockEntityNbt != null) {
-                previousState = level.getBlockState(pos);
-                BlockEntity previousBlockEntity = level.getBlockEntity(pos);
-                if (previousBlockEntity != null) {
-                    previousBlockEntityNbt = previousBlockEntity.saveWithoutMetadata();
-                }
+            // Capture the prior BE for compensation on every path that may remove
+            // it — both the NBT-apply path and the stale-BE clear path.
+            previousState = level.getBlockState(pos);
+            BlockEntity previousBlockEntity = blockEntityCheck(level, pos);
+            if (previousBlockEntity != null) {
+                previousBlockEntityNbt = previousBlockEntity.saveWithoutMetadata();
             }
 
-            mutationStarted = true;
-            boolean placed = level.setBlock(pos, state, Block.UPDATE_ALL);
-            if (!placed && level.getBlockState(pos).equals(state)) placed = true;
-
-            if (!placed) {
-                restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+            if (!placeBlock(level, pos, state, decodedBlockEntityNbt, previousState, previousBlockEntityNbt, worldId, x, y, z)) {
                 return false;
             }
-
-            if (decodedBlockEntityNbt != null) {
-                CompoundTag tag = decodedBlockEntityNbt;
-                BlockEntity be = level.getBlockEntity(pos);
-                if (be == null) {
-                    restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
-                    return false;
-                }
-                try {
-                    be.load(tag);
-                    be.setChanged();
-                } catch (Throwable t) {
-                    LOG.debug(Guardian.MARKER,
-                        "setBlock NBT apply failed at {} {},{},{}; restoring prior block state",
-                        worldId, x, y, z, t);
-                    restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
-                    return false;
-                }
-            }
             return true;
+
         } catch (Throwable t) {
-            if (mutationStarted && level != null && previousState != null) {
-                restoreBlockMutation(level, new BlockPos(x, y, z), previousState, previousBlockEntityNbt);
-            }
             LOG.warn(Guardian.MARKER, "setBlock (nbt) failed at {} {},{},{}", worldId, x, y, z, t);
             return false;
         }
@@ -364,10 +389,17 @@ public final class ForgeWorldMutator implements WorldMutator {
                                                 CompoundTag previousBlockEntityNbt) {
         if (level == null || pos == null || previousState == null) return false;
         try {
-            if (!level.setBlock(pos, previousState, Block.UPDATE_ALL)) return false;
+            // A false return can still mean the previous state is already present.
+            // Never skip the captured NBT restore on that signal alone.
+            level.setBlock(pos, previousState, Block.UPDATE_ALL);
             if (!level.getBlockState(pos).equals(previousState)) return false;
             if (previousBlockEntityNbt != null) {
-                BlockEntity restored = level.getBlockEntity(pos);
+                BlockEntity restored = blockEntityCheck(level, pos);
+                if (restored == null) {
+                    // After the previous state is written back, fall back once
+                    // so NBT can attach to the entity vanilla just created.
+                    restored = level.getBlockEntity(pos);
+                }
                 if (restored == null) return false;
                 restored.load(previousBlockEntityNbt);
                 restored.setChanged();
@@ -493,6 +525,101 @@ public final class ForgeWorldMutator implements WorldMutator {
             LOG.warn(Guardian.MARKER, "removeEntity failed at {} {},{},{}", worldId, x, y, z, t);
             return false;
         }
+    }
+
+    /**
+     * One place path for the NBT and NBT-less setBlock overloads.
+     * A non-creating read must be null when the target owns no block entity.
+     * When the target owns one and no NBT was supplied, the fresh entity is
+     * left in place. Failure restores the previous state and returns false.
+     */
+    private static boolean placeBlock(ServerLevel level, BlockPos pos, BlockState state,
+                                      CompoundTag decodedBlockEntityNbt,
+                                      BlockState previousState, CompoundTag previousBlockEntityNbt,
+                                      String worldId, int x, int y, int z) {
+        try {
+            return network.vonix.guardian.core.rollback.BlockEntityRestore.place(
+                    new network.vonix.guardian.core.rollback.BlockEntityRestore.PlaceOps() {
+                        @Override public void setState() {
+                            boolean placed = level.setBlock(pos, state, Block.UPDATE_ALL);
+                            if (!placed) return;
+                        }
+                        @Override public boolean stateMatches() {
+                            return level.getBlockState(pos).equals(state);
+                        }
+                        @Override public boolean targetOwnsBlockEntity() {
+                            return state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock;
+                        }
+                        @Override public boolean blockEntityPresent() {
+                            return blockEntityCheck(level, pos) != null;
+                        }
+                        @Override public void removeBlockEntity() {
+                            level.removeBlockEntity(pos);
+                        }
+                        @Override public boolean hasNbt() {
+                            return decodedBlockEntityNbt != null;
+                        }
+                        @Override public boolean applyNbt() {
+                            BlockEntity be = blockEntityCheck(level, pos);
+                            if (be == null) return false;
+                            // Loading NBT into an entity that belongs to another block would restore the
+                            // snapshot onto the wrong block; fail closed instead.
+                            if (!ownsBlockEntity(level.getBlockState(pos), be, pos)) {
+                                LOG.warn(Guardian.MARKER,
+                                    "setBlock NBT target entity does not belong to the target block at {} {},{},{}",
+                                    worldId, x, y, z);
+                                return false;
+                            }
+                            try {
+                                be.load(decodedBlockEntityNbt);
+                                be.setChanged();
+                                return true;
+                            } catch (Throwable t) {
+                                LOG.debug(Guardian.MARKER,
+                                    "setBlock NBT apply failed at {} {},{},{}; restoring prior block state",
+                                    worldId, x, y, z, t);
+                                return false;
+                            }
+                        }
+                        @Override public void restorePrevious() {
+                            restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+                        }
+                        @Override public void onStaleClearFailed() {
+                            LOG.warn(Guardian.MARKER,
+                                "setBlock could not clear stale block entity at {} {},{},{}",
+                                worldId, x, y, z);
+                        }
+                    });
+        } catch (Throwable t) {
+            LOG.warn(Guardian.MARKER, "setBlock failed at {} {},{},{}", worldId, x, y, z, t);
+            if (previousState != null) {
+                restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
+            }
+            return false;
+        }
+    }
+
+    /**
+     * True when the block entity at {@code pos} is the type this block state creates.
+     * A same-state write can leave a pre-existing entity of another type at the
+     * position; loading captured NBT into that entity would restore the snapshot onto
+     * the wrong block, so callers fail closed when this returns false.
+     */
+    private static boolean ownsBlockEntity(BlockState state, BlockEntity be, BlockPos pos) {
+        if (be == null || state == null || pos == null) return false;
+        if (!(state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock)) return false;
+        try {
+            BlockEntity expected = entityBlock.newBlockEntity(pos, state);
+            return expected != null && expected.getType() == be.getType();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Non-creating block-entity read. IMMEDIATE would recreate an empty entity. */
+    private static BlockEntity blockEntityCheck(ServerLevel level, BlockPos pos) {
+        return level.getChunkAt(pos).getBlockEntity(pos,
+                net.minecraft.world.level.chunk.LevelChunk.EntityCreationType.CHECK);
     }
 
     private ServerLevel level(String worldId) {

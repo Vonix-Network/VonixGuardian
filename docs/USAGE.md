@@ -139,6 +139,12 @@ A rollback is **transactional and reversible**:
 
 Rows logged DURING a rollback are themselves marked with the batch ID so they don't get caught in a redo loop.
 
+`rollback.requireConfirm` defaults to **false**. Rollback and restore apply
+immediately at op level 3, which is today's behaviour. The recommended fleet
+setting is `true`: the command then stops after the preview, and `/vg apply`
+is the confirmation. Existing configs keep applying immediately until an
+operator sets the flag. There is no automatic replay of an open batch on boot.
+
 ## Status and health
 
 ```
@@ -147,10 +153,12 @@ Rows logged DURING a rollback are themselves marked with the batch ID so they do
 
 Returns:
 - DB type + connection pool stats (active / idle / waiting)
-- Queue depth + drop counter (if queue.max exceeded → drops; bump `queue.maxSize` if non-zero)
+- Queue depth, `dropped`, `quarantined`, `qOverflow` (quarantine overflow), and `qWriteFail`
 - Last write latency (p50, p99)
 - Schema version
 - Mod version + MC version + loader
+- **Rollback recovery:** open rollback and restore batch ids (`mode=ROLLBACK` is 0, `mode=RESTORE` is 1), each with its affected count, plus `vg_repair_required` rows (`repair action`, batch id, reason). This section is read-only. Boot does not replay an open batch. Inspect the listed ids with `/vg lookup` before anyone re-runs rollback or restore.
+- **Auto-purge:** when `purge.autoPurgeSeconds` is `0`, status says the daemon is off (`0 = unbounded`) and quotes the suggested 90-day horizon (`7776000` seconds). That suggestion is not applied for you.
 
 ```
 /vg reload

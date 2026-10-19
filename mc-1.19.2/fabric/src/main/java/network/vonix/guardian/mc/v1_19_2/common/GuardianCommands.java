@@ -547,7 +547,7 @@ public final class GuardianCommands {
             // Any new rollback/restore request supersedes an older actionable preview.
             final long previewGeneration = PENDING_PREVIEWS.invalidate(previewKey(actor));
             final QueryFilter filter = qf;
-            final boolean preview = previewForced || filter.preview();
+            final boolean preview = previewForced || filter.preview() || rollbackRequiresConfirm(g);
             final long chatGen = CommandChatGuard.next(actor);
             submitAsync(src, g, () -> {
                 try {
@@ -628,7 +628,7 @@ public final class GuardianCommands {
                         });
                         return;
                     }
-                    RollbackResult result = g.rollbackEngine().restore(filter, filter.preview(), actor, options);
+                    RollbackResult result = g.rollbackEngine().restore(filter, filter.preview() || rollbackRequiresConfirm(g), actor, options);
                     if (!result.preview()) {
                         if (result.mutatedWorld()) {
                             g.undoStack().push(actor != null ? actor
@@ -1164,7 +1164,7 @@ public final class GuardianCommands {
                 case "actions.itemBlacklist" -> withActions(c, c.actions().withItemBlacklist(parseList(value)));
                 case "actions.entityBlacklist" -> withActions(c, c.actions().withEntityBlacklist(parseList(value)));
                 case "storage.persistNbt" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, new GuardianConfig.Storage(parseBool(value, key)), c.rollback(), c.theme(), c.language());
-                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key), c.rollback().mutationBatchSize()), c.theme(), c.language());
+                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key), c.rollback().mutationBatchSize(), c.rollback().requireConfirm()), c.theme(), c.language());
                 case "language" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), value);
                 default -> null;
             };
@@ -1600,4 +1600,15 @@ public final class GuardianCommands {
             return 1;
         }
     }
+
+    /** Opt-in. Default false preserves immediate rollback and restore. */
+    private static boolean rollbackRequiresConfirm(Guardian g) {
+        try {
+            GuardianConfig.Rollback rollback = g.config().rollback();
+            return rollback != null && rollback.requireConfirm();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
 }

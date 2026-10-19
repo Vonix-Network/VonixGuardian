@@ -68,6 +68,41 @@ public interface WorldMutator {
         return false;
     }
 
+    /**
+     * Checked clear-to-air path used by RollbackEngine for every inverse that
+     * removes a block.
+     *
+     * <p>v2.2.0 OE1: {@code trySetBlock(..., AIR, null)} alone is not sufficient
+     * to clear a position. Vanilla {@code Level.setBlock} removes the block
+     * entity only as a side effect of a {@code BlockEntity}-owning block state
+     * change; a stale block entity at a position whose new state does not own
+     * one (gravel, fluid, kelp, air, a rotated pillar) can survive the write and
+     * then be serialised back to disk. On the next chunk load
+     * {@code BlockEntity.loadStatic} reconstructs the recorded id
+     * ({@code minecraft:bed} / {@code minecraft:banner}) against the mismatched
+     * block state and throws {@code ClassCastException}, which aborts the block
+     * entity and spams the console per affected position.
+     *
+     * <p>Implementations MUST set the block to air first, while any genuine
+     * block entity is still attached, so vanilla's own removal path runs.
+     * They then perform a non-creating read and explicitly remove a survivor.
+     * Return {@code true} only when the final state is air and that read is
+     * null. Never call an entity-creating block-entity accessor between the
+     * removal and the state write: that lookup recreates an empty entity, the
+     * clear aborts, and the container contents are already gone. If the air
+     * write does not land, do not remove the block entity. Report {@code false}
+     * when the world is unavailable, a survivor cannot be removed, or the
+     * final state is not air. Reporting {@code true} on a partially-applied
+     * clear reintroduces the orphaned-block-entity defect.
+     *
+     * <p>The default is fail-closed: a legacy implementation that cannot clear
+     * block entities returns {@code false} so the rollback reports
+     * {@code REPAIR_REQUIRED} rather than silently leaving corruption behind.
+     */
+    default boolean tryClearBlock(String worldId, int x, int y, int z) {
+        return false;
+    }
+
     /** Stable legacy ABI: remove a quantity from a container. */
     default void removeFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
         // Compatibility default for new implementations; checked loader paths override tryRemoveFromContainer.

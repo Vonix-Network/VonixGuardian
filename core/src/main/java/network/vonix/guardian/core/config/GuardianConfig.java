@@ -138,8 +138,23 @@ public record GuardianConfig(
 
     private static final Logger LOG = LoggerFactory.getLogger(GuardianConfig.class);
 
-    /** Default placeholder salt value — validate() emits a WARN if this ships to production with hashIps=true. */
+    /**
+     * Default placeholder salt. {@link #validate()} rejects the config when
+     * {@code privacy.hashIps} is true and the salt is still this value.
+     */
     public static final String DEFAULT_PRIVACY_SALT = "vonix-guardian-default-salt-CHANGE-ME";
+
+    /**
+     * Shipped {@code purge.autoPurgeSeconds}. {@code 0} means unbounded retention:
+     * the purge daemon does not run and existing rows are kept. This constant is
+     * the value written into a new default config. It does not rewrite an
+     * existing config file. {@link #SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS} is
+     * the horizon a busy server should set explicitly; it is not applied here.
+     */
+    public static final long DEFAULT_AUTO_PURGE_SECONDS = 0L;
+
+    /** 90 days. Suggested busy-server {@code purge.autoPurgeSeconds}. Not applied automatically. */
+    public static final long SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS = 7_776_000L;
 
     /** Known theme keys (matches the theme registry shipped in {@code core.theme}). */
     public static final Set<String> KNOWN_THEMES =
@@ -692,8 +707,10 @@ public record GuardianConfig(
      * @param minAgeSecondsConsole minimum age (seconds) for a purge invoked from the server console (&ge; 60)
      * @param minAgeSecondsInGame  minimum age (seconds) for a purge invoked in-game (&ge; 3600)
      * @param autoPurgeSeconds     retention horizon for the background daily purge, in seconds.
-     *                             {@code 0} disables the daemon; otherwise must be
-     *                             {@code >= 2_592_000} (30 days) to match CP Patreon 24+ semantics.
+     *                             {@code 0} means unbounded retention (the daemon does
+     *                             not run). Otherwise must be {@code >= 2_592_000}
+     *                             (30 days). {@code 7776000} (90 days) is the suggested
+     *                             busy-server horizon and is not the shipped default.
      * @param autoPurgeTime        wall-clock time-of-day (server local time) the daemon runs,
      *                             in strict 24h {@code HH:mm} form; default {@code "03:30"}.
      */
@@ -752,22 +769,33 @@ public record GuardianConfig(
      *                                   never over-admits rows.
      * @since 1.3.1 X8
      */
-    public record Rollback(int explosionSupplementalReach, int mutationBatchSize) {
+    public record Rollback(int explosionSupplementalReach, int mutationBatchSize, boolean requireConfirm) {
         public Rollback {
             if (explosionSupplementalReach < 0) explosionSupplementalReach = 16;
             if (mutationBatchSize < 1) mutationBatchSize = 1000;
         }
 
-        /** Canonical default: 16 blocks (matches vanilla TNT reach), 1000 mutations/tick. */
+        /**
+         * Canonical default: 16 blocks (matches vanilla TNT reach), 1000 mutations/tick,
+         * confirmation off so {@code /vg rollback} and {@code /vg restore} apply immediately.
+         */
         public static Rollback defaults() {
-            return new Rollback(16, 1000);
+            return new Rollback(16, 1000, false);
         }
 
         /**
-         * Pre-2.1.1 constructor. Defaults the per-tick mutation slice to 1000.
+         * Pre-2.2.0 constructor. Confirmation stays off, which is today's command behaviour.
+         */
+        public Rollback(int explosionSupplementalReach, int mutationBatchSize) {
+            this(explosionSupplementalReach, mutationBatchSize, false);
+        }
+
+        /**
+         * Pre-2.1.1 constructor. Defaults the per-tick mutation slice to 1000
+         * and leaves confirmation off.
          */
         public Rollback(int explosionSupplementalReach) {
-            this(explosionSupplementalReach, 1000);
+            this(explosionSupplementalReach, 1000, false);
         }
     }
 
@@ -819,7 +847,7 @@ public record GuardianConfig(
             new Permissions(true, 3, java.util.Map.of()),
             new Lookup(7, 10_000, 100_000, 4),
             new Privacy(false, DEFAULT_PRIVACY_SALT),
-            new Purge(86_400L, 2_592_000L, 0L, "03:30"),
+            new Purge(86_400L, 2_592_000L, DEFAULT_AUTO_PURGE_SECONDS, "03:30"),
             Storage.defaults(),
             Rollback.defaults(),
             "aqua",
@@ -852,8 +880,9 @@ public record GuardianConfig(
      *   <li>No {@code null} elements in any of the {@link Actions} blacklists</li>
      * </ul>
      *
-     * <p>A WARN is logged (without failing validation) when {@code privacy.hashIps} is true and
-     * {@code privacy.salt} is still the shipped {@link #DEFAULT_PRIVACY_SALT} placeholder.
+     * <p>Validation fails when {@code privacy.hashIps} is true and {@code privacy.salt}
+     * is still the shipped {@link #DEFAULT_PRIVACY_SALT} placeholder. Hashing is off
+     * in {@link #defaults()}.
      *
      * @throws IllegalStateException if any problem is detected; the message lists every problem
      */
@@ -1040,7 +1069,7 @@ public record GuardianConfig(
                 errors.add("purge.minAgeSecondsInGame: must be >= 3600 (got " + purge.minAgeSecondsInGame + ")");
             }
             if (purge.autoPurgeSeconds != 0L && purge.autoPurgeSeconds < 2_592_000L) {
-                errors.add("purge.autoPurgeSeconds: must be 0 (disabled) or >= 2592000 (30 days) (got "
+                errors.add("purge.autoPurgeSeconds: must be 0 (unbounded; daemon does not run) or >= 2592000 (30 days) (got "
                     + purge.autoPurgeSeconds + ")");
             }
             if (purge.autoPurgeTime == null

@@ -93,7 +93,7 @@ class RollbackEngineTest {
     }
 
     @Test
-    void rollbackBlockPlaceSetsAir() throws Exception {
+    void rollbackBlockPlaceClearsBlockAndEntity() throws Exception {
         Action place = action(1L, 100L, ActionType.BLOCK_PLACE,
             "minecraft:overworld", 5, 64, 7,
             "minecraft:stone", null, 1, false);
@@ -105,7 +105,7 @@ class RollbackEngineTest {
         assertThat(r.affectedIds()).containsExactly(1L);
         assertThat(r.dispatchedSteps()).isEqualTo(1);
         assertThat(mutator.calls).containsExactly(
-            "setBlock|minecraft:overworld|5|64|7|minecraft:air|null"
+            "clearBlock|minecraft:overworld|5|64|7"
         );
         verify(dao).markRolledBack(List.of(1L), true);
     }
@@ -340,7 +340,7 @@ class RollbackEngineTest {
     }
 
     @Test
-    void rollbackIgniteClearsTheCreatedFireBlock() throws Exception {
+    void rollbackIgniteClearsTheCreatedFireBlockAndEntity() throws Exception {
         Action ignite = action(74L, 100L, ActionType.IGNITE,
             "w", 3, 65, 4, "minecraft:fire", null, 1, false);
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(ignite));
@@ -348,7 +348,7 @@ class RollbackEngineTest {
         engine.rollback(filter, false);
 
         assertThat(mutator.calls).containsExactly(
-            "setBlock|w|3|65|4|minecraft:air|null"
+            "clearBlock|w|3|65|4"
         );
     }
 
@@ -501,7 +501,7 @@ class RollbackEngineTest {
 
         assertThat(r.affectedIds()).containsExactly(11L);
         assertThat(mutator.calls).containsExactly(
-            "setBlock|w|1|1|1|minecraft:air|null"
+            "clearBlock|w|1|1|1"
         );
     }
 
@@ -637,6 +637,13 @@ class RollbackEngineTest {
         WorldMutator failing = new RecordingMutator() {
             @Override
             public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+                throw new IllegalStateException("mutation failed");
+            }
+
+            @Override
+            public boolean tryClearBlock(String worldId, int x, int y, int z) {
+                // BLOCK_PLACE's inverse now routes through the clearing path (OE1),
+                // so the simulated world failure must live here.
                 throw new IllegalStateException("mutation failed");
             }
         };
@@ -833,7 +840,7 @@ class RollbackEngineTest {
     }
 
     @Test
-    void restoreBlockBreakClearsToAir() throws Exception {
+    void restoreBlockBreakClearsBlockAndEntity() throws Exception {
         Action brk = action(22L, 100L, ActionType.BLOCK_BREAK,
             "w", 2, 3, 4, "minecraft:diamond_ore", null, 1, true);
         when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(brk));
@@ -841,7 +848,7 @@ class RollbackEngineTest {
         engine.restore(filter, false);
 
         assertThat(mutator.calls).containsExactly(
-            "setBlock|w|2|3|4|minecraft:air|null"
+            "clearBlock|w|2|3|4"
         );
     }
 
@@ -890,6 +897,12 @@ class RollbackEngineTest {
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
             calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
+        }
+
+        @Override
+        public boolean tryClearBlock(String worldId, int x, int y, int z) {
+            calls.add("clearBlock|" + worldId + "|" + x + "|" + y + "|" + z);
+            return true;
         }
 
         @Override

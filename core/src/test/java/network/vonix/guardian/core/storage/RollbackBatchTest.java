@@ -66,12 +66,17 @@ class RollbackBatchTest {
             dao2.init();
             List<Long> incomplete = dao2.findIncompleteBatchActionIds();
             assertThat(incomplete).hasSize(100);
+            assertThat(dao2.findOpenRollbackBatches(20))
+                    .extracting(GuardianDao.OpenRollbackBatch::id, GuardianDao.OpenRollbackBatch::mode,
+                            GuardianDao.OpenRollbackBatch::affected)
+                    .containsExactly(org.assertj.core.groups.Tuple.tuple(batchId, 1, 100));
             assertThat(incomplete).containsExactlyElementsOf(ids(100));
 
             // And once we close it, recovery is clean.
             int closed = dao2.closeRollbackBatch(batchId);
             assertThat(closed).isEqualTo(1);
             assertThat(dao2.findIncompleteBatchActionIds()).isEmpty();
+            assertThat(dao2.findOpenRollbackBatches(20)).isEmpty();
         } finally {
             dao2.close();
             Files.deleteIfExists(tmp);

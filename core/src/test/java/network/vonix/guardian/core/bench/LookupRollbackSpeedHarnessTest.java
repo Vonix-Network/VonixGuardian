@@ -67,6 +67,11 @@ class LookupRollbackSpeedHarnessTest {
             public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
                 return true;
             }
+
+            @Override
+            public boolean tryClearBlock(String worldId, int x, int y, int z) {
+                return true;
+            }
         };
         RollbackEngine engine = new RollbackEngine(dao, mutator, Runnable::run);
         QueryFilter rb = QueryFilter.builder()

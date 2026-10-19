@@ -26,6 +26,7 @@ class EntityChangeAttributionPolicyTest {
     };
     private static final WorldMutator NOOP_MUTATOR = new WorldMutator() {
         @Override public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {return true; }
+        @Override public boolean tryClearBlock(String worldId, int x, int y, int z) {return true; }
         @Override public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {return true; }
         @Override public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {return true; }
         @Override public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {return true; }

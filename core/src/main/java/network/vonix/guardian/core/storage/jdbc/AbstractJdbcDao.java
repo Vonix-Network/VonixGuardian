@@ -973,6 +973,25 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     @Override
+    public List<OpenRollbackBatch> findOpenRollbackBatches(int limit) throws SQLException {
+        int cap = limit <= 0 ? 20 : Math.min(limit, 100);
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT id, mode, affected FROM vg_rollback_batches WHERE completed = 0 ORDER BY id LIMIT ?")) {
+            ps.setInt(1, cap);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<OpenRollbackBatch> out = new ArrayList<>();
+                while (rs.next()) {
+                    out.add(new OpenRollbackBatch(rs.getLong(1), rs.getInt(2), rs.getInt(3)));
+                }
+                return out;
+            }
+        } finally {
+            release(c);
+        }
+    }
+
+    @Override
     public List<Long> findIncompleteBatchActionIds() throws SQLException {
         Connection c = borrow();
         try (PreparedStatement ps = c.prepareStatement(
