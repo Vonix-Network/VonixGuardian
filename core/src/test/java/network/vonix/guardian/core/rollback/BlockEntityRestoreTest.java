@@ -131,6 +131,34 @@ class BlockEntityRestoreTest {
     }
 
     @Test
+    void placeFailsAndRestoresWhenEntityOwningTargetHasNoEntityAfterTheWrite() {
+        Level level = new Level();
+        level.placeOwnsEntity = true;
+        level.entityPresent = false;
+        level.skipEntityCreation = true;
+
+        boolean ok = BlockEntityRestore.place(level.placeOps(false));
+
+        assertThat(ok).isFalse();
+        assertThat(level.restores).isEqualTo(1);
+        assertThat(level.nbtApplied).isFalse();
+    }
+
+    @Test
+    void placeFailsAndRestoresWhenEntityOwningTargetHasNoEntityForTheNbtPath() {
+        Level level = new Level();
+        level.placeOwnsEntity = true;
+        level.entityPresent = false;
+        level.skipEntityCreation = true;
+
+        boolean ok = BlockEntityRestore.place(level.placeOps(true));
+
+        assertThat(ok).isFalse();
+        assertThat(level.restores).isEqualTo(1);
+        assertThat(level.nbtApplied).isFalse();
+    }
+
+    @Test
     void placeKeepsFreshEntityWhenTargetOwnsOneAndNoNbtWasSupplied() {
         Level level = new Level();
         level.placeOwnsEntity = true;
@@ -204,6 +232,7 @@ class BlockEntityRestoreTest {
         boolean removalFails;
         boolean placeOwnsEntity;
         boolean stateWriteFails;
+        boolean skipEntityCreation;
         boolean applyFails;
         boolean nbtApplied;
         int restores;
@@ -256,7 +285,7 @@ class BlockEntityRestoreTest {
                 return;
             }
             stateMatches = true;
-            if (placeOwnsEntity) {
+            if (placeOwnsEntity && !skipEntityCreation) {
                 entityPresent = true;
             }
         }

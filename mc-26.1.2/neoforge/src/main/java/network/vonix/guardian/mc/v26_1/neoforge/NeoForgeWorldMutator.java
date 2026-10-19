@@ -353,7 +353,9 @@ public final class NeoForgeWorldMutator implements WorldMutator {
                                                 CompoundTag previousBlockEntityNbt) {
         if (level == null || pos == null || previousState == null) return false;
         try {
-            if (!level.setBlock(pos, previousState, Block.UPDATE_ALL)) return false;
+            // A false return can still mean the previous state is already present.
+            // Never skip the captured NBT restore on that signal alone.
+            level.setBlock(pos, previousState, Block.UPDATE_ALL);
             if (!level.getBlockState(pos).equals(previousState)) return false;
             if (previousBlockEntityNbt != null) {
                 BlockEntity restored = blockEntityCheck(level, pos);
@@ -594,6 +596,14 @@ public final class NeoForgeWorldMutator implements WorldMutator {
                         @Override public boolean applyNbt() {
                             BlockEntity be = blockEntityCheck(level, pos);
                             if (be == null) return false;
+                            // Loading NBT into an entity that belongs to another block would restore the
+                            // snapshot onto the wrong block; fail closed instead.
+                            if (!ownsBlockEntity(level.getBlockState(pos), be, pos)) {
+                                LOG.warn(Guardian.MARKER,
+                                    "setBlock NBT target entity does not belong to the target block at {} {},{},{}",
+                                    worldId, x, y, z);
+                                return false;
+                            }
                             try {
                                 loadBlockEntity(be, decodedBlockEntityNbt, level);
                                 be.setChanged();
@@ -619,6 +629,23 @@ public final class NeoForgeWorldMutator implements WorldMutator {
             if (previousState != null) {
                 restoreBlockMutation(level, pos, previousState, previousBlockEntityNbt);
             }
+            return false;
+        }
+    }
+
+    /**
+     * True when the block entity at {@code pos} is the type this block state creates.
+     * A same-state write can leave a pre-existing entity of another type at the
+     * position; loading captured NBT into that entity would restore the snapshot onto
+     * the wrong block, so callers fail closed when this returns false.
+     */
+    private static boolean ownsBlockEntity(BlockState state, BlockEntity be, BlockPos pos) {
+        if (be == null || state == null || pos == null) return false;
+        if (!(state.getBlock() instanceof net.minecraft.world.level.block.EntityBlock entityBlock)) return false;
+        try {
+            BlockEntity expected = entityBlock.newBlockEntity(pos, state);
+            return expected != null && expected.getType() == be.getType();
+        } catch (Throwable t) {
             return false;
         }
     }

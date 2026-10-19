@@ -100,6 +100,13 @@ public final class BlockEntityRestore {
             }
             return true;
         }
+        // An entity-owning target with no block entity present is not a successful
+        // place: vanilla only creates one when the state write actually applies, so a
+        // missing entity means the write did not land or a stale clear consumed it.
+        if (!ops.blockEntityPresent()) {
+            ops.restorePrevious();
+            return false;
+        }
         if (!ops.hasNbt()) {
             return ops.stateMatches();
         }
