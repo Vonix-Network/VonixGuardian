@@ -67,6 +67,9 @@ public final class FabricBootstrap {
             LOG.info(Guardian.MARKER, "VonixGuardian bootstrap complete.");
         } catch (Throwable t) {
             LOG.error(Guardian.MARKER, "Failed to boot VonixGuardian", t);
+            LOG.error(Guardian.MARKER,
+            "VonixGuardian engine is not running: /vg and /guardian are NOT registered on this server. "
+            + "Resolve the boot failure above and restart the server.");
         }
     }
 

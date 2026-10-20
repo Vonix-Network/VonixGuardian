@@ -48,6 +48,9 @@ public final class VonixGuardianForge {
             ForgeBootstrap.onServerStarting(ev);
         } catch (Throwable t) {
             LOG.error(Guardian.MARKER, "Failed to boot VonixGuardian", t);
+            LOG.error(Guardian.MARKER,
+                "VonixGuardian engine is not running: /vg is NOT registered on this server. "
+                    + "Resolve the boot failure above and restart the server.");
         }
     }
 

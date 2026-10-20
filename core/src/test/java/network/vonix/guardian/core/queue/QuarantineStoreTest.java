@@ -15,6 +15,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class QuarantineStoreTest {
 
@@ -614,5 +616,31 @@ class QuarantineStoreTest {
                 throw new java.io.IOException("injected rollback failure retains crash tail");
             }
         };
+    }
+
+    @Test
+    void forceDirectoryTreatsAccessDeniedAsUnsupportedPlatformNotIOFailure(@TempDir Path tmp) {
+        // Windows refuses FileChannel.open on a directory; that must not fail boot.
+        QuarantineStore.DirectoryForce denied = directory -> {
+            throw new java.nio.file.AccessDeniedException(directory.toString());
+        };
+        assertThatCode(() -> QuarantineStore.forceDirectory(tmp, denied)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void forceDirectoryStillFailsClosedOnARealIOError(@TempDir Path tmp) {
+        QuarantineStore.DirectoryForce broken = directory -> {
+            throw new java.io.IOException("injected device error");
+        };
+        assertThatThrownBy(() -> QuarantineStore.forceDirectory(tmp, broken))
+            .isInstanceOf(java.io.IOException.class)
+            .hasMessageContaining("quarantine directory force failed");
+    }
+
+    @Test
+    void forceDirectoryRejectsMissingDirectory() {
+        assertThatThrownBy(() -> QuarantineStore.forceDirectory(null, directory -> { }))
+            .isInstanceOf(java.io.IOException.class)
+            .hasMessageContaining("parent directory missing");
     }
 }

@@ -7,12 +7,15 @@ package network.vonix.guardian.mc.v26_2.neoforge.mixin;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Explosion;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.TntBlock;
 import network.vonix.guardian.mc.v26_2.neoforge.NeoForgeMixinBridge;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
@@ -49,8 +52,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(TntBlock.class)
 public abstract class TntBlockMixin {
 
-    @Inject(method = "prime(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/entity/LivingEntity;)Z", at = @At("HEAD"), require = 0)
+    @Inject(method = "prime(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/entity/LivingEntity;)Z", at = @At("HEAD"), require = 1)
     private static void vg$onTntPrime(Level level, BlockPos pos, LivingEntity igniter, CallbackInfoReturnable<Boolean> cir) {
+        recordPrime(level, pos, igniter);
+    }
+
+    /**
+     * Chained TNT: {@code wasExploded} builds the {@code PrimedTnt} itself and never
+     * routes through {@code prime}, so without this hook a chain prime (blast or
+     * creeper) carries no igniter. 26.3 hooks the same method; this closes the only
+     * functional delta between the two NeoForge cells.
+     */
+    @Inject(method = "wasExploded", at = @At("HEAD"), require = 1)
+    private void vg$onTntChainPrime(ServerLevel level, BlockPos pos, Explosion explosion, CallbackInfo ci) {
+        LivingEntity igniter = explosion == null ? null : explosion.getIndirectSourceEntity();
+        recordPrime(level, pos, igniter);
+    }
+
+    private static void recordPrime(Level level, BlockPos pos, LivingEntity igniter) {
         try {
             if (level == null || pos == null || igniter == null) return;
             if (igniter instanceof Player p) {

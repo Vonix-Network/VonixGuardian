@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-10-20
+
+### Fixed
+
+- **The mod failed to boot on Windows-hosted servers, and `/vg` never appeared.** The durable quarantine journal forced its parent directory with `FileChannel.open(dir, READ).force(true)`; Windows rejects opening a directory that way with `AccessDeniedException`, so `Guardian.boot` threw, the loader caught it and logged `Failed to boot VonixGuardian`, and command registration — deferred until a successful boot — was never replayed. Operators saw a loaded mod, a booted server and no `/vg` command at all. The platform is now detected by capability (directory fsync is a Linux barrier) and skipped once with a warning; the journal file itself is still forced through its own channel, and a real `IOException` still fails closed. Applies to every loader cell, not only 26.x.
+- **Command loss is no longer silent.** A boot failure now logs a second, explicit error stating that `/vg` is not registered on this server, instead of leaving only `Failed to boot VonixGuardian`.
+- **26.2 NeoForge lost chained-TNT attribution.** `wasExploded` (TNT primed by an explosion or creeper) constructs the primed entity directly without going through `prime`, so chain primes carried no igniter. It is now hooked, matching 26.3.
+- **26.2 Fabric injector hardening.** `ExplosionMixin`, `ContainerMixin` (two sites), `TntBlockMixin` and `ItemTossMixin` now declare `require = 1`, matching 26.3. A future mapping drift fails loudly at mixin-apply time instead of silently dropping explosion, container and TNT attribution.
+
+### Changed
+
+- `QuarantineStore` gains a `DirectoryForce` seam with three regression tests: `AccessDeniedException` is a platform gap, a real `IOException` still fails closed, and a missing directory is rejected.
+
 ## [2.2.0] - 2026-10-12
 
 ### Fixed

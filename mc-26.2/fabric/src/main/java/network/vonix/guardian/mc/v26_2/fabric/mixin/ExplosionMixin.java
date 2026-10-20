@@ -33,7 +33,7 @@ public abstract class ExplosionMixin {
     @Shadow @Final private Vec3 center;
     @Shadow @Final private Entity source;
 
-    @Inject(method = "interactWithBlocks(Ljava/util/List;)V", at = @At("HEAD"), require = 0)
+    @Inject(method = "interactWithBlocks(Ljava/util/List;)V", at = @At("HEAD"), require = 1)
     private void vg$onInteractWithBlocks(List<BlockPos> affected, CallbackInfo ci) {
         try {
             if (affected == null || affected.isEmpty()) return;

@@ -11,11 +11,11 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current release:** `2.2.0` across thirteen primary jars. The published `3.0.0-m1` preview remains historical provenance for its separate two-cell preview and is not reclassified by this release.
+> **Current release:** `2.2.1` across thirteen primary jars. The published `3.0.0-m1` preview remains historical provenance for its separate two-cell preview and is not reclassified by this release.
 >
 > **Public wiki:** https://modwiki.vonix.network/mods/vonixguardian/
 
-## Feature surface (`2.2.0`)
+## Feature surface (`2.2.1`)
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 

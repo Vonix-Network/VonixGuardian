@@ -23,7 +23,7 @@ public abstract class ItemTossMixin {
 
     @Inject(method = "drop(Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/entity/item/ItemEntity;",
             at = @At("HEAD"),
-            require = 0)
+            require = 1)
     private void vg$onDrop(ItemStack stack, boolean includeThrowerName,
                            CallbackInfoReturnable<ItemEntity> cir) {
         try {

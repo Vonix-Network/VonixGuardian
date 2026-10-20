@@ -2,6 +2,9 @@ package network.vonix.guardian.core.queue;
 
 import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.action.ActionType;
+import network.vonix.guardian.core.Guardian;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -33,6 +36,8 @@ import java.nio.ByteBuffer;
  * cannot retire one member without the other.
  */
 class QuarantineStore {
+
+    private static final Logger LOG = LoggerFactory.getLogger(QuarantineStore.class);
 
     /** Package-private deterministic seam used only by durability regression tests. */
     interface AppendFaultInjector {
@@ -492,16 +497,72 @@ class QuarantineStore {
     }
 
     /**
-     * Force parent directory metadata (Linux). Fail closed: callers must not
-     * claim a durable append/compaction if directory force fails.
-     * Package-private seam for deterministic unit coverage; not a power-loss claim.
+     * Force parent directory metadata (Linux). Fail closed on a real I/O error:
+     * callers must not claim a durable append/compaction if directory force fails.
+     *
+     * <p>Some platforms cannot open a directory as a channel at all — Windows
+     * raises {@link java.nio.file.AccessDeniedException} for
+     * {@code FileChannel.open(dir, READ)} — and there the call is a no-op with a
+     * single warning. That is a platform gap, not a durability failure: the file
+     * itself is still forced through its own channel, and failing the whole boot
+     * would take the engine (and every command) down on a Windows-hosted server.
+     *
+     * <p>Package-private seam for deterministic unit coverage; not a power-loss claim.
      */
     static void forceDirectory(Path directory) throws IOException {
-        if (directory == null) {
-            throw new IOException("quarantine parent directory missing");
+        forceDirectory(directory, DEFAULT_DIRECTORY_FORCE);
+    }
+
+    /** Opens the directory and forces its metadata. Seam for unit coverage. */
+    interface DirectoryForce {
+        void force(Path directory) throws IOException;
+    }
+
+    private static volatile boolean directoryForceUnsupportedLogged;
+
+    /** Directory fsync is a Linux durability barrier; other platforms cannot express it. */
+    private static boolean directoryForceSupported() {
+        String os = System.getProperty("os.name", "");
+        return os != null && os.toLowerCase(java.util.Locale.ROOT).startsWith("linux");
+    }
+
+    private static final DirectoryForce DEFAULT_DIRECTORY_FORCE = directory -> {
+        // Windows cannot open a directory as a channel at all (AccessDeniedException),
+        // and some network filesystems reject the same open with a sharing or
+        // unsupported-function error. Skip by capability instead of by exception
+        // class: the journal file itself is still forced through its own channel, so
+        // only the directory-entry barrier is lost, and that barrier is Linux-only.
+        if (!directoryForceSupported()) {
+            if (!directoryForceUnsupportedLogged) {
+                directoryForceUnsupportedLogged = true;
+                LOG.warn(Guardian.MARKER,
+                    "Directory metadata force is not supported on {}; continuing with file-level force only ({})",
+                    System.getProperty("os.name"), directory);
+            }
+            return;
         }
         try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
             channel.force(true);
+        }
+    };
+
+
+    static void forceDirectory(Path directory, DirectoryForce opener) throws IOException {
+        if (directory == null) {
+            throw new IOException("quarantine parent directory missing");
+        }
+        try {
+            opener.force(directory);
+        } catch (java.nio.file.AccessDeniedException e) {
+            // Windows (and some network filesystems) refuse to open a directory as a
+            // channel. Nothing to force, and the append itself is still forced.
+            if (!directoryForceUnsupportedLogged) {
+                directoryForceUnsupportedLogged = true;
+                LOG.warn(Guardian.MARKER,
+                    "Directory metadata force is unsupported on this platform; "
+                        + "continuing with file-level force only ({}): {}",
+                    System.getProperty("os.name"), directory, e);
+            }
         } catch (IOException e) {
             throw new IOException("quarantine directory force failed: " + directory, e);
         }

@@ -55,7 +55,7 @@ public abstract class ContainerMixin {
 
     @Inject(method = "startOpen(Lnet/minecraft/world/entity/ContainerUser;)V",
             at = @At("HEAD"),
-            require = 0)
+            require = 1)
     private void vg$onStartOpen(ContainerUser user, CallbackInfo ci) {
         try {
             if (!(user instanceof Player player)) return;
@@ -73,7 +73,7 @@ public abstract class ContainerMixin {
 
     @Inject(method = "stopOpen(Lnet/minecraft/world/entity/ContainerUser;)V",
             at = @At("HEAD"),
-            require = 0)
+            require = 1)
     private void vg$onStopOpen(ContainerUser user, CallbackInfo ci) {
         try {
             if (!(user instanceof Player player)) return;
