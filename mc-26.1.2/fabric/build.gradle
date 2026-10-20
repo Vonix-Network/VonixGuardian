@@ -1,0 +1,190 @@
+/*
+ * VonixGuardian — mc-26.1.2 :fabric
+ *
+ * Fabric loader 26.1.2. Nests core and runtime libraries through Fabric Loom's
+ * JarInJar include configuration. Minecraft 26.1+ is unobfuscated, so this
+ * cell uses the non-remapping Loom plugin id.
+ */
+
+plugins {
+    id 'net.fabricmc.fabric-loom' version '1.17.21'
+    id 'java-library'
+}
+
+base { archivesName = 'vonixguardian-fabric-26.1.2' }
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(25) }
+    withSourcesJar()
+}
+
+sourceSets {
+    main {
+        java {
+            srcDir project(':mc-26.1.2:common').file('src/main/java')
+        }
+    }
+}
+
+loom {
+    serverOnlyMinecraftJar()
+    runs {
+        server {
+            server()
+            programArgs '--nogui'
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:26.1.2"
+    // MC 26.1+ is unobfuscated: official Mojang names are the runtime names.
+    // Non-remapping Loom 1.17 has no modImplementation configuration and
+    // rejects loom.officialMojangMappings().
+    implementation "net.fabricmc:fabric-loader:0.20.1"
+    implementation "net.fabricmc.fabric-api:fabric-api:0.155.3+26.1.2"
+
+    // Fabric Loom's include(...) produces nested jars under META-INF/jars.
+    // This preserves canonical JDBC/JNI packages and avoids placing JDBC
+    // classes in the outer mod artifact. Same nested set as 1.21.1 Fabric.
+    include 'org.xerial:sqlite-jdbc:3.46.1.0'
+    include 'com.mysql:mysql-connector-j:8.4.0'
+    include 'org.postgresql:postgresql:42.7.4'
+    include('com.zaxxer:HikariCP:5.1.0') { exclude group: 'org.slf4j' }
+    include 'com.google.code.gson:gson:2.10.1'
+
+    compileOnly project(':core')
+    compileOnly project(':mc-26.1.2:common')
+    compileOnly libs.sqlite.jdbc
+    compileOnly libs.mysql.connector
+    compileOnly libs.postgresql
+    compileOnly libs.hikaricp
+    compileOnly libs.gson
+    compileOnly libs.slf4j.api
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+tasks.named('compileJava') {
+    dependsOn ':mc-26.1.2:common:jar'
+}
+
+tasks.named('processResources') {
+    inputs.property 'mod_version', project.version
+    filesMatching('fabric.mod.json') {
+        expand(
+            mod_id: 'vonixguardian',
+            mod_name: 'VonixGuardian',
+            mod_version: project.version,
+            mod_authors: 'Vonix Network',
+            mod_description: 'Server-side block/inventory/entity audit & rollback for modded Minecraft.',
+            mod_license: 'MIT'
+        )
+    }
+}
+
+// Non-remapping Loom (MC 26.1+) writes the production artifact via `jar`.
+// Remapping Loom (older obfuscated versions) uses `remapJar`. Prefer remapJar
+// when present so this script stays compatible if the plugin id changes.
+def productionJarTaskName = tasks.findByName('remapJar') != null ? 'remapJar' : 'jar'
+
+tasks.register('embedCoreJarInJar') {
+    dependsOn ':core:jar', productionJarTaskName
+    doLast {
+        File artifact = tasks.named(productionJarTaskName).get().archiveFile.get().asFile
+        File coreJar = project(':core').tasks.named('jar').get().archiveFile.get().asFile
+        File tmp = new File(artifact.parentFile, artifact.name + '.core.tmp')
+        File coreWithFabricMetadata = new File(artifact.parentFile, coreJar.name + '.fabric.tmp')
+        String entryName = "META-INF/jars/${coreJar.name}"
+        String coreFabricMetadata = """{
+  "schemaVersion": 1,
+  "id": "vonixguardian-core",
+  "version": "${project.version}",
+  "name": "VonixGuardian Core",
+  "environment": "server",
+  "depends": {
+    "java": ">=17"
+  }
+}
+"""
+        new java.util.zip.ZipOutputStream(coreWithFabricMetadata.newOutputStream()).withCloseable { coreOut ->
+            new java.util.zip.ZipFile(coreJar).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    if (entry.name == 'fabric.mod.json') return
+                    coreOut.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(coreOut) }
+                    coreOut.closeEntry()
+                }
+            }
+            coreOut.putNextEntry(new java.util.zip.ZipEntry('fabric.mod.json'))
+            coreOut.write(coreFabricMetadata.getBytes('UTF-8'))
+            coreOut.closeEntry()
+        }
+        new java.util.zip.ZipOutputStream(tmp.newOutputStream()).withCloseable { out ->
+            new java.util.zip.ZipFile(artifact).withCloseable { zf ->
+                zf.entries().each { entry ->
+                    if (entry.name == entryName) return
+                    out.putNextEntry(new java.util.zip.ZipEntry(entry.name))
+                    if (!entry.directory) zf.getInputStream(entry).withCloseable { it.transferTo(out) }
+                    out.closeEntry()
+                }
+            }
+            out.putNextEntry(new java.util.zip.ZipEntry(entryName))
+            coreWithFabricMetadata.withInputStream { it.transferTo(out) }
+            out.closeEntry()
+        }
+        coreWithFabricMetadata.delete()
+        java.nio.file.Files.move(tmp.toPath(), artifact.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
+}
+
+tasks.register('verifyJarInJarPackaging') {
+    dependsOn 'embedCoreJarInJar'
+    doLast {
+        File artifact = tasks.named(productionJarTaskName).get().archiveFile.get().asFile
+        def nested = zipTree(artifact).matching { include 'META-INF/jars/*.jar' }.files*.name
+        assert nested.containsAll([
+            "core-${project.version}.jar".toString(), 'sqlite-jdbc-3.46.1.0.jar',
+            'mysql-connector-j-8.4.0.jar', 'postgresql-42.7.4.jar',
+            'HikariCP-5.1.0.jar', 'gson-2.10.1.jar'
+        ])
+        def modJson = zipTree(artifact).matching { include 'fabric.mod.json' }.singleFile.text
+        assert modJson.contains("META-INF/jars/core-${project.version}.jar")
+        def outerJdbcClasses = zipTree(artifact).matching {
+            include 'org/sqlite/**/*.class'
+            include 'com/mysql/**/*.class'
+            include 'org/postgresql/**/*.class'
+        }.files
+        assert outerJdbcClasses.empty
+        assert zipTree(artifact).matching { include 'META-INF/services/java.sql.Driver' }.files.empty
+
+        File nestedCoreJar = zipTree(artifact).matching {
+            include "META-INF/jars/core-${project.version}.jar"
+        }.singleFile
+        def nestedCoreJson = zipTree(nestedCoreJar).matching { include 'fabric.mod.json' }.singleFile.text
+        assert nestedCoreJson.contains('"id": "vonixguardian-core"')
+        assert nestedCoreJson.contains("\"version\": \"${project.version}\"")
+
+        assert !zipTree(artifact).matching {
+            include 'network/vonix/guardian/mc/v26_1_2/fabric/api/LocationalInventory.class'
+        }.files.empty
+        assert zipTree(artifact).matching {
+            include 'network/vonix/guardian/mc/v26_1_2/fabric/mixin/LocationalInventory.class'
+        }.files.empty
+        assert !zipTree(artifact).matching { include 'vg.mixins.json' }.files.empty
+        assert !zipTree(artifact).matching { include 'fabric.mod.json' }.files.empty
+
+        logger.lifecycle("Verified Fabric JarInJar artifact: ${artifact.name}")
+    }
+}
+
+tasks.named('build') { dependsOn 'embedCoreJarInJar', 'verifyJarInJarPackaging' }

@@ -79,6 +79,13 @@ if (profile == 'mc1211' || profile == 'all') {
 }
 // Fabric 26.2 is a dedicated profile. Loom 1.17.21 requires Gradle 9.5+, so it
 // must not be configured by mc262 / all (those run on Gradle 9.2.0 / 8.10.2).
+// Fabric 26.1.2 needs Loom 1.17.21 (Gradle 9.5+), so it gets its own profile
+// and must not be configured by the Gradle 9.2.0 NeoForge jobs.
+if (profile == 'mc2612fabric') {
+    include ':mc-26.1.2:common'
+    include ':mc-26.1.2:fabric'
+}
+
 if (profile == 'mc262fabric') {
     include ':mc-26.2:fabric'
     includeVersionCommonIfPresent('26.2')

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}",
+  "version": "${mod_version}",
+  "name": "${mod_name}",
+  "description": "${mod_description}",
+  "authors": [
+    "${mod_authors}"
+  ],
+  "contact": {
+    "homepage": "https://github.com/Vonix-Network/VonixGuardian",
+    "sources": "https://github.com/Vonix-Network/VonixGuardian",
+    "issues": "https://github.com/Vonix-Network/VonixGuardian/issues"
+  },
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "network.vonix.guardian.mc.v26_1_2.fabric.VonixGuardianFabric"
+    ]
+  },
+  "mixins": [
+    "vg.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "fabric-api": "*",
+    "minecraft": "~26.1.2",
+    "java": ">=25"
+  },
+  "custom": {
+    "modmenu": {
+      "badges": [
+        "library"
+      ]
+    }
+  },
+  "jars": [
+    {
+      "file": "META-INF/jars/core-${mod_version}.jar"
+    }
+  ]
+}
