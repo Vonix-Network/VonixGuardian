@@ -38,6 +38,13 @@ if (profile == 'core') profile = 'coreonly'
 // Pure-Java engine (no MC).
 include 'core'
 
+// Hytale lane: Java 25 plugin built against the Hytale Server API
+// (maven.hytale.com/release). Requires Gradle 9.2.0 + JDK 25 — the 8.10.2
+// wrapper must not be used for this profile.
+if (profile == 'hytale' || profile == 'allwithhytale') {
+    include ':hytale'
+}
+
 // Include mc-<version>/common when that module exists on disk.
 // Requested cells: mc-1.21.1/common (Fabric + NeoForge), mc-26.1.2/common
 // (NeoForge only), mc-26.2/common (NeoForge + Fabric), and mc-26.3/common

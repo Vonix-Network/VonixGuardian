@@ -1,0 +1,47 @@
+Compiled from "RotationTuple.java"
+public final class com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple extends java.lang.Record {
+  private final int index;
+  private final com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation yaw;
+  private final com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation pitch;
+  private final com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation roll;
+  public static final com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple[] EMPTY_ARRAY;
+  public static final com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple NONE;
+  public static final int NONE_INDEX;
+  public static final com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple[] VALUES;
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple(int, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple of(com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple of(com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  public static int index(com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple get(int);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple getRotation(com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple[], com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple compose(com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple, com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple composeInverse(com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple, com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple);
+  public static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple flip(com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple, com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockFlipType, com.hypixel.hytale.math.Axis, int[][][]);
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple inverse();
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple composeOnAxis(com.hypixel.hytale.math.Axis, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  private static int[][] eulerToMatrix(com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  private static int[][] transpose(int[][]);
+  private static int[][] axisRotationMatrix(com.hypixel.hytale.math.Axis, com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  private static int[][] multiply3x3(int[][], int[][]);
+  private static com.hypixel.hytale.server.core.asset.type.blocktype.config.RotationTuple matrixToRotationTuple(int[][]);
+  private static int cos90(com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  private static int sin90(com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation);
+  private static com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation sinToRotation(int);
+  private static com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation atan2_90(int, int);
+  public org.joml.Vector3d rotatedVector(org.joml.Vector3d);
+  public void applyRotationTo(org.joml.Vector3i);
+  public void applyRotationTo(org.joml.Vector3f);
+  public void applyRotationTo(com.hypixel.hytale.math.vector.Rotation3f);
+  public void applyRotationTo(org.joml.Vector3d);
+  public void undoRotationTo(org.joml.Vector3i);
+  public void undoRotationTo(org.joml.Vector3f);
+  public void undoRotationTo(org.joml.Vector3d);
+  public final java.lang.String toString();
+  public final int hashCode();
+  public final boolean equals(java.lang.Object);
+  public int index();
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation yaw();
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation pitch();
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.Rotation roll();
+  static {};
+}

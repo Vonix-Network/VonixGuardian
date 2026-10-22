@@ -1,0 +1,38 @@
+Compiled from "Damage.java"
+public class com.hypixel.hytale.server.core.modules.entity.damage.Damage extends com.hypixel.hytale.component.system.CancellableEcsEvent implements com.hypixel.hytale.server.core.meta.IMetaStore<com.hypixel.hytale.server.core.modules.entity.damage.Damage> {
+  private static final com.hypixel.hytale.server.core.Message MESSAGE_GENERAL_DEATH_CAUSE_UNKNOWN;
+  public static final com.hypixel.hytale.server.core.meta.MetaRegistry<com.hypixel.hytale.server.core.modules.entity.damage.Damage> META_REGISTRY;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<org.joml.Vector4d> HIT_LOCATION;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<java.lang.Float> HIT_ANGLE;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<com.hypixel.hytale.server.core.modules.entity.damage.Damage$Particles> IMPACT_PARTICLES;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<com.hypixel.hytale.server.core.modules.entity.damage.Damage$SoundEffect> IMPACT_SOUND_EFFECT;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<com.hypixel.hytale.server.core.modules.entity.damage.Damage$SoundEffect> PLAYER_IMPACT_SOUND_EFFECT;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<com.hypixel.hytale.server.core.modules.entity.damage.Damage$CameraEffect> CAMERA_EFFECT;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<java.lang.String> DEATH_ICON;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<java.lang.Boolean> BLOCKED;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<java.lang.Float> STAMINA_DRAIN_MULTIPLIER;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<java.lang.Boolean> CAN_BE_PREDICTED;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<com.hypixel.hytale.protocol.InteractionType> INTERACTION_TYPE;
+  public static final com.hypixel.hytale.server.core.meta.MetaKey<com.hypixel.hytale.server.core.entity.knockback.KnockbackComponent> KNOCKBACK_COMPONENT;
+  public static final com.hypixel.hytale.server.core.modules.entity.damage.Damage$Source NULL_SOURCE;
+  private final com.hypixel.hytale.server.core.meta.IMetaStoreImpl<com.hypixel.hytale.server.core.modules.entity.damage.Damage> metaStore;
+  private final float initialAmount;
+  private int damageCauseIndex;
+  private com.hypixel.hytale.server.core.modules.entity.damage.Damage$Source source;
+  private float amount;
+  public com.hypixel.hytale.server.core.modules.entity.damage.Damage(com.hypixel.hytale.server.core.modules.entity.damage.Damage$Source, com.hypixel.hytale.server.core.modules.entity.damage.DamageCause, float);
+  public com.hypixel.hytale.server.core.modules.entity.damage.Damage(com.hypixel.hytale.server.core.modules.entity.damage.Damage$Source, int, float);
+  public int getDamageCauseIndex();
+  public void setDamageCauseIndex(int);
+  public com.hypixel.hytale.server.core.modules.entity.damage.DamageCause getCause();
+  public com.hypixel.hytale.server.core.modules.entity.damage.Damage$Source getSource();
+  public void setSource(com.hypixel.hytale.server.core.modules.entity.damage.Damage$Source);
+  public float getAmount();
+  public void setAmount(float);
+  public float getInitialAmount();
+  public com.hypixel.hytale.server.core.Message getDeathMessage(com.hypixel.hytale.component.Ref<com.hypixel.hytale.server.core.universe.world.storage.EntityStore>, com.hypixel.hytale.component.ComponentAccessor<com.hypixel.hytale.server.core.universe.world.storage.EntityStore>);
+  public com.hypixel.hytale.server.core.meta.IMetaStoreImpl<com.hypixel.hytale.server.core.modules.entity.damage.Damage> getMetaStore();
+  private static java.lang.Boolean lambda$static$1(com.hypixel.hytale.server.core.modules.entity.damage.Damage);
+  private static java.lang.Boolean lambda$static$0(com.hypixel.hytale.server.core.modules.entity.damage.Damage);
+  static {};
+}

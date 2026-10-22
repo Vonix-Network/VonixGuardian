@@ -1,0 +1,25 @@
+Compiled from "HytaleLogger.java"
+public class com.hypixel.hytale.logger.HytaleLogger extends com.google.common.flogger.AbstractLogger<com.hypixel.hytale.logger.HytaleLogger$Api> {
+  private static final java.util.Map<java.lang.String, com.hypixel.hytale.logger.HytaleLogger> CACHE;
+  private static final com.hypixel.hytale.logger.HytaleLogger LOGGER;
+  static final com.hypixel.hytale.logger.HytaleLogger$NoOp NO_OP;
+  private final com.hypixel.hytale.logger.backend.HytaleLoggerBackend backend;
+  public static void init();
+  public static void replaceStd();
+  public static com.hypixel.hytale.logger.HytaleLogger getLogger();
+  public static com.hypixel.hytale.logger.HytaleLogger forEnclosingClass();
+  public static com.hypixel.hytale.logger.HytaleLogger forEnclosingClassFull();
+  public static com.hypixel.hytale.logger.HytaleLogger get(java.lang.String);
+  private com.hypixel.hytale.logger.HytaleLogger(com.hypixel.hytale.logger.backend.HytaleLoggerBackend);
+  public com.hypixel.hytale.logger.HytaleLogger$Api at(java.util.logging.Level);
+  public java.lang.String getName();
+  public java.util.logging.Level getLevel();
+  public void setLevel(java.util.logging.Level);
+  public com.hypixel.hytale.logger.HytaleLogger getSubLogger(java.lang.String);
+  public void setSentryClient(io.sentry.IScopes);
+  public void setPropagatesSentryToParent(boolean);
+  private static java.lang.String classToLoggerName(java.lang.String);
+  public com.google.common.flogger.LoggingApi at(java.util.logging.Level);
+  private static com.hypixel.hytale.logger.HytaleLogger lambda$get$0(java.lang.String);
+  static {};
+}

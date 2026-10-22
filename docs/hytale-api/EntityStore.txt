@@ -1,0 +1,22 @@
+Compiled from "EntityStore.java"
+public class com.hypixel.hytale.server.core.universe.world.storage.EntityStore implements com.hypixel.hytale.server.core.universe.world.WorldProvider {
+  public static final com.hypixel.hytale.metrics.MetricsRegistry<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> METRICS_REGISTRY;
+  public static final com.hypixel.hytale.component.ComponentRegistry<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> REGISTRY;
+  public static final com.hypixel.hytale.codec.store.CodecKey<com.hypixel.hytale.component.Holder<com.hypixel.hytale.server.core.universe.world.storage.EntityStore>> HOLDER_CODEC_KEY;
+  public static final com.hypixel.hytale.component.SystemGroup<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> SEND_PACKET_GROUP;
+  private final java.util.concurrent.atomic.AtomicInteger networkIdCounter;
+  private final com.hypixel.hytale.server.core.universe.world.World world;
+  private com.hypixel.hytale.component.Store<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> store;
+  private final java.util.Map<java.util.UUID, com.hypixel.hytale.component.Ref<com.hypixel.hytale.server.core.universe.world.storage.EntityStore>> entitiesByUuid;
+  private final it.unimi.dsi.fastutil.ints.Int2ReferenceMap<com.hypixel.hytale.component.Ref<com.hypixel.hytale.server.core.universe.world.storage.EntityStore>> networkIdToRef;
+  public com.hypixel.hytale.server.core.universe.world.storage.EntityStore(com.hypixel.hytale.server.core.universe.world.World);
+  public void start(com.hypixel.hytale.component.IResourceStorage);
+  public void shutdown();
+  public com.hypixel.hytale.component.Store<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> getStore();
+  public com.hypixel.hytale.component.Ref<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> getRefFromUUID(java.util.UUID);
+  public com.hypixel.hytale.component.Ref<com.hypixel.hytale.server.core.universe.world.storage.EntityStore> getRefFromNetworkId(int);
+  public int takeNextNetworkId();
+  public com.hypixel.hytale.server.core.universe.world.World getWorld();
+  private void lambda$start$0(com.hypixel.hytale.component.Store);
+  static {};
+}

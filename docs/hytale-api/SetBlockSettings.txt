@@ -1,0 +1,18 @@
+Compiled from "SetBlockSettings.java"
+public class com.hypixel.hytale.server.core.universe.world.SetBlockSettings {
+  public static final int NONE;
+  public static final int NO_NOTIFY;
+  public static final int NO_UPDATE_STATE;
+  public static final int NO_SEND_PARTICLES;
+  public static final int NO_SET_FILLER;
+  public static final int NO_BREAK_FILLER;
+  public static final int PHYSICS;
+  public static final int FORCE_CHANGED;
+  public static final int NO_UPDATE_NEIGHBOR_CONNECTIONS;
+  public static final int PERFORM_BLOCK_UPDATE;
+  public static final int NO_UPDATE_HEIGHTMAP;
+  public static final int NO_SEND_AUDIO;
+  public static final int NO_DROP_ITEMS;
+  public static final int NO_FIRE_ON_BREAK;
+  public com.hypixel.hytale.server.core.universe.world.SetBlockSettings();
+}

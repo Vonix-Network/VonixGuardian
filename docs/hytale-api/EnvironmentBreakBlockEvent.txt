@@ -1,0 +1,8 @@
+Compiled from "EnvironmentBreakBlockEvent.java"
+public class com.hypixel.hytale.server.core.event.events.ecs.EnvironmentBreakBlockEvent extends com.hypixel.hytale.component.system.EcsEvent {
+  private final org.joml.Vector3i targetBlock;
+  private final com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType blockType;
+  public com.hypixel.hytale.server.core.event.events.ecs.EnvironmentBreakBlockEvent(org.joml.Vector3i, com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType);
+  public org.joml.Vector3i getTargetBlock();
+  public com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType getBlockType();
+}

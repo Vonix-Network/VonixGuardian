@@ -1,0 +1,18 @@
+{
+  "Group": "Vonix",
+  "Name": "VonixGuardian",
+  "Version": "${version}",
+  "Description": "Server-side block, container and entity audit with rollback, restore and lookup.",
+  "Authors": [
+    {
+      "Name": "Vonix Network",
+      "Email": "ops@vonix.network",
+      "Url": "https://vonix.network"
+    }
+  ],
+  "Website": "https://vonix.network",
+  "Main": "network.vonix.guardian.hytale.VonixGuardianPlugin",
+  "ServerVersion": "*",
+  "DisabledByDefault": false,
+  "IncludesAssetPack": false
+}

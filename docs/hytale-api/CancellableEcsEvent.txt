@@ -1,0 +1,7 @@
+Compiled from "CancellableEcsEvent.java"
+public abstract class com.hypixel.hytale.component.system.CancellableEcsEvent extends com.hypixel.hytale.component.system.EcsEvent implements com.hypixel.hytale.component.system.ICancellableEcsEvent {
+  private boolean cancelled;
+  public com.hypixel.hytale.component.system.CancellableEcsEvent();
+  public final boolean isCancelled();
+  public final void setCancelled(boolean);
+}

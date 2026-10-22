@@ -1,0 +1,98 @@
+// Vonix Guardian — Hytale lane.
+//
+// One Java 25 plugin jar (Hytale Server API, `mods/`) that reuses the same
+// platform-agnostic engine as every Minecraft lane (:core). Nothing in :core is
+// forked for Hytale; the Hytale-specific behaviour lives in this module only.
+//
+// Build (Gradle 9.2.0 + JDK 25 — the wrapper in this repo is 8.10.2 and must
+// NOT be used for this lane):
+//   gradle :hytale:build -PbuildProfile=hytale
+// Artifact:
+//   hytale/build/libs/vonixguardian-hytale-<mod_version>.jar
+
+plugins {
+    id 'java'
+}
+
+repositories {
+    maven { name = 'hytaleRelease'; url = 'https://maven.hytale.com/release' }
+    mavenCentral()
+}
+
+// Hytale server API pin. Override with -Phytale_api_version=<x.y.z>.
+// Published versions observed at time of writing: 0.5.10, 0.6.9, 0.7.2, 0.7.3, 0.7.4.
+def hytaleApiVersion = providers.gradleProperty('hytale_api_version').getOrElse('0.7.4')
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+configurations {
+    // Runtime libs this module packages itself (fat jar). `implementation`
+    // extends it so they are also on the compile/test classpath.
+    bundled
+    implementation.extendsFrom(bundled)
+    testImplementation.extendsFrom(bundled)
+}
+
+dependencies {
+    // The server ships these classes at runtime — never bundle them.
+    compileOnly "com.hypixel.hytale:Server:${hytaleApiVersion}"
+    compileOnly libs.gson
+
+    // Engine + runtime support that the server does NOT provide.
+    bundled project(':core')
+    bundled libs.slf4j.api      // core logs through SLF4J; bridged to HytaleLogger
+    bundled libs.hikaricp       // storage pool for the JDBC backends
+    bundled libs.sqlite.jdbc    // default local backend
+
+    testImplementation platform(libs.junit.bom)
+    testImplementation libs.junit.jupiter
+    testImplementation libs.assertj.core
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+    options.compilerArgs += ['-Xlint:all', '-Xlint:-processing', '-Xlint:-serial']
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Fat jar: this module owns its runtime classpath (core + slf4j + hikari + sqlite),
+// the same rule the loader lanes follow. gson and the Hytale server classes stay
+// out because the server already has them on the classpath.
+tasks.named('jar', Jar) {
+    archiveBaseName = 'vonixguardian-hytale'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    dependsOn(configurations.bundled)   // Gradle 9 requires the explicit producer edge
+    from({ configurations.bundled.collect { it.isDirectory() ? it : zipTree(it) } }) {
+        exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+        exclude 'META-INF/MANIFEST.MF'
+        exclude 'module-info.class'
+        exclude 'META-INF/versions/*/module-info.class'
+    }
+    manifest {
+        attributes(
+            'Implementation-Title': 'VonixGuardian (Hytale)',
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'Vonix Network'
+        )
+    }
+}
+
+processResources {
+    filesMatching('manifest.json') {
+        expand(
+            version: project.version,
+            name: project.findProperty('mod_name') ?: 'VonixGuardian',
+            group: project.findProperty('mod_group') ?: 'network.vonix.guardian'
+        )
+    }
+}

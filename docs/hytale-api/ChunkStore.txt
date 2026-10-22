@@ -1,0 +1,31 @@
+Compiled from "ChunkStore.java"
+public class com.hypixel.hytale.server.core.universe.world.storage.ChunkStore extends com.hypixel.hytale.server.core.universe.world.storage.ChunkGrid {
+  public static final com.hypixel.hytale.logger.HytaleLogger LOGGER;
+  public static final com.hypixel.hytale.metrics.MetricsRegistry<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore> METRICS_REGISTRY;
+  public static final com.hypixel.hytale.component.ComponentRegistry<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore> REGISTRY;
+  public static final com.hypixel.hytale.codec.store.CodecKey<com.hypixel.hytale.component.Holder<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore>> HOLDER_CODEC_KEY;
+  public static final com.hypixel.hytale.component.SystemType<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore, com.hypixel.hytale.server.core.universe.world.storage.ChunkStore$LoadPacketDataQuerySystem> LOAD_PACKETS_DATA_QUERY_SYSTEM_TYPE;
+  public static final com.hypixel.hytale.component.SystemType<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore, com.hypixel.hytale.server.core.universe.world.storage.ChunkStore$LoadFuturePacketDataQuerySystem> LOAD_FUTURE_PACKETS_DATA_QUERY_SYSTEM_TYPE;
+  public static final com.hypixel.hytale.component.SystemType<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore, com.hypixel.hytale.server.core.universe.world.storage.ChunkStore$UnloadPacketDataQuerySystem> UNLOAD_PACKETS_DATA_QUERY_SYSTEM_TYPE;
+  public static final com.hypixel.hytale.component.ResourceType<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore, com.hypixel.hytale.server.core.universe.world.storage.component.ChunkUnloadingSystem$Data> UNLOAD_RESOURCE;
+  public static final com.hypixel.hytale.component.ResourceType<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore, com.hypixel.hytale.server.core.universe.world.storage.component.SectionUnloadingSystem$Data> SECTION_UNLOAD_RESOURCE;
+  public static final com.hypixel.hytale.component.ResourceType<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore, com.hypixel.hytale.server.core.universe.world.storage.component.ChunkSavingSystems$Data> SAVE_RESOURCE;
+  public static final com.hypixel.hytale.component.SystemGroup<com.hypixel.hytale.server.core.universe.world.storage.ChunkStore> INIT_GROUP;
+  protected java.lang.Object storageData;
+  protected java.lang.Runnable pendingStorageMigration;
+  protected com.hypixel.hytale.server.core.universe.world.storage.IChunkSaver saver;
+  protected boolean readOnlyStorage;
+  public com.hypixel.hytale.server.core.universe.world.storage.ChunkStore(com.hypixel.hytale.server.core.universe.world.World);
+  public void start(com.hypixel.hytale.component.IResourceStorage);
+  public void start(com.hypixel.hytale.component.IResourceStorage, boolean);
+  public java.lang.Object getStorageData();
+  public com.hypixel.hytale.server.core.universe.world.storage.IChunkSaver getSaver();
+  public void pauseBackgroundSaving(com.hypixel.hytale.server.core.universe.world.storage.component.ChunkSavingSystems$Data);
+  public java.util.concurrent.CompletableFuture<java.lang.Void> resumeBackgroundSaving();
+  public void shutdown();
+  private void lambda$start$0(com.hypixel.hytale.component.Store);
+  private static java.lang.Long lambda$static$2(com.hypixel.hytale.server.core.universe.world.storage.ChunkStore);
+  private static java.lang.Long lambda$static$1(com.hypixel.hytale.server.core.universe.world.storage.ChunkStore);
+  private static com.hypixel.hytale.server.core.universe.world.storage.component.ChunkSavingSystems$Data lambda$static$0(com.hypixel.hytale.server.core.universe.world.storage.ChunkStore);
+  static {};
+}
