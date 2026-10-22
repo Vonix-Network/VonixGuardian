@@ -1,7 +1,8 @@
 # Hytale port — parent gate record
 
 Candidate: `hytale/build/libs/vonixguardian-hytale-2.2.1.jar`
-Base pin: `81a4bdb` + port commits `fd2608b`, `5cc47f8`, `10a2de8` (+ this pass)
+**Active candidate sha256: `90e0da3cce691c88df0615fb5302cc01bd94aebfe800df4b4514434a06bb978f`** (successor: includes the world-cell rotation-merge repair). The pre-repair jar (`f8f1237` tree) is superseded and its gates do not transfer.
+Base pin: `81a4bdb` + port commits `fd2608b`, `5cc47f8`, `10a2de8`, `f8f1237` (+ successor pass)
 Toolchain: JDK 25.0.4.1, Gradle 9.2.0, `com.hypixel.hytale:Server:0.7.4`
 
 ## Gate results

@@ -112,9 +112,15 @@ public final class HytaleWorldMutator implements WorldMutator {
                     && HytaleBlockAccess.parseFiller(meta.filler) != HytaleBlockAccess.parseFiller(state.filler)) {
                 return false;
             }
+            String rotation;
+            try {
+                rotation = mergedRotation(meta.rotation, state.rotation);
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
             String fillerJson = state.filler != null ? state.filler : meta.filler;
             byte[] components = (blockEntityNbt == null || blockEntityNbt.length == 0) ? null : blockEntityNbt;
-            BlockSnapshot snapshot = new BlockSnapshot(targetId, meta.rotation, fillerJson, components);
+            BlockSnapshot snapshot = new BlockSnapshot(targetId, rotation, fillerJson, components);
             if (state.interaction == null) {
                 return blocks.write(worldId, x, y, z, snapshot);
             }
@@ -314,8 +320,11 @@ public final class HytaleWorldMutator implements WorldMutator {
     }
 
     /**
-     * blockState is filler JSON when it starts with '{', otherwise an
-     * interaction-state key passed to BlockOperations.setBlockInteractionState.
+     * blockState is filler JSON when it starts with '{'. A string that parses
+     * as a rotation is orientation: capture copies {@code RotationTuple.toString()}
+     * into the block-state column when NBT persistence is on, and rollback
+     * passes that column here beside the same text on targetMeta. Anything
+     * else is an interaction-state key for BlockOperations.setBlockInteractionState.
      */
     private static MetaParts splitState(String blockState) {
         if (blockState == null || blockState.isBlank()) {
@@ -329,7 +338,25 @@ public final class HytaleWorldMutator implements WorldMutator {
             }
             return new MetaParts(null, trimmed, null, false);
         }
-        return new MetaParts(null, null, trimmed, false);
+        try {
+            HytaleBlockAccess.parseRotation(trimmed);
+            return new MetaParts(trimmed, null, null, false);
+        } catch (IllegalArgumentException e) {
+            return new MetaParts(null, null, trimmed, false);
+        }
+    }
+
+    /**
+     * Prefer targetMeta. A block-state rotation must name the same index.
+     * {@code null} means no rotation was supplied.
+     */
+    private static String mergedRotation(String metaRotation, String stateRotation) {
+        Integer metaIndex = metaRotation == null ? null : HytaleBlockAccess.parseRotation(metaRotation);
+        Integer stateIndex = stateRotation == null ? null : HytaleBlockAccess.parseRotation(stateRotation);
+        if (metaIndex != null && stateIndex != null && !metaIndex.equals(stateIndex)) {
+            throw new IllegalArgumentException("rotation mismatch");
+        }
+        return metaRotation != null ? metaRotation : stateRotation;
     }
 
     private record MetaParts(String rotation, String filler, String interaction, boolean invalid) {
