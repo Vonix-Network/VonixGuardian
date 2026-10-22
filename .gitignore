@@ -51,3 +51,6 @@ release/
 
 # Hermes agent workspace state (never commit)
 .hermes/
+
+# Hytale port: local build/test logs and worker streams (never tracked)
+.buildlogs/
