@@ -13,6 +13,8 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# javac is a NATIVE Windows binary: hand it a native (C:/...) root, never /c/...
+REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
 JDK="${HYTALE_JDK:-C:/Users/Pargon/AppData/Local/Programs/Eclipse Adoptium/jdk-25.0.4.101-hotspot}"
 API_JAR="${HYTALE_API_JAR:-C:/Users/Pargon/DEV/_hytale-deps/Server-0.7.4.jar}"
 BUNDLED_JAR="${HYTALE_BUNDLED_JAR:-$REPO_ROOT/hytale/build/libs/vonixguardian-hytale-2.2.1.jar}"
