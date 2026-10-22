@@ -39,3 +39,31 @@ cd loadtest
 ## Next gate (blocked on owner)
 
 Copy `<Hytale install>/HytaleAssets` (or the `--assets` directory the launcher provisions) onto a machine I can reach, then re-run the boot above **without** `--bare`. That converts `MANIFEST_PARSE_VERIFIED` → `PLUGIN_LOAD_VERIFIED` and lets `/guardian status` be exercised for real.
+
+## Live boot — PLUGIN_LOAD_VERIFIED (2026-10-22 23:01, real 0.7.4 server, licensed assets)
+
+Server: launcher-installed `HytaleServer.jar` 0.7.4 (`c9581a2`), `--assets <launcher Assets>` (extracted),
+`--auth-mode offline`, `--bind 0.0.0.0:5520`, `--allow-op`, `--boot-command "guardian status"`.
+Root: `C:\Users\Pargon\DEV\hytale-testserver`. Plugin jar sha256 `469a328842e9f8d020435fd9c41eb4e62d40bc51d2cb5525d9382514531ae81e`.
+
+```
+[PluginManager] - Vonix:VonixGuardian from path vonixguardian-hytale-2.2.1.jar
+[VonixGuardianPlugin] setup: data dir = mods\Vonix_VonixGuardian
+[Guardian] Booting VonixGuardian v2.2.1 (db=sqlite, theme=aqua, queue.max=50000)
+[Guardian] VonixGuardian online.
+[VonixGuardianPlugin] started: config=mods\Vonix_VonixGuardian\config.json
+[PluginManager] Enabled plugin Vonix:VonixGuardian
+[CommandManager] Console executed command: guardian status
+[HytaleServer] Booted! [Multiplayer] took 1min 32sec
+```
+`/guardian status` output: version 2.2.1 · storage sqlite · schema v9 · health OK · writer consumer running · depth 0/50000.
+`[capture] Hytale capture listening for player break/place and environment break`.
+
+**Defect found and fixed at the load gate**: `No suitable driver found for jdbc:sqlite` — `DriverManager`
+only service-discovers on the system classloader, so a plugin-classpath driver is invisible. Fixed by
+explicit `Class.forName(driver, true, <plugin loader>)` before `Guardian.boot` (same rule the Minecraft
+lanes already encode in `NeoForgeBootstrap.ensureDatabaseDriver`). This is exactly the class of defect a
+compile/package gate cannot catch, and why the boot gate is mandatory.
+
+Still unverified after this boot: block/inventory capture rows (needs a player action), rollback/restore
+fidelity, per-player permission enforcement (console bypasses it).

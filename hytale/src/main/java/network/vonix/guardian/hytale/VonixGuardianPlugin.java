@@ -9,6 +9,7 @@ import com.hypixel.hytale.server.core.plugin.JavaPluginInit;
 import com.hypixel.hytale.server.core.universe.Universe;
 import com.hypixel.hytale.server.core.universe.world.World;
 import network.vonix.guardian.core.Guardian;
+import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.hytale.capture.CaptureRegistration;
 import network.vonix.guardian.hytale.command.CommandRegistration;
 import network.vonix.guardian.hytale.platform.HytaleConfigLoader;
@@ -21,6 +22,7 @@ import network.vonix.guardian.hytale.world.HytaleWorldMutator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.SQLException;
 import java.util.concurrent.Executor;
 
 /**
@@ -73,6 +75,11 @@ public final class VonixGuardianPlugin extends JavaPlugin {
             // of running a world mutation off-thread.
             Executor mainThread = HytaleExecutors.serverThread(VonixGuardianPlugin::defaultWorld);
 
+            // Plugin classloaders do not participate in JDBC service discovery, so the
+            // configured driver must be initialized explicitly before the DAO asks
+            // DriverManager for a connection (same rule as the Minecraft lanes).
+            ensureDatabaseDriver(loaded.config());
+
             Guardian booted = Guardian.boot(
                     loaded.config(),
                     loaded.dataDir(),
@@ -84,7 +91,6 @@ public final class VonixGuardianPlugin extends JavaPlugin {
             HytaleServices live = new HytaleServices(
                     booted, loaded.config(), loaded.dataDir(), blocks, players, mainThread);
             live.setRunning(true);
-
             this.guardian = booted;
             this.services = live;
 
@@ -136,6 +142,31 @@ public final class VonixGuardianPlugin extends JavaPlugin {
             return universe == null ? null : universe.getDefaultWorld();
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    /**
+     * Initialize the configured JDBC driver inside this plugin's classloader.
+     *
+     * <p>{@code DriverManager} only runs service discovery against the system
+     * classloader, so a driver sitting on a plugin classpath is invisible until it
+     * is loaded here; its static initializer then self-registers.
+     */
+    private static void ensureDatabaseDriver(GuardianConfig config) throws SQLException {
+        String driver = switch (config.database().type()) {
+            case "sqlite" -> "org.sqlite.JDBC";
+            case "mysql" -> "com.mysql.cj.jdbc.Driver";
+            case "postgresql" -> "org.postgresql.Driver";
+            default -> null;
+        };
+        if (driver == null) {
+            return;
+        }
+        try {
+            Class.forName(driver, true, VonixGuardianPlugin.class.getClassLoader());
+        } catch (ClassNotFoundException ex) {
+            throw new SQLException("Configured " + config.database().type()
+                    + " JDBC driver is unavailable to the Hytale plugin classloader: " + driver, ex);
         }
     }
 }
