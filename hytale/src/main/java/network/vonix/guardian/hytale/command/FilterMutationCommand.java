@@ -17,6 +17,7 @@ import network.vonix.guardian.core.rollback.RollbackLimitExceededException;
 import network.vonix.guardian.core.rollback.RollbackOptions;
 import network.vonix.guardian.core.rollback.RollbackPlan;
 import network.vonix.guardian.core.rollback.RollbackResult;
+import network.vonix.guardian.hytale.world.WriteVerifier;
 import org.slf4j.Logger;
 
 import java.util.UUID;
@@ -111,7 +112,23 @@ final class FilterMutationCommand extends GuardianSubcommand {
                     "[VonixGuardian] " + verb + " failed without a result. The world may have changed. Nothing was added to undo."));
             return;
         }
+        // Durable record: an operator reporting "some blocks did not come back" needs the
+        // exact counts in the server log, not a screenshot of the chat message.
+        logger.info(Guardian.MARKER,
+                "{} result: preview={} success={} mutatedWorld={} affected={} applied={} skipped={} filter={}",
+                verb, result.preview(), result.isSuccess(), result.mutatedWorld(),
+                result.affectedCount(), result.appliedCount(), result.skippedCount(), filter);
         if (!result.preview() && result.mutatedWorld()) {
+            // Second pair of eyes: re-read every position this batch intended to write and
+            // repair anything that did not stick. The engine's own counts cannot see a write
+            // that was accepted and then reverted later in the tick.
+            WriteVerifier.Report verification = WriteVerifier.converge(
+                    runtime.services().world(), runtime.services().mainThread());
+            logger.info(Guardian.MARKER, "{} verification: {}", verb, verification.summary());
+            if (!verification.clean()) {
+                runtime.deliver(sender, actor, generation, runtime.warning(
+                        "[VonixGuardian] Post-" + verb + " convergence: " + verification.summary()));
+            }
             try {
                 guardian.undoStack().push(actor, result);
             } catch (RuntimeException ex) {

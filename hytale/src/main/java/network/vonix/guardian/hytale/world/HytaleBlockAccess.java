@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -184,7 +185,11 @@ public final class HytaleBlockAccess implements WorldBlockAccess {
                     return false;
                 }
             }
-            return place(view, resolved, custom, previous);
+            boolean placed = place(view, resolved, custom, previous);
+            if (placed) {
+                recordPending(worldId, x, y, z, snapshot);
+            }
+            return placed;
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "write failed at " + worldId + " " + x + "," + y + "," + z, e);
             return false;
@@ -468,7 +473,49 @@ public final class HytaleBlockAccess implements WorldBlockAccess {
             resolved.type(),
             resolved.rotationIndex(),
             resolved.filler(),
-            SetBlockSettings.FORCE_CHANGED);
+            // PERFORM_BLOCK_UPDATE makes BlockOperations push the change to clients;
+            // FORCE_CHANGED marks the palette entry as changed. Without the former the
+            // write is server-state only and clients keep rendering the old block.
+            SetBlockSettings.FORCE_CHANGED | SetBlockSettings.PERFORM_BLOCK_UPDATE);
+    }
+
+    /** One position a rollback intended to write, kept for post-batch verification. */
+    record PendingWrite(String worldId, int x, int y, int z, BlockSnapshot expected) {
+    }
+
+    /** Intents recorded by {@link #write} since the last drain. */
+    private static final java.util.concurrent.ConcurrentLinkedQueue<PendingWrite> PENDING_WRITES =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    private static final AtomicLong PENDING_DROPS = new AtomicLong();
+
+    private static final int PENDING_CAP = 200_000;
+
+    static void recordPending(String worldId, int x, int y, int z, BlockSnapshot expected) {
+        if (PENDING_WRITES.size() >= PENDING_CAP) {
+            PENDING_DROPS.incrementAndGet();
+            return;
+        }
+        PENDING_WRITES.add(new PendingWrite(worldId, x, y, z, expected));
+    }
+
+    /**
+     * Drain the recorded intents so the caller can verify them after the batch.
+     *
+     * @return recorded writes in insertion order
+     */
+    public static java.util.List<PendingWrite> drainPending() {
+        java.util.List<PendingWrite> out = new ArrayList<>();
+        PendingWrite w;
+        while ((w = PENDING_WRITES.poll()) != null) {
+            out.add(w);
+        }
+        return out;
+    }
+
+    /** Intents dropped because the record cap was hit; non-zero means the check is partial. */
+    public static long drainPendingDrops() {
+        return PENDING_DROPS.getAndSet(0L);
     }
 
     private BlockSnapshot readView(SectionView view) throws OversizedComponent {

@@ -82,6 +82,18 @@ public final class HytaleBlockCapture {
                         pos.x(), pos.y(), pos.z());
                 return;
             }
+            // A block whose asset declares an explosion reaction is a detonated consumable
+            // (thrown barrel, primed explosive), not a world edit. The game fires
+            // BreakBlockEvent for it mid-air, and recording it made rollback materialise a
+            // barrel where one was only ever thrown. The destroyed terrain is still covered
+            // by the environment-break rows.
+            String reaction = event.getBlockType() == null
+                    ? null : event.getBlockType().getExplosionReactionState();
+            if (reaction != null && !reaction.isBlank()) {
+                CaptureRegistration.skip("block break ignored: %s is a detonated explosive (reaction=%s) at %s",
+                        blockId, reaction, pos);
+                return;
+            }
             String worldId = CaptureRegistration.worldId(services, store);
             if (worldId == null) {
                 CaptureRegistration.skip("block break skipped: world id unavailable at %s,%s,%s",

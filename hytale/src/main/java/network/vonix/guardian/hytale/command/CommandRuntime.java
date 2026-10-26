@@ -216,6 +216,10 @@ final class CommandRuntime {
         return new Actor(uuid, name, player, x, y, z, worldId, worldFailed);
     }
 
+    GuardianServices services() {
+        return services;
+    }
+
     Guardian guardian() {
         try {
             if (!services.isRunning()) {

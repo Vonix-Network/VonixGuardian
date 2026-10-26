@@ -12,6 +12,7 @@ import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.hytale.capture.CaptureRegistration;
 import network.vonix.guardian.hytale.command.CommandRegistration;
+import network.vonix.guardian.hytale.menu.MenuRegistration;
 import network.vonix.guardian.hytale.platform.HytaleConfigLoader;
 import network.vonix.guardian.hytale.platform.HytaleExecutors;
 import network.vonix.guardian.hytale.platform.HytaleOpLookup;
@@ -95,6 +96,7 @@ public final class VonixGuardianPlugin extends JavaPlugin {
             this.services = live;
 
             CommandRegistration.register(live, getCommandRegistry());
+            MenuRegistration.register(live, getCommandRegistry());
             CaptureRegistration.register(live, getEventRegistry());
 
             LOG.info(Guardian.MARKER,
