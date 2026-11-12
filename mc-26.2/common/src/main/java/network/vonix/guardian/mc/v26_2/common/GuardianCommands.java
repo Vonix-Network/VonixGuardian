@@ -1437,81 +1437,18 @@ public final class GuardianCommands {
          */
         public static int usage(CommandContext<CommandSourceStack> ctx, Guardian g, String name) {
             CommandSourceStack src = ctx.getSource();
-            switch (name) {
-                case "lookup":
-                    send(src, ChatRenderer.primary(g.theme(),
-                            "[VonixGuardian] /vg lookup [page[:perPage]] <filter>"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Examples:  /vg lookup r:10 t:2h  |  /vg lookup u:Pargon a:-block  |  /vg lookup #count r:20"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Tokens:    u: user  t: time  r: radius  a: action  i: include  e: exclude   #preview #count"));
-                    break;
-                case "rollback":
-                    send(src, ChatRenderer.primary(g.theme(),
-                            "[VonixGuardian] /vg rollback <filter>   (alias: /vg rb)"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Examples:  /vg rollback r:10 t:2m  |  /vg rollback u:Griefer t:1h  |  /vg rollback #preview r:20 t:5m"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Tip: default radius is 10 if r: omitted. Explosions record their blast CENTER — widen r: to cover splash."));
-                    break;
-                case "restore":
-                    send(src, ChatRenderer.primary(g.theme(),
-                            "[VonixGuardian] /vg restore <filter>    (alias: /vg rs)"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Examples:  /vg restore r:10 t:2m  |  /vg restore u:Pargon t:1h"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Tip: default radius is 10 if r: omitted. Redoes rows previously rolled back."));
-                    break;
-                case "purge":
-                    send(src, ChatRenderer.primary(g.theme(),
-                            "[VonixGuardian] /vg purge <filter>"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Examples:  /vg purge t:30d  |  /vg purge t:60d a:block"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  Note: t: means retention — rows OLDER than t: are deleted. Console safety floor: 24h; in-game: 30d."));
-                    break;
-                case "root":
-                default:
-                    send(src, ChatRenderer.primary(g.theme(),
-                            "[VonixGuardian] Available commands (see /vg help for full list):"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  /vg lookup <filter>   /vg rollback <filter>   /vg restore <filter>   /vg purge <filter>"));
-                    send(src, ChatRenderer.muted(g.theme(),
-                            "  /vg inspect   /vg near   /vg status   /vg undo   /vg consumer pause|resume   /vg help"));
-                    break;
+            java.util.List<String> lines = network.vonix.guardian.core.command.CommandHelp.usage(name);
+            for (int n = 0; n < lines.size(); n++) {
+                String line = lines.get(n);
+                send(src, n == 0
+                        ? ChatRenderer.primary(g.theme(), line)
+                        : ChatRenderer.muted(g.theme(), line));
             }
             return 1;
         }
 
         public static int run(CommandContext<CommandSourceStack> ctx, Guardian g) {
-            CommandSourceStack src = ctx.getSource();
-            send(src, ChatRenderer.primary(g.theme(),
-                    "[VonixGuardian] CoreProtect-style commands (aliases: /co, /guardian):"));
-            String[] lines = {
-                    "/vg inspect            (alias: /vg i)  — toggle inspect mode",
-                    "/vg lookup <filter>    (alias: /vg l)  — search audit log; <page>[:<perPage>] before filter",
-                    "/vg rollback <filter>  (alias: /vg rb) — undo logged actions (default radius 10)",
-                    "/vg restore <filter>   (alias: /vg rs) — redo rolled-back actions (default radius 10)",
-                    "/vg purge <filter>                       — delete log rows",
-                    "/vg near                                — quick lookup r:5 t:1h around you",
-                    "/vg undo                                — drop last rollback from history",
-                    "/vg consumer pause|resume|toggle        — pause the writer queue",
-                    "/vg status                              — queue / submission counters",
-                    "/vg reload                              — re-read config.json + hot-swap safe knobs",
-                    "/vg config get <key>                 — show a hot-swap-safe config value",
-                    "/vg config set <key> <value>         — persist + hot-swap a safe config value",
-                    "/vg migrate-db <sqlite|mysql|postgresql> CONFIRM  — console-only backend copy",
-                    "",
-                    "Filter tokens: u:<player|#sentinel>  t:<time>  r:<n|#global|#world_*>",
-                    "               a:[+/-]<action>       i:<id>    e:<id>",
-                    "Hash flags:    #preview  #count  #verbose  #silent  #optimize",
-                    "User sentinels: #fire #tnt #creeper #explosion #water #lava #mob",
-                    "Actions: block container inventory item kill session login chat command click sign username",
-            };
-            for (String l : lines) {
-                send(src, ChatRenderer.muted(g.theme(), "  " + l));
-            }
-            return 1;
+            return usage(ctx, g, "help");
         }
     }
 

@@ -97,6 +97,11 @@ class GuardianCommandsContractStructuralTest {
                 .contains("private static final Pattern PAGE_TOKEN")
                 .contains("Matcher m = PAGE_TOKEN.matcher(first)")
                 .contains("LookupFormatter.page(")
+                .contains("CommandHelp.usage(");
+            // Help text moved to core so the ten command copies cannot drift.
+            // The page syntax pin now lives on CommandHelp, which every cell prints.
+            assertThat(Files.readString(root.resolve(
+                    "core/src/main/java/network/vonix/guardian/core/command/CommandHelp.java")))
                 .contains("<page>[:<perPage>] before filter");
             assertThat(text.indexOf("if (filter.countOnly())"))
                 .as("%s should branch before the visible lookup query", cell)
