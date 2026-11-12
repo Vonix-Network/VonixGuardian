@@ -8,7 +8,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,6 +67,39 @@ class AdmissionJournalTest {
             assertThat(q.quarantined()).isZero();
         } finally {
             q.close();
+        }
+    }
+
+    @Test
+    void rowTakenAsPauseLandsIsPutBackAndTheNextSubmitIsRejected() throws Exception {
+        // The worker can already be inside poll when pause becomes visible.
+        // Keeping that row made the queue look empty, so a later submit was
+        // accepted on a queue the operator had paused at capacity.
+        AtomicReference<BatchedAsyncWriteQueue> queueRef = new AtomicReference<>();
+        AtomicInteger polls = new AtomicInteger();
+        CountDownLatch sawPoll = new CountDownLatch(1);
+        BatchedAsyncWriteQueue queue = new BatchedAsyncWriteQueue(
+                1, 5_000L, 4, new CapturingSink(), DAEMON, null,
+                null, null, null,
+                () -> {
+                    if (polls.getAndIncrement() == 0) {
+                        queueRef.get().setPaused(true);
+                    }
+                    sawPoll.countDown();
+                },
+                null);
+        queueRef.set(queue);
+        try {
+            assertThat(queue.submit(action(1))).isTrue();
+            assertThat(sawPoll.await(2, TimeUnit.SECONDS)).isTrue();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (queue.pendingSnapshot().isEmpty() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(queue.pendingSnapshot()).extracting(Action::x).containsExactly(1);
+            assertThat(queue.submit(action(2))).isFalse();
+        } finally {
+            queue.close();
         }
     }
 

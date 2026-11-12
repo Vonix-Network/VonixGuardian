@@ -807,6 +807,14 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 if (head != null && pollObservationProbe != null) {
                     pollObservationProbe.run();
                 }
+                // An armed poll can take a row in the same instant pause becomes
+                // visible. Put it back so a paused queue stays full and the next
+                // submit is rejected instead of silently accepted.
+                if (head != null && paused && !shutdown) {
+                    if (queue.offer(head)) {
+                        head = null;
+                    }
+                }
                 synchronized (pipelineStateLock) {
                     workerPollReturned = false;
                     if (head != null) {
