@@ -1126,114 +1126,15 @@ public final class GuardianCommands {
         }
 
         private static String readValue(GuardianConfig c, String key) {
-            return switch (key) {
-                case "theme" -> c.theme();
-                case "logFile.enabled" -> Boolean.toString(c.logFile().enabled());
-                case "lookup.defaultPageSize" -> Integer.toString(c.lookup().defaultPageSize());
-                case "lookup.maxRadius" -> Integer.toString(c.lookup().maxRadius());
-                case "lookup.maxResultRows" -> Integer.toString(c.lookup().maxResultRows());
-                case "privacy.hashIps" -> Boolean.toString(c.privacy().hashIps());
-                case "purge.minAgeSecondsConsole" -> Long.toString(c.purge().minAgeSecondsConsole());
-                case "purge.minAgeSecondsInGame" -> Long.toString(c.purge().minAgeSecondsInGame());
-                case "purge.autoPurgeSeconds" -> Long.toString(c.purge().autoPurgeSeconds());
-                case "purge.autoPurgeTime" -> c.purge().autoPurgeTime();
-                case "actions.logBlocks" -> Boolean.toString(c.actions().logBlocks());
-                case "actions.logContainers" -> Boolean.toString(c.actions().logContainers());
-                case "actions.logItems" -> Boolean.toString(c.actions().logItems());
-                case "actions.logEntities" -> Boolean.toString(c.actions().logEntities());
-                case "actions.logExplosions" -> Boolean.toString(c.actions().logExplosions());
-                case "actions.logChat" -> Boolean.toString(c.actions().logChat());
-                case "actions.logCommands" -> Boolean.toString(c.actions().logCommands());
-                case "actions.logSessions" -> Boolean.toString(c.actions().logSessions());
-                case "actions.logSigns" -> Boolean.toString(c.actions().logSigns());
-                case "actions.logInteractions" -> Boolean.toString(c.actions().logInteractions());
-                case "actions.logWorldEvents" -> Boolean.toString(c.actions().logWorldEvents());
-                case "actions.entityBlockChangeCoalesceWindowMs" -> Long.toString(c.actions().entityBlockChangeCoalesceWindowMs());
-                case "actions.entityBlockChangeMaxTracked" -> Integer.toString(c.actions().entityBlockChangeMaxTracked());
-                case "actions.entityChangeLogAllEntities" -> Boolean.toString(c.actions().entityChangeLogAllEntities());
-                case "actions.mixinHotEvents" -> Boolean.toString(c.actions().mixinHotEvents());
-                case "actions.itemBlacklist" -> String.join(", ", c.actions().itemBlacklist());
-                case "actions.entityBlacklist" -> String.join(", ", c.actions().entityBlacklist());
-                case "storage.persistNbt" -> Boolean.toString(c.storage().persistNbt());
-                case "rollback.explosionSupplementalReach" -> Integer.toString(c.rollback().explosionSupplementalReach());
-                case "language" -> c.language();
-                default -> null;
-            };
+            return network.vonix.guardian.core.config.ConfigHotSwap.read(c, key);
         }
 
         private static GuardianConfig withValue(GuardianConfig c, String key, String value) {
-            GuardianConfig.Actions a = c.actions();
-            GuardianConfig.LogFile lf = c.logFile();
-            GuardianConfig.Lookup l = c.lookup();
-            GuardianConfig.Privacy pr = c.privacy();
-            GuardianConfig.Purge pu = c.purge();
-            return switch (key) {
-                case "theme" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), value, c.language());
-                case "logFile.enabled" -> new GuardianConfig(c.database(), c.queue(), new GuardianConfig.LogFile(parseBool(value, key), lf.directory(), lf.gzipRotated(), lf.retentionDays(), lf.forceSyncOnFlush()), a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
-                case "lookup.defaultPageSize" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(parseInt(value, key), l.maxRadius(), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
-                case "lookup.maxRadius" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), parseInt(value, key), l.maxResultRows(), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
-                case "lookup.maxResultRows" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), new GuardianConfig.Lookup(l.defaultPageSize(), l.maxRadius(), parseInt(value, key), l.maxConcurrent()), pr, pu, c.storage(), c.rollback(), c.theme(), c.language());
-                case "privacy.hashIps" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, new GuardianConfig.Privacy(parseBool(value, key), pr.salt()), pu, c.storage(), c.rollback(), c.theme(), c.language());
-                case "purge.minAgeSecondsConsole" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(parseLong(value, key), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
-                case "purge.minAgeSecondsInGame" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), parseLong(value, key), pu.autoPurgeSeconds(), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
-                case "purge.autoPurgeSeconds" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), parseLong(value, key), pu.autoPurgeTime()), c.storage(), c.rollback(), c.theme(), c.language());
-                case "purge.autoPurgeTime" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, new GuardianConfig.Purge(pu.minAgeSecondsConsole(), pu.minAgeSecondsInGame(), pu.autoPurgeSeconds(), value), c.storage(), c.rollback(), c.theme(), c.language());
-                case "actions.logBlocks" -> withActions(c, new GuardianConfig.Actions(parseBool(value, key), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logContainers" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), parseBool(value, key), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logItems" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), parseBool(value, key), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), parseBool(value, key), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logExplosions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), parseBool(value, key), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logChat" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), parseBool(value, key), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logCommands" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), parseBool(value, key), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logSessions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), parseBool(value, key), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logSigns" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), parseBool(value, key), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logInteractions" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), parseBool(value, key), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.logWorldEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), parseBool(value, key), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.entityBlockChangeCoalesceWindowMs" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), parseLong(value, key), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.entityBlockChangeMaxTracked" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), parseInt(value, key), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.entityChangeLogAllEntities" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), parseBool(value, key), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), a.mixinHotEvents()));
-                case "actions.mixinHotEvents" -> withActions(c, new GuardianConfig.Actions(a.logBlocks(), a.logContainers(), a.logItems(), a.logEntities(), a.logExplosions(), a.logChat(), a.logCommands(), a.logSessions(), a.logSigns(), a.logInteractions(), a.logWorldEvents(), a.worldBlacklist(), a.blockBlacklist(), a.sourceBlacklist(), a.itemBlacklist(), a.entityBlacklist(), a.entityBlockChangeCoalesceWindowMs(), a.entityBlockChangeMaxTracked(), a.entityChangeAllowlist(), a.entityChangeLogAllEntities(), a.logNaturalBreaks(), a.logTreeGrowth(), a.logMushroomGrowth(), a.logVineGrowth(), a.logSculkSpread(), a.logPortals(), a.logWaterFlow(), a.logLavaFlow(), a.logFireExtinguish(), a.logCampfireStart(), a.logHopperMetaFilter(), a.logDuplicateSuppression(), a.logCancelledChat(), parseBool(value, key)));
-                case "actions.itemBlacklist" -> withActions(c, c.actions().withItemBlacklist(parseList(value)));
-                case "actions.entityBlacklist" -> withActions(c, c.actions().withEntityBlacklist(parseList(value)));
-                case "storage.persistNbt" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, new GuardianConfig.Storage(parseBool(value, key)), c.rollback(), c.theme(), c.language());
-                case "rollback.explosionSupplementalReach" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), new GuardianConfig.Rollback(parseInt(value, key), c.rollback().mutationBatchSize(), c.rollback().requireConfirm()), c.theme(), c.language());
-                case "language" -> new GuardianConfig(c.database(), c.queue(), lf, a, c.permissions(), l, pr, pu, c.storage(), c.rollback(), c.theme(), value);
-                default -> null;
-            };
+            return network.vonix.guardian.core.config.ConfigHotSwap.apply(c, key, value);
         }
 
         private static GuardianConfig withActions(GuardianConfig c, GuardianConfig.Actions a) {
             return new GuardianConfig(c.database(), c.queue(), c.logFile(), a, c.permissions(), c.lookup(), c.privacy(), c.purge(), c.storage(), c.rollback(), c.theme(), c.language());
-        }
-
-        private static java.util.List<String> parseList(String value) {
-            if (value == null || value.isBlank() || "none".equalsIgnoreCase(value.trim()) || "[]".equals(value.trim())) {
-                return java.util.List.of();
-            }
-            String[] parts = value.split("[,\\s]+");
-            java.util.List<String> list = new java.util.ArrayList<>();
-            for (String p : parts) {
-                if (!p.isBlank()) {
-                    list.add(p.trim());
-                }
-            }
-            return java.util.List.copyOf(list);
-        }
-
-        private static boolean parseBool(String value, String key) {
-            if ("true".equalsIgnoreCase(value)) return true;
-            if ("false".equalsIgnoreCase(value)) return false;
-            throw new IllegalArgumentException(key + " must be true or false");
-        }
-
-        private static int parseInt(String value, String key) {
-            try { return Integer.parseInt(value); }
-            catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
-        }
-
-        private static long parseLong(String value, String key) {
-            try { return Long.parseLong(value); }
-            catch (NumberFormatException e) { throw new IllegalArgumentException(key + " must be an integer"); }
         }
     }
 
