@@ -344,6 +344,10 @@ public final class GuardianCommands {
     private static QueryParser.QueryParseContext ctxOf(CommandSourceStack src) {
         Vec3 v = src.getPosition();
         if (v == null) return null;
+        if (src.getEntity() instanceof ServerPlayer player) {
+            network.vonix.guardian.core.query.WorldEditRegionResolver.remember(
+                    player.getUUID(), player.getName().getString());
+        }
         return new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z, actorUuid(src));
     }
 

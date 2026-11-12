@@ -21,11 +21,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <ul>
  *   <li>Decimal time syntax {@code t:2.5h} (= 2h30m).</li>
  *   <li>Range time syntax {@code t:1h-2h} (rows aged between 1h and 2h).</li>
- *   <li>Real WorldEdit bridge on {@code r:#we} / {@code r:#worldedit} — when
- *       the WE class is absent from the classpath the parser still accepts the
- *       token and stores the requesting UUID, and the DAO compiler emits the
- *       {@code 1 = 0} sentinel predicate so the query matches zero rows
- *       (fail-closed) instead of silently promoting to global scope.</li>
+ *   <li>Real WorldEdit bridge on {@code r:#we} / {@code r:#worldedit} — the
+ *       parser still accepts the token and stores the requesting UUID. The
+ *       compiler used to emit {@code 1 = 0} when WorldEdit was absent, which
+ *       the operator read as "nothing happened there". That expectation was
+ *       the bug: the compiler now throws {@link WorldEditQueryException}
+ *       instead of matching zero rows or dropping the predicate.</li>
  * </ul>
  *
  * <p>The AutoPurgeScheduler behavior is exercised in
@@ -133,20 +134,28 @@ class X5RegressionTest {
     }
 
     @Test
-    void worldEditToken_compilerEmitsImpossiblePredicateWhenWorldEditAbsent() {
-        // WorldEdit class is NOT on the test classpath. The compiler's WE
-        // branch must fall back to "1 = 0" (fail-closed) rather than dropping
-        // the predicate and silently returning global-scope results.
+    void worldEditToken_compilerReportsWhyInsteadOfMatchingZeroRows() {
+        // The old compiler emitted "1 = 0" when WorldEdit was absent. A lookup
+        // then said "No results found", which is also what an empty region
+        // says. The compiler must name the failure and must not build that SQL.
         UUID uid = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
-        QueryFilter f = QueryFilter.builder()
+        QueryFilter unnamed = QueryFilter.builder()
             .worldEditPlayer(uid)
             .addAction(new QueryFilter.ActionSelect(ActionType.BLOCK_BREAK,
                 QueryFilter.ActionSelect.Sign.ANY))
             .build();
-        QueryCompiler.Compiled compiled = QueryCompiler.compileSelect(f, 0, 25);
-        assertThat(compiled.sql())
-            .as("WE-absent selection must fail closed, not silently drop the predicate")
-            .contains("1 = 0");
+        assertThatThrownBy(() -> QueryCompiler.compileSelect(unnamed, 0, 25))
+            .isInstanceOf(WorldEditQueryException.class)
+            .hasMessageContaining("player name");
+
+        WorldEditRegionResolver.remember(uid, "Notch");
+        try {
+            assertThatThrownBy(() -> QueryCompiler.compileSelect(unnamed, 0, 25))
+                .isInstanceOf(WorldEditQueryException.class)
+                .hasMessageContaining("not installed");
+        } finally {
+            WorldEditRegionResolver.resetForTests();
+        }
     }
 
     // ---- ActionTokens parity (light touch — ActionTokenParityTest owns the deep check)

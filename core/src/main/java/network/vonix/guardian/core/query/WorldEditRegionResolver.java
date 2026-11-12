@@ -3,6 +3,7 @@ package network.vonix.guardian.core.query;
 import java.lang.reflect.Method;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -40,6 +41,9 @@ public final class WorldEditRegionResolver {
 
     private static final AtomicBoolean UNAVAILABLE = new AtomicBoolean(false);
 
+    /** Names captured when a command is parsed. WorldEdit looks players up by name. */
+    private static final ConcurrentHashMap<UUID, String> REMEMBERED = new ConcurrentHashMap<>();
+
     // Name lookup can be delegated: normally we only have UUID. Consumers
     // that already know the name pass it directly.
     /** Nullable in-process supplier for name-from-UUID (installed by platform bootstrap). */
@@ -59,6 +63,15 @@ public final class WorldEditRegionResolver {
     }
 
     /**
+     * Remember the name of the player who is running a command. WorldEdit
+     * finds a session by name, and the platform never installed a name resolver.
+     */
+    public static void remember(UUID player, String name) {
+        if (player == null || name == null || name.isBlank()) return;
+        REMEMBERED.put(player, name);
+    }
+
+    /**
      * Resolve the given player's WorldEdit selection as an integer AABB.
      *
      * @return {@link Optional#empty()} on any failure (WE not installed, no
@@ -66,34 +79,57 @@ public final class WorldEditRegionResolver {
      *         reflection failure)
      */
     public static Optional<Box> resolveSelection(UUID player) {
-        if (player == null) return Optional.empty();
-        if (UNAVAILABLE.get()) return Optional.empty();
-        String name = null;
-        NameResolver nr = nameResolver;
-        if (nr != null) {
-            try {
-                name = nr.nameOf(player);
-            } catch (Throwable ignored) {
-                // resolver blew up — treat as unknown name
-            }
+        try {
+            return Optional.ofNullable(requireSelection(player));
+        } catch (WorldEditQueryException ex) {
+            return Optional.empty();
         }
-        return resolveByName(name);
+    }
+
+    /**
+     * Same lookup as {@link #resolveSelection(UUID)}, but a failure names the
+     * reason instead of looking like an empty region.
+     */
+    public static Box requireSelection(UUID player) {
+        if (player == null) {
+            throw new WorldEditQueryException(
+                "r:#worldedit needs a player. Run it in-game, not from the console.");
+        }
+        String name = lookupName(player);
+        if (name == null || name.isBlank()) {
+            throw new WorldEditQueryException(
+                "r:#worldedit could not see your player name, so the selection was not read.");
+        }
+        return requireByName(name);
     }
 
     /**
      * Resolve by player name (WorldEdit's own key). Exposed for platforms
      * that already know the display name (avoids installing a resolver).
+     * Failures are empty. {@link #requireByName(String)} reports them.
      */
     public static Optional<Box> resolveByName(String name) {
-        if (name == null || name.isEmpty()) return Optional.empty();
-        if (UNAVAILABLE.get()) return Optional.empty();
+        try {
+            return Optional.ofNullable(requireByName(name));
+        } catch (WorldEditQueryException ex) {
+            return Optional.empty();
+        }
+    }
+
+    public static Box requireByName(String name) {
+        if (name == null || name.isEmpty()) {
+            throw new WorldEditQueryException(
+                "r:#worldedit could not see your player name, so the selection was not read.");
+        }
+        if (UNAVAILABLE.get()) {
+            throw notInstalled();
+        }
         try {
             ensureInit();
             Object we = getInstanceMth.invoke(null);
             Object sessionMgr = getSessionManagerMth.invoke(we);
             Object session = findByNameMth.invoke(sessionMgr, name);
-            if (session == null) return Optional.empty();
-            // getSelection may throw IncompleteRegionException — swallow to empty.
+            if (session == null) throw noSelection(name);
             Object region;
             Object world = null;
             if (getSelectionWorldMth != null) {
@@ -106,9 +142,10 @@ public final class WorldEditRegionResolver {
                     region = getSelectionMth.invoke(session, world);
                 }
             } catch (Throwable ex) {
-                return Optional.empty(); // IncompleteRegionException etc
+                if (isNoSelection(ex)) throw noSelection(name);
+                throw unreadable(name);
             }
-            if (region == null) return Optional.empty();
+            if (region == null) throw noSelection(name);
             resolveRegionMethods(region.getClass());
             Object min = getMinPtMth.invoke(region);
             Object max = getMaxPtMth.invoke(region);
@@ -119,14 +156,52 @@ public final class WorldEditRegionResolver {
             int maxX = ((Number) vectorGetX.invoke(max)).intValue();
             int maxY = ((Number) vectorGetY.invoke(max)).intValue();
             int maxZ = ((Number) vectorGetZ.invoke(max)).intValue();
-            return Optional.of(new Box(minX, minY, minZ, maxX, maxY, maxZ));
+            return new Box(minX, minY, minZ, maxX, maxY, maxZ);
+        } catch (WorldEditQueryException ex) {
+            throw ex;
         } catch (ClassNotFoundException | NoClassDefFoundError e) {
             UNAVAILABLE.set(true);
-            return Optional.empty();
+            throw notInstalled();
         } catch (Throwable t) {
-            // Reflective failure, IllegalState (no selection), etc.
-            return Optional.empty();
+            if (isNoSelection(t)) throw noSelection(name);
+            throw unreadable(name);
         }
+    }
+
+    private static String lookupName(UUID player) {
+        NameResolver nr = nameResolver;
+        if (nr != null) {
+            try {
+                String fromResolver = nr.nameOf(player);
+                if (fromResolver != null && !fromResolver.isBlank()) return fromResolver;
+            } catch (Throwable ignored) {
+                // resolver blew up — fall through to a remembered name
+            }
+        }
+        return REMEMBERED.get(player);
+    }
+
+    private static boolean isNoSelection(Throwable ex) {
+        for (Throwable cur = ex; cur != null; cur = cur.getCause()) {
+            String type = cur.getClass().getName();
+            if (type.contains("IncompleteRegion") || type.contains("MissingWorld")) return true;
+        }
+        return false;
+    }
+
+    private static WorldEditQueryException notInstalled() {
+        return new WorldEditQueryException(
+            "WorldEdit is not installed, so r:#worldedit cannot read a selection.");
+    }
+
+    private static WorldEditQueryException noSelection(String name) {
+        return new WorldEditQueryException(
+            "No WorldEdit selection for " + name + ". Select a region, then run the command again.");
+    }
+
+    private static WorldEditQueryException unreadable(String name) {
+        return new WorldEditQueryException(
+            "WorldEdit is installed, but the selection for " + name + " could not be read.");
     }
 
     /** @return {@code true} if WorldEdit's entry class resolves at runtime. */
@@ -154,6 +229,7 @@ public final class WorldEditRegionResolver {
         vectorGetY = null;
         vectorGetZ = null;
         UNAVAILABLE.set(false);
+        REMEMBERED.clear();
     }
 
     // ------------------------------------------------------------------

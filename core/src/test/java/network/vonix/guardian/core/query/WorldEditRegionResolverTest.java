@@ -9,6 +9,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -63,6 +64,24 @@ class WorldEditRegionResolverTest {
         Optional<WorldEditRegionResolver.Box> box =
             WorldEditRegionResolver.resolveSelection(UUID.randomUUID());
         assertTrue(box.isEmpty(), "Throwing resolver must not propagate");
+    }
+
+    @Test
+    void rememberedNameWithoutWorldEditNamesTheFailure() {
+        UUID player = UUID.randomUUID();
+        WorldEditRegionResolver.remember(player, "Notch");
+        WorldEditQueryException ex = assertThrows(WorldEditQueryException.class,
+            () -> WorldEditRegionResolver.requireSelection(player));
+        assertTrue(ex.getMessage().contains("not installed"), ex.getMessage());
+        assertTrue(WorldEditRegionResolver.resolveSelection(player).isEmpty(),
+            "the Optional path stays empty so older callers keep compiling");
+    }
+
+    @Test
+    void missingNameNamesTheFailure() {
+        WorldEditQueryException ex = assertThrows(WorldEditQueryException.class,
+            () -> WorldEditRegionResolver.requireSelection(UUID.randomUUID()));
+        assertTrue(ex.getMessage().contains("player name"), ex.getMessage());
     }
 
     @Test

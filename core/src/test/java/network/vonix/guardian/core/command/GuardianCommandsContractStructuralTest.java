@@ -37,6 +37,9 @@ class GuardianCommandsContractStructuralTest {
             String text = Files.readString(path);
 
             assertThat(text)
+                .as("%s should remember the player name before parsing r:#worldedit", cell)
+                .contains("WorldEditRegionResolver.remember(");
+            assertThat(text)
                 .as("%s should pass actor UUID into QueryParseContext for r:#we", cell)
                 .contains("new QueryParser.QueryParseContext((int) v.x, (int) v.y, (int) v.z, actorUuid(src))");
 

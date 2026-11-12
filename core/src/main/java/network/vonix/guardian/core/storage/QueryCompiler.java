@@ -202,29 +202,18 @@ public final class QueryCompiler {
             }
         }
 
-        // WorldEdit selection AABB (r:#we / r:#worldedit). Resolved on-demand
-        // at compile time via reflection; if WE is not installed or the player
-        // has no active selection, we emit an impossible predicate so the
-        // query matches zero rows. The upper layer may use
-        // {@link WorldEditRegionResolver#resolveSelection(java.util.UUID)}
-        // itself to surface a user-facing message
-        // ({@code query.error.worldedit_not_installed} / {@code
-        // query.error.worldedit_no_selection}) before invoking the DAO.
+        // WorldEdit selection AABB (r:#we / r:#worldedit). A missing install,
+        // a missing player name, or an empty selection is an error. Emitting
+        // "1 = 0" made that look like a region where nothing happened.
         if (f.worldEditPlayer() != null) {
-            java.util.Optional<WorldEditRegionResolver.Box> box =
-                WorldEditRegionResolver.resolveSelection(f.worldEditPlayer());
-            if (box.isPresent()) {
-                WorldEditRegionResolver.Box b = box.get();
-                clauses.add("a.x BETWEEN ? AND ?");
-                binds.add(b.minX()); binds.add(b.maxX());
-                clauses.add("a.y BETWEEN ? AND ?");
-                binds.add(b.minY()); binds.add(b.maxY());
-                clauses.add("a.z BETWEEN ? AND ?");
-                binds.add(b.minZ()); binds.add(b.maxZ());
-            } else {
-                // No selection / WE missing — match zero rows.
-                clauses.add("1 = 0");
-            }
+            WorldEditRegionResolver.Box b =
+                WorldEditRegionResolver.requireSelection(f.worldEditPlayer());
+            clauses.add("a.x BETWEEN ? AND ?");
+            binds.add(b.minX()); binds.add(b.maxX());
+            clauses.add("a.y BETWEEN ? AND ?");
+            binds.add(b.minY()); binds.add(b.maxY());
+            clauses.add("a.z BETWEEN ? AND ?");
+            binds.add(b.minZ()); binds.add(b.maxZ());
         }
 
         // action types
