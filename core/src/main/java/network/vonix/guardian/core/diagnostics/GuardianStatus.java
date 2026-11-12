@@ -63,6 +63,15 @@ public final class GuardianStatus {
     public static List<String> render(Guardian g) {
         List<String> out = new ArrayList<>();
 
+        // One sentence before the detail blocks. The rest of the report stays
+        // available; this is the line an operator can read without scrolling.
+        line(out, "Status: " + safe(() -> String.valueOf(g.config().database().type()))
+            + " storage, writer "
+            + safe(() -> g.queue().isPaused() ? "paused" : "running")
+            + ", "
+            + safe(() -> g.queue().depth() + " of " + g.config().queue().maxSize())
+            + " waiting.");
+
         // ---- 1. Header + version ----
         section(out, "VonixGuardian");
         line(out, "  version    " + GuardianAPI.PLUGIN_VERSION);

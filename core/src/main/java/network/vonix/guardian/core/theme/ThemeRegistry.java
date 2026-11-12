@@ -16,33 +16,38 @@ import java.util.Map;
  */
 public final class ThemeRegistry {
 
-    /** Default theme returned by {@link #get(String)} for unknown / null names. */
+    /**
+     * Default theme. The block id uses {@code secondary}. The old
+     * {@code #00AAAA} was 3.85:1 on a mid-grey chat background, which is below
+     * WCAG AA, and it disappeared against a bright world. Ids are near-white
+     * so the chat box and Minecraft's text shadow can both carry them.
+     */
     public static final Theme AQUA = new Theme(
-        "aqua", "#55FFFF", "#00AAAA", "#55FF55", "#FF5555", "#FFAA00", "#AAAAAA");
+        "aqua", "#55FFFF", "#F4FFFF", "#55FF55", "#FF9999", "#FFAA00", "#D0D0D0");
 
     /** Cool blue palette. */
     public static final Theme BLUE = new Theme(
-        "blue", "#5555FF", "#0000AA", "#55FF55", "#FF5555", "#FFAA00", "#AAAAAA");
+        "blue", "#AAAAFF", "#DDDDFF", "#55FF55", "#FF9999", "#FFAA00", "#D0D0D0");
 
     /** Warm gold palette. */
     public static final Theme GOLD = new Theme(
-        "gold", "#FFAA00", "#FFFF55", "#55FF55", "#FF5555", "#FFAA00", "#AAAAAA");
+        "gold", "#FFAA00", "#FFFF99", "#55FF55", "#FF9999", "#FFCC66", "#D0D0D0");
 
     /** Green palette. */
     public static final Theme GREEN = new Theme(
-        "green", "#55FF55", "#00AA00", "#FFFF55", "#FF5555", "#FFAA00", "#AAAAAA");
+        "green", "#55FF55", "#C8FFC8", "#FFFF55", "#FF9999", "#FFAA00", "#D0D0D0");
 
     /** Purple palette. */
     public static final Theme PURPLE = new Theme(
-        "purple", "#FF55FF", "#AA00AA", "#55FF55", "#FF5555", "#FFAA00", "#AAAAAA");
+        "purple", "#FF99FF", "#FFCCFF", "#55FF55", "#FF9999", "#FFAA00", "#D0D0D0");
 
     /** Red palette. */
     public static final Theme RED = new Theme(
-        "red", "#FF5555", "#AA0000", "#55FF55", "#FFAA00", "#FFFF55", "#AAAAAA");
+        "red", "#FF9999", "#FFCCCC", "#55FF55", "#FFCC66", "#FFFF55", "#D0D0D0");
 
     /** Neutral white palette. */
     public static final Theme WHITE = new Theme(
-        "white", "#FFFFFF", "#AAAAAA", "#55FF55", "#FF5555", "#FFAA00", "#555555");
+        "white", "#FFFFFF", "#E8E8E8", "#55FF55", "#FF9999", "#FFAA00", "#D0D0D0");
 
     private static final Map<String, Theme> THEMES;
 

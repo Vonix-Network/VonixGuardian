@@ -26,6 +26,40 @@ class ThemeRegistryTest {
     }
 
     @Test
+    void textColoursClearMidGreyChat() {
+        // #3C3C3C is the mid chat background the old aqua block id failed
+        // against (3.85:1). Body colours have to clear WCAG AA, 4.5:1.
+        for (Theme theme : ThemeRegistry.all()) {
+            for (String colour : List.of(theme.primary(), theme.secondary(), theme.muted(),
+                    theme.error(), theme.warning(), theme.success())) {
+                assertThat(contrast(colour, "#3C3C3C"))
+                    .as("%s %s against mid-grey chat", theme.name(), colour)
+                    .isGreaterThanOrEqualTo(4.5);
+            }
+        }
+        assertThat(contrast("#00AAAA", "#3C3C3C")).isLessThan(4.5);
+    }
+
+    private static double contrast(String hex, String background) {
+        double lighter = Math.max(luminance(hex), luminance(background));
+        double darker = Math.min(luminance(hex), luminance(background));
+        return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    private static double luminance(String hex) {
+        int rgb = Integer.parseInt(hex.substring(1), 16);
+        double r = channel((rgb >> 16) & 0xFF);
+        double g = channel((rgb >> 8) & 0xFF);
+        double b = channel(rgb & 0xFF);
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    private static double channel(int value) {
+        double c = value / 255.0;
+        return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    @Test
     void everyThemeHasNonBlankHexColours() {
         for (Theme t : ThemeRegistry.all()) {
             assertThat(t.name()).isNotBlank();

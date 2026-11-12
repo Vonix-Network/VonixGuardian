@@ -76,4 +76,93 @@ public final class ChatRenderer {
         }
         return c;
     }
+
+    /**
+     * Colour one span and attach a hover plus either a suggested command or
+     * a clipboard copy. The chat-event types differ across Minecraft versions,
+     * so this looks them up. If that fails the text still shows.
+     */
+    public static MutableComponent interactive(Theme theme, String role, String text,
+                                                String hover, String suggest, String copy) {
+        MutableComponent component = styled(text, colourFor(theme, role));
+        boolean hasHover = hover != null && !hover.isBlank();
+        boolean hasSuggest = suggest != null && !suggest.isBlank();
+        boolean hasCopy = copy != null && !copy.isBlank();
+        if (!hasHover && !hasSuggest && !hasCopy) {
+            return component;
+        }
+        try {
+            Style style = component.getStyle();
+            if (hasSuggest) {
+                style = attach(style, "withClickEvent",
+                        chatEvent("ClickEvent", "SUGGEST_COMMAND", "SuggestCommand", suggest));
+            } else if (hasCopy) {
+                style = attach(style, "withClickEvent",
+                        chatEvent("ClickEvent", "COPY_TO_CLIPBOARD", "CopyToClipboard", copy));
+            }
+            if (hasHover) {
+                style = attach(style, "withHoverEvent",
+                        chatEvent("HoverEvent", "SHOW_TEXT", "ShowText", plain(hover)));
+            }
+            component.setStyle(style);
+        } catch (Throwable ignored) {
+            // The words still render when a version lacks the event type.
+        }
+        return component;
+    }
+
+    private static String colourFor(Theme theme, String role) {
+        if (theme == null || role == null) {
+            return null;
+        }
+        return switch (role) {
+            case "who", "header" -> theme.primary();
+            case "what" -> theme.secondary();
+            case "note" -> theme.warning();
+            default -> theme.muted();
+        };
+    }
+
+    private static Style attach(Style style, String method, Object event) throws Exception {
+        if (event == null) {
+            return style;
+        }
+        for (java.lang.reflect.Method candidate : Style.class.getMethods()) {
+            if (candidate.getName().equals(method) && candidate.getParameterCount() == 1
+                    && candidate.getParameterTypes()[0].isInstance(event)) {
+                return (Style) candidate.invoke(style, event);
+            }
+        }
+        return style;
+    }
+
+    private static Object chatEvent(String type, String enumName, String recordName, Object value)
+            throws Exception {
+        Class<?> cls = Class.forName("net.minecraft.network.chat." + type);
+        for (Class<?> nested : cls.getDeclaredClasses()) {
+            if (!nested.getSimpleName().equals(recordName)) {
+                continue;
+            }
+            for (java.lang.reflect.Constructor<?> ctor : nested.getConstructors()) {
+                if (ctor.getParameterCount() == 1) {
+                    return ctor.newInstance(value);
+                }
+            }
+        }
+        Class<?> action;
+        try {
+            action = Class.forName("net.minecraft.network.chat." + type + "$Action");
+        } catch (ClassNotFoundException missing) {
+            return null;
+        }
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        Object chosen = java.lang.Enum.valueOf((Class<? extends java.lang.Enum>) action, enumName);
+        for (java.lang.reflect.Constructor<?> ctor : cls.getConstructors()) {
+            Class<?>[] params = ctor.getParameterTypes();
+            if (params.length == 2 && params[0].isInstance(chosen)) {
+                return ctor.newInstance(chosen, value);
+            }
+        }
+        return null;
+    }
 }

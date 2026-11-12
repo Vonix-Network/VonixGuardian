@@ -30,6 +30,7 @@ import net.minecraft.world.phys.Vec3;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.command.CommandChatGuard;
 import network.vonix.guardian.core.command.MutationOutcomeFormatter;
+import network.vonix.guardian.core.command.OperatorText;
 import network.vonix.guardian.core.concurrent.BoundedGenerationExecutor;
 import network.vonix.guardian.core.config.ConfigLoader;
 import network.vonix.guardian.core.config.GuardianConfig;
@@ -481,7 +482,7 @@ public final class GuardianCommands {
                 qf = qf.withDefaultWorld(playerWorldOf(src));
                 qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
             } catch (QueryParseException e) {
-                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + OperatorText.detail(e)));
                 return 0;
             }
             MinecraftServer server = src.getServer();
@@ -511,7 +512,8 @@ public final class GuardianCommands {
                     List<Action> rows = visiblePage.rows();
                     long now = System.currentTimeMillis();
                     List<Component> pageOut = LookupFormatter.page(
-                            g.theme(), rows, pageActual, perPageF, now, rawF, visiblePage.hasNext());
+                            g.theme(), rows, pageActual, perPageF, now, rawF, visiblePage.hasNext(),
+                            filter.verbose());
                     server.execute(() -> {
                         if (rows.isEmpty()) {
                             if (!filter.silent()) {
@@ -527,7 +529,7 @@ public final class GuardianCommands {
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Lookup failed", t);
                     server.execute(() -> sendToPlayerOrSrc(server, src, viewer, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Lookup error: " + t.getMessage())));
+                            "[VonixGuardian] Lookup error: " + OperatorText.detail(t))));
                 }
             });
             return 1;
@@ -566,7 +568,7 @@ public final class GuardianCommands {
                 qf = qf.withDefaultWorld(playerWorldOf(src));
                 qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
             } catch (QueryParseException e) {
-                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + OperatorText.detail(e)));
                 return 0;
             }
             MinecraftServer server = src.getServer();
@@ -608,7 +610,7 @@ public final class GuardianCommands {
                     server.execute(() -> {
                         if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] Rollback error: " + t.getMessage()));
+                                "[VonixGuardian] Rollback error: " + OperatorText.detail(t)));
                     });
                 }
             });
@@ -632,7 +634,7 @@ public final class GuardianCommands {
                 qf = qf.withDefaultWorld(playerWorldOf(src));
                 qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
             } catch (QueryParseException e) {
-                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + OperatorText.detail(e)));
                 return 0;
             }
             MinecraftServer server = src.getServer();
@@ -673,7 +675,7 @@ public final class GuardianCommands {
                     server.execute(() -> {
                         if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] Restore error: " + t.getMessage()));
+                                "[VonixGuardian] Restore error: " + OperatorText.detail(t)));
                     });
                 }
             });
@@ -698,7 +700,7 @@ public final class GuardianCommands {
                 // and deliberately not applied; a named r: world is kept.
                 qf = network.vonix.guardian.core.rollback.PurgeScope.prepare(qf, playerWorldOf(src));
             } catch (QueryParseException e) {
-                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
+                send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + OperatorText.detail(e)));
                 return 0;
             }
             // CP-1:1 safety floor: console = 24h, in-game = 30d.
@@ -723,12 +725,12 @@ public final class GuardianCommands {
                     });
                 } catch (IllegalArgumentException tooRecent) {
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Purge refused: " + tooRecent.getMessage()
+                            "[VonixGuardian] Purge refused: " + OperatorText.detail(tooRecent)
                                     + " (CP-1:1 safety floor; use a larger t: window)")));
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Purge failed", t);
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Purge error: " + t.getMessage())));
+                            "[VonixGuardian] Purge error: " + OperatorText.detail(t))));
                 }
             });
             return 1;
@@ -774,7 +776,7 @@ public final class GuardianCommands {
                     });
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Batch command failed", t);
-                    String detail = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+                    String detail = OperatorText.detail(t);
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                             "[VonixGuardian] Batch error: " + detail)));
                 }
@@ -831,7 +833,7 @@ public final class GuardianCommands {
                     server.execute(() -> {
                         if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] Undo error: " + t.getMessage()));
+                                "[VonixGuardian] Undo error: " + OperatorText.detail(t)));
                     });
                 }
             });
@@ -914,7 +916,7 @@ public final class GuardianCommands {
                     server.execute(() -> {
                         if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                         sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] Apply error: " + t.getMessage()));
+                                "[VonixGuardian] Apply error: " + OperatorText.detail(t)));
                     });
                 }
             });
@@ -1011,19 +1013,28 @@ public final class GuardianCommands {
             CommandSourceStack src = ctx.getSource();
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
-            // v1.1.7: full CoreProtect-parity /vg status — multi-line, on-demand.
-            // Section headers begin with "§ " and render as bold+aqua; body lines as primary.
-            // v1.2.7: force per-player delivery — src.sendSuccess() logs to server
-            // console when the CommandSourceStack's entity binding is stale.
-            for (String line : network.vonix.guardian.core.diagnostics.GuardianStatus.render(g)) {
-                if (line.startsWith("§ ")) {
-                    sendToPlayerOrSrc(server, src, actor,
-                            ChatRenderer.section(g.theme(), "[VonixGuardian] " + line.substring(2)));
-                } else {
-                    sendToPlayerOrSrc(server, src, actor,
-                            ChatRenderer.primary(g.theme(), line));
-                }
-            }
+            // The report reads the database. Do that off the server thread.
+            // Brand the first section only; repeating the name on every header
+            // pushed the useful text off the screen.
+            submitAsync(src, g, () -> {
+                java.util.List<String> lines =
+                        network.vonix.guardian.core.diagnostics.GuardianStatus.render(g);
+                server.execute(() -> {
+                    boolean firstSection = true;
+                    for (String line : lines) {
+                        if (line.startsWith("§ ")) {
+                            String title = line.substring(2);
+                            String shown = firstSection ? "[VonixGuardian] " + title : title;
+                            firstSection = false;
+                            sendToPlayerOrSrc(server, src, actor,
+                                    ChatRenderer.section(g.theme(), shown));
+                        } else {
+                            sendToPlayerOrSrc(server, src, actor,
+                                    ChatRenderer.muted(g.theme(), line));
+                        }
+                    }
+                });
+            });
             return 1;
         }
     }
@@ -1069,7 +1080,7 @@ public final class GuardianCommands {
                     LOG.warn(Guardian.MARKER, "/vg reload failed off-thread", t);
                     if (server != null) {
                         server.execute(() -> send(src, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] Reload failed: " + t.getMessage())));
+                                "[VonixGuardian] Reload failed: " + OperatorText.detail(t))));
                     }
                 }
             });
@@ -1112,7 +1123,7 @@ public final class GuardianCommands {
                 next = withValue(g.config(), key, value);
             } catch (IllegalArgumentException e) {
                 send(src, ChatRenderer.error(g.theme(),
-                        "[VonixGuardian] " + e.getMessage()));
+                        "[VonixGuardian] " + OperatorText.detail(e)));
                 return 0;
             }
             if (next == null) {
@@ -1169,7 +1180,7 @@ public final class GuardianCommands {
                     LOG.warn(Guardian.MARKER, "Config set failed", e);
                     if (server != null) {
                         server.execute(() -> send(src, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] Config update failed: " + e.getMessage())));
+                                "[VonixGuardian] Config update failed: " + OperatorText.detail(e))));
                     }
                 }
             });
@@ -1307,7 +1318,7 @@ public final class GuardianCommands {
                     LOG.warn(Guardian.MARKER, "entitylog mutate failed", e);
                     if (server != null) {
                         server.execute(() -> send(src, ChatRenderer.error(g.theme(),
-                                "[VonixGuardian] entitylog update failed: " + e.getMessage())));
+                                "[VonixGuardian] entitylog update failed: " + OperatorText.detail(e))));
                     }
                 }
             });
@@ -1375,7 +1386,7 @@ public final class GuardianCommands {
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Teleport failed", t);
                     send(src, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Teleport failed: " + t.getMessage()));
+                            "[VonixGuardian] Teleport failed: " + OperatorText.detail(t)));
                 }
             });
             return 1;
@@ -1447,7 +1458,7 @@ public final class GuardianCommands {
                 } catch (Throwable t) {
                     LOG.warn(Guardian.MARKER, "Give failed", t);
                     send(src, ChatRenderer.error(g.theme(),
-                            "[VonixGuardian] Give failed: " + t.getMessage()));
+                            "[VonixGuardian] Give failed: " + OperatorText.detail(t)));
                 }
             });
             return 1;

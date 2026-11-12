@@ -116,7 +116,17 @@ class GuardianCommandsContractStructuralTest {
                 .contains("private static final Pattern PAGE_TOKEN")
                 .contains("Matcher m = PAGE_TOKEN.matcher(first)")
                 .contains("LookupFormatter.page(")
+                .contains("filter.verbose()")
                 .contains("CommandHelp.usage(");
+            int statusAt = text.indexOf("public static final class Status");
+            int reloadAt = text.indexOf("public static final class Reload");
+            assertThat(statusAt).as("%s has a status command", cell).isGreaterThan(0);
+            assertThat(reloadAt).as("%s has reload after status", cell).isGreaterThan(statusAt);
+            String statusBody = text.substring(statusAt, reloadAt);
+            assertThat(statusBody)
+                .as("%s must read status off the server thread and brand the report once", cell)
+                .contains("submitAsync(")
+                .doesNotContain("\"[VonixGuardian] \" + line.substring(2)");
             // Help text moved to core so the ten command copies cannot drift.
             // The page syntax pin now lives on CommandHelp, which every cell prints.
             assertThat(Files.readString(root.resolve(

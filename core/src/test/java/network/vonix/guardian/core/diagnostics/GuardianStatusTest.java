@@ -95,6 +95,7 @@ class GuardianStatusTest {
                     .extracting(GuardianDao.OpenRollbackBatch::id)
                     .contains(batchId);
 
+            assertThat(report).contains("Status:").contains("storage").contains("waiting");
             assertThat(report).contains("§ Coalescer");
             assertThat(report).contains("sinkDrops");
             assertThat(report).contains("quarantined", "recovered", "qOverflow", "retention limit not reached");
