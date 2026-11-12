@@ -68,6 +68,8 @@ class VersionCommonIdentityTest {
         assertTrue(neoBuild.contains("srcDir project(':mc-26.1.2:common').file('src/main/java')"));
     }
 
+    // Includes batch/show/close from /vg batch. The set used to stop at the
+    // pre-batch tree, which made a real command look like a contract break.
     private static final Set<String> EXPECTED_COMMAND_LITERALS = Set.of(
             "vg", "co", "guardian",
             "inspect", "i", "inspector",
@@ -78,6 +80,7 @@ class VersionCommonIdentityTest {
             "consumer", "pause", "resume", "toggle",
             "status", "stats", "version",
             "reload", "help",
+            "batch", "show", "close",
             "config", "get", "set", "list",
             "migrate-db",
             "teleport", "tp", "give",
