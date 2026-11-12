@@ -709,9 +709,15 @@ public final class GuardianCommands {
             submitAsync(src, g, () -> {
                 try {
                     var result = g.purgeEngine().purge(filter, minAgeSeconds);
-                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.warning(g.theme(),
-                            "[VonixGuardian] Purge removed " + result.deletedCount()
-                                    + " rows (minAge=" + minAgeSeconds + "s).")));
+                    var lines = network.vonix.guardian.core.command.PurgeReport.lines(result);
+                    boolean dryRun = result.dryRun();
+                    server.execute(() -> {
+                        for (String line : lines) {
+                            sendToPlayerOrSrc(server, src, actor, dryRun
+                                    ? ChatRenderer.muted(g.theme(), line)
+                                    : ChatRenderer.warning(g.theme(), line));
+                        }
+                    });
                 } catch (IllegalArgumentException tooRecent) {
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                             "[VonixGuardian] Purge refused: " + tooRecent.getMessage()

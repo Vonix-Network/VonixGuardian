@@ -1,11 +1,13 @@
 package network.vonix.guardian.core.rollback;
 
+import network.vonix.guardian.core.action.Action;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -41,6 +43,9 @@ public final class PurgeEngine {
     /** Hard cap on {@code #optimize} wall-clock time — 5 minutes. */
     public static final long OPTIMIZE_MAX_RUNTIME_MS = 5L * 60L * 1000L;
 
+    /** How many matching rows {@code #preview} returns. The count is still exact. */
+    public static final int PREVIEW_SAMPLE_LIMIT = 8;
+
     private final GuardianDao dao;
     private final ReentrantLock mutex = new ReentrantLock();
 
@@ -65,6 +70,10 @@ public final class PurgeEngine {
      * {@link #OPTIMIZE_MAX_RUNTIME_MS} and any failure is logged and swallowed
      * — the purge's row-count result is authoritative regardless.
      *
+     * <p>{@code #count} and {@code #preview} are dry runs. They share the same
+     * age floor and the same row predicate as a real purge, and they never
+     * call {@link GuardianDao#purge} or {@link GuardianDao#optimize}.</p>
+     *
      * @param filter         the query filter; must carry a non-null
      *                       {@code sinceMillis} that is sufficiently old
      * @param minAgeSeconds  minimum age (seconds) the time bound must satisfy
@@ -84,9 +93,21 @@ public final class PurgeEngine {
             throw new IllegalArgumentException(
                 "purge requires a time filter at least " + minAgeSeconds + "s old");
         }
-        QueryFilter purgeFilter = olderThan(filter, since);
+        QueryFilter purgeFilter = retentionFilter(filter);
+        boolean dryRun = filter.preview() || filter.countOnly();
         mutex.lock();
         try {
+            if (dryRun) {
+                long matched = dao.count(purgeFilter);
+                List<Action> sample = List.of();
+                PurgeResult.Mode mode = PurgeResult.Mode.COUNT;
+                if (filter.preview()) {
+                    sample = dao.query(purgeFilter, 0, PREVIEW_SAMPLE_LIMIT);
+                    mode = PurgeResult.Mode.PREVIEW;
+                }
+                LOG.info("PurgeEngine: dry-run {} matched={} (no rows deleted)", mode, matched);
+                return new PurgeResult(0L, minAgeSeconds, since, null, matched, sample, mode);
+            }
             LOG.info("PurgeEngine: executing purge olderThanMillis={} minAgeSeconds={} optimize={}",
                 since, minAgeSeconds, filter.optimize());
             long deleted = dao.purge(purgeFilter);
@@ -110,19 +131,29 @@ public final class PurgeEngine {
                         deleted, ex.toString());
                 }
             }
-            return new PurgeResult(deleted, minAgeSeconds, since, opt);
+            return new PurgeResult(deleted, minAgeSeconds, since, opt, deleted, List.of(),
+                PurgeResult.Mode.DELETE);
         } finally {
             mutex.unlock();
         }
     }
 
-    private static QueryFilter olderThan(QueryFilter base, long olderThanMillis) {
+    /**
+     * Turn a lookup-shaped time filter into the rows a purge would remove.
+     * A single {@code t:90d} is stored as a lower bound; purge deletes rows
+     * at or before that instant.
+     */
+    static QueryFilter retentionFilter(QueryFilter base) {
+        return copyTime(base, null, base.sinceMillis());
+    }
+
+    private static QueryFilter copyTime(QueryFilter base, Long sinceMillis, Long untilMillis) {
         return new QueryFilter(
-            base.users(), null, olderThanMillis, base.radius(), base.worldSel(),
+            base.users(), sinceMillis, untilMillis, base.radius(), base.worldSel(),
             base.centerX(), base.centerY(), base.centerZ(),
             base.actions(), base.include(), base.exclude(),
-            base.rolledBack(), base.countOnly(), base.preview(), base.verbose(),
-            base.silent(), base.optimize(), base.worldEditPlayer(), base.actionIds()
+            base.rolledBack(), false, false, base.verbose(),
+            base.silent(), false, base.worldEditPlayer(), base.actionIds()
         );
     }
 
@@ -146,21 +177,49 @@ public final class PurgeEngine {
     /**
      * Outcome of a {@link #purge} call.
      *
-     * @param deletedCount       rows removed from {@code vg_actions}
+     * @param deletedCount       rows removed from {@code vg_actions}; {@code 0} on a dry run
      * @param minAgeSeconds      minimum age (seconds) enforced by the caller
      * @param requestedSinceMs   the {@code sinceMillis} that was accepted
      * @param optimize           optimization outcome, or {@code null} if
      *                           {@code #optimize} was not requested or the
      *                           optimize call itself threw (see log)
+     * @param matchedCount       rows the predicate would remove; equals
+     *                           {@code deletedCount} after a real delete
+     * @param sample             rows a preview would show; empty for count and delete
+     * @param mode               whether this call deleted, counted, or previewed
      */
     public record PurgeResult(long deletedCount,
                               long minAgeSeconds,
                               long requestedSinceMs,
-                              GuardianDao.OptimizeResult optimize) {
+                              GuardianDao.OptimizeResult optimize,
+                              long matchedCount,
+                              List<Action> sample,
+                              Mode mode) {
+
+        public PurgeResult {
+            sample = sample == null ? List.of() : List.copyOf(sample);
+            if (mode == null) mode = Mode.DELETE;
+        }
+
+        /** Compatibility constructor for a completed delete. */
+        public PurgeResult(long deletedCount,
+                           long minAgeSeconds,
+                           long requestedSinceMs,
+                           GuardianDao.OptimizeResult optimize) {
+            this(deletedCount, minAgeSeconds, requestedSinceMs, optimize,
+                deletedCount, List.of(), Mode.DELETE);
+        }
 
         /** True if the purge asked for and successfully executed the optimize step. */
         public boolean optimized() {
             return optimize != null;
         }
+
+        /** True when no rows were deleted ({@code #count} or {@code #preview}). */
+        public boolean dryRun() {
+            return mode != Mode.DELETE;
+        }
+
+        public enum Mode { DELETE, COUNT, PREVIEW }
     }
 }
