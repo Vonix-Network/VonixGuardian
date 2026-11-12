@@ -50,8 +50,15 @@ class RetentionAndConfirmDefaultsTest {
             String src = Files.readString(root.resolve(rel));
             assertThat(src).contains("previewForced || filter.preview() || rollbackRequiresConfirm(g)");
             assertThat(src).contains("filter.preview() || rollbackRequiresConfirm(g)");
-            assertThat(src).contains("c.rollback().requireConfirm()");
+            // The flag used to be copied inline as c.rollback().requireConfirm()
+            // inside each cell's config-set constructor. That constructor dropped
+            // the blacklists, so the copy now lives in ConfigHotSwap. The cell
+            // still reads the flag before it will change the world.
+            assertThat(src).contains("rollback.requireConfirm()");
         }
+        String hotSwap = Files.readString(root.resolve(
+                "core/src/main/java/network/vonix/guardian/core/config/ConfigHotSwap.java"));
+        assertThat(hotSwap).contains("c.rollback().requireConfirm()");
     }
 
     @Test
