@@ -564,33 +564,21 @@ public final class RollbackEngine {
 
     /**
      * Startup recovery: scan for batches that were opened but never closed
-     * (server crashed mid-rollback) and log them. This method is read-only.
-     * It must not replay container or inventory edits on boot. Operators inspect
-     * the open batch ids on {@code /vg status} and decide whether to re-run.
+     * (server crashed mid-rollback) and log one summary line. This method is
+     * read-only. It must not replay container or inventory edits, and it must
+     * not close the batch. Operators use {@code /vg batch} to inspect or mark
+     * the audit row finished.
+     *
+     * @return the lines that were logged; empty when nothing was open
      */
-    public void recoverIncompleteBatches() throws Exception {
+    public List<String> recoverIncompleteBatches() throws Exception {
         List<Long> ids = dao.findIncompleteBatchActionIds();
         List<GuardianDao.OpenRollbackBatch> open = dao.findOpenRollbackBatches(20);
-        boolean noIds = ids == null || ids.isEmpty();
-        boolean noBatches = open == null || open.isEmpty();
-        if (noIds && noBatches) {
-            return;
+        List<String> notice = RollbackBatches.recoveryNotice(open, ids);
+        for (String line : notice) {
+            LOG.warn("RollbackEngine: {}", line);
         }
-        if (!noBatches) {
-            for (GuardianDao.OpenRollbackBatch batch : open) {
-                String mode = batch.mode() == 0 ? "ROLLBACK" : batch.mode() == 1 ? "RESTORE" : "mode=" + batch.mode();
-                LOG.warn("RollbackEngine: open batch id={} mode={} affected={} — inspect before re-running",
-                    batch.id(), mode, batch.affected());
-            }
-        }
-        if (noIds) {
-            return;
-        }
-        LOG.warn("RollbackEngine: found {} action(s) in incomplete rollback batches — operator review required",
-            ids.size());
-        for (Long id : ids) {
-            LOG.warn("RollbackEngine: incomplete batch contains action id={} (use /vg lookup to inspect)", id);
-        }
+        return notice;
     }
 
     // ---------------------------------------------------------------------

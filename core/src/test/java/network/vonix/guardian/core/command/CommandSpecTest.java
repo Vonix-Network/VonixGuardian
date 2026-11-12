@@ -36,7 +36,7 @@ class CommandSpecTest {
         List<String> expected = List.of(
             CommandSpec.INSPECT, CommandSpec.LOOKUP, CommandSpec.ROLLBACK,
             CommandSpec.RESTORE, CommandSpec.PURGE, CommandSpec.NEAR,
-            CommandSpec.UNDO, CommandSpec.STATUS, CommandSpec.RELOAD,
+            CommandSpec.UNDO, CommandSpec.BATCH, CommandSpec.STATUS, CommandSpec.RELOAD,
             CommandSpec.HELP, CommandSpec.APPLY, CommandSpec.CANCEL,
             CommandSpec.CONSUMER, CommandSpec.CONFIG, CommandSpec.ENTITYLOG,
             CommandSpec.TELEPORT, CommandSpec.GIVE, CommandSpec.MIGRATE_DB);

@@ -39,6 +39,8 @@ public final class CommandSpec {
     public static final String NEAR     = "near";
     /** {@code /vg undo} — undo the caller's last rollback/restore. */
     public static final String UNDO     = "undo";
+    /** {@code /vg batch} — inspect or close an unfinished rollback without changing the world. */
+    public static final String BATCH    = "batch";
     /** {@code /vg status} — show queue depth, DB health, etc. */
     public static final String STATUS   = "status";
     /** {@code /vg reload} — reload {@code GuardianConfig}. */
@@ -79,6 +81,8 @@ public final class CommandSpec {
         sub(NEAR,     "n",  false, "Show recent activity in a small radius around you.",
             List.of()),
         sub(UNDO,     null, false, "Reverse your last rollback or restore. This changes the world again.",
+            List.of()),
+        sub(BATCH,    null, false, "List, show, or close an unfinished rollback. Closing does not change the world.",
             List.of()),
         sub(STATUS,   null, false, "Show queue depth, DB health, and runtime stats.",
             List.of()),

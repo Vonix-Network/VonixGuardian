@@ -973,6 +973,51 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     }
 
     @Override
+    public int closeOpenRollbackBatch(long batchId) throws SQLException {
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE vg_rollback_batches SET completed = 1 WHERE id = ? AND completed = 0")) {
+            ps.setLong(1, batchId);
+            return ps.executeUpdate();
+        } finally {
+            release(c);
+        }
+    }
+
+    @Override
+    public RollbackBatch findRollbackBatch(long batchId) throws SQLException {
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT id, mode, affected, completed FROM vg_rollback_batches WHERE id = ?")) {
+            ps.setLong(1, batchId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return new RollbackBatch(rs.getLong(1), rs.getInt(2), rs.getInt(3), rs.getInt(4) == 0);
+            }
+        } finally {
+            release(c);
+        }
+    }
+
+    @Override
+    public List<Long> findRollbackBatchActionIds(long batchId) throws SQLException {
+        Connection c = borrow();
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT action_id FROM vg_rollback_batch_actions WHERE batch_id = ? ORDER BY action_id")) {
+            ps.setLong(1, batchId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<Long> out = new ArrayList<>();
+                while (rs.next()) {
+                    out.add(rs.getLong(1));
+                }
+                return out;
+            }
+        } finally {
+            release(c);
+        }
+    }
+
+    @Override
     public List<OpenRollbackBatch> findOpenRollbackBatches(int limit) throws SQLException {
         int cap = limit <= 0 ? 20 : Math.min(limit, 100);
         Connection c = borrow();

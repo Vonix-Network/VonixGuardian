@@ -111,6 +111,7 @@ public final class GuardianStatus {
             } else {
                 line(out, "  open batches " + open.size()
                         + " — inspect with /vg lookup before re-running rollback or restore");
+                line(out, "  /vg batch close <id> marks one finished and does not change the world");
                 for (GuardianDao.OpenRollbackBatch batch : open) {
                     line(out, "  batch " + batch.id()
                             + " mode=" + batchMode(batch.mode())

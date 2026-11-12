@@ -185,11 +185,41 @@ class RollbackResultTruthfulnessTest {
         };
         RollbackEngine engine = new RollbackEngine(dao, mutator, Runnable::run);
 
-        engine.recoverIncompleteBatches();
+        List<String> notice = engine.recoverIncompleteBatches();
 
+        assertThat(notice).hasSize(1);
+        assertThat(String.join("\n", notice)).doesNotContain("action id=");
         assertThat(mutatorCalls.get()).isZero();
         verify(dao, never()).closeRollbackBatch(anyLong());
+        verify(dao, never()).closeOpenRollbackBatch(anyLong());
         verify(dao, never()).markRolledBack(any(), anyBoolean());
+    }
+
+    @Test
+    void recoverIncompleteBatchesLogsOneLineForManyActions() throws Exception {
+        when(dao.findIncompleteBatchActionIds()).thenReturn(
+            java.util.stream.LongStream.rangeClosed(1, 40).boxed().toList());
+        when(dao.findOpenRollbackBatches(anyInt())).thenReturn(List.of(
+            new GuardianDao.OpenRollbackBatch(17L, 0, 40),
+            new GuardianDao.OpenRollbackBatch(18L, 1, 2)));
+        AtomicInteger mutatorCalls = new AtomicInteger();
+        WorldMutator mutator = new AlwaysApplyMutator() {
+            @Override
+            public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
+                mutatorCalls.incrementAndGet();
+                return super.trySetBlock(worldId, x, y, z, targetId, targetMeta);
+            }
+        };
+        RollbackEngine engine = new RollbackEngine(dao, mutator, Runnable::run);
+
+        List<String> notice = engine.recoverIncompleteBatches();
+
+        assertThat(notice).hasSize(1);
+        assertThat(notice.get(0)).contains("17").contains("18").contains("40 actions").contains("/vg batch");
+        assertThat(notice.get(0)).doesNotContain("action id=");
+        assertThat(mutatorCalls.get()).isZero();
+        verify(dao, never()).closeRollbackBatch(anyLong());
+        verify(dao, never()).closeOpenRollbackBatch(anyLong());
     }
 
     @Test

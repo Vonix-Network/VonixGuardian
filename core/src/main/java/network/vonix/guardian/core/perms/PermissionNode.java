@@ -90,6 +90,7 @@ public enum PermissionNode {
         Map.entry("vonixguardian.command.restore", RESTORE),
         Map.entry("vonixguardian.command.purge", PURGE),
         Map.entry("vonixguardian.command.undo", UNDO),
+        Map.entry("vonixguardian.command.batch", ROLLBACK),
         Map.entry("vonixguardian.command.near", NEAR),
         Map.entry("vonixguardian.command.consumer", CONSUMER),
         Map.entry("vonixguardian.command.status", STATUS),

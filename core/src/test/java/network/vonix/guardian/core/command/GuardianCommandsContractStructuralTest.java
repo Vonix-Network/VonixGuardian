@@ -85,6 +85,13 @@ class GuardianCommandsContractStructuralTest {
                     "QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius())\n"
                         + "                    .withDefaultWorld(playerWorldOf(src));");
             assertThat(text)
+                .as("%s must let the operator see and close an open rollback batch", cell)
+                .contains("Commands.literal(\"batch\")")
+                .contains("hasPerm(s, PermissionNode.ROLLBACK, g)")
+                .contains("RollbackBatches.list(")
+                .contains("RollbackBatches.show(")
+                .contains("RollbackBatches.close(");
+            assertThat(text)
                 .as("%s should make #count a count-only lookup", cell)
                 .contains("if (filter.countOnly())")
                 .contains("[VonixGuardian] Count: ")

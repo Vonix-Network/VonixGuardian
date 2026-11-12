@@ -1,5 +1,6 @@
 package network.vonix.guardian.core.storage;
 
+import network.vonix.guardian.core.rollback.RollbackBatches;
 import network.vonix.guardian.core.storage.jdbc.SqliteDao;
 import org.junit.jupiter.api.Test;
 
@@ -92,6 +93,32 @@ class RollbackBatchTest {
             assertThat(batchId).isPositive();
             assertThat(dao.findIncompleteBatchActionIds()).isEmpty();
             dao.closeRollbackBatch(batchId);
+        } finally {
+            dao.close();
+        }
+    }
+
+    @Test
+    void closing_an_open_batch_keeps_its_action_ids_and_a_second_close_does_nothing() throws Exception {
+        SqliteDao dao = new SqliteDao("jdbc:sqlite::memory:");
+        try {
+            dao.init();
+            long batchId = dao.openRollbackBatch(null, 0, "{}", ids(3));
+            assertThat(RollbackBatches.list(dao).get(0)).contains("1 open rollback batch");
+            assertThat(RollbackBatches.show(dao, batchId).get(1)).contains("1, 2, 3");
+
+            List<String> closed = RollbackBatches.close(dao, batchId);
+
+            assertThat(closed).hasSize(1);
+            assertThat(closed.get(0)).contains("now closed").contains("world was not changed");
+            assertThat(dao.findOpenRollbackBatches(20)).isEmpty();
+            assertThat(dao.findIncompleteBatchActionIds()).isEmpty();
+            assertThat(dao.findRollbackBatchActionIds(batchId)).containsExactly(1L, 2L, 3L);
+            assertThat(dao.findRollbackBatch(batchId).open()).isFalse();
+            assertThat(dao.closeOpenRollbackBatch(batchId)).isZero();
+            assertThat(RollbackBatches.close(dao, batchId).get(0)).contains("already closed");
+            assertThat(RollbackBatches.show(dao, batchId).get(0)).contains("already closed");
+            assertThat(RollbackBatches.list(dao).get(0)).contains("No open rollback batches");
         } finally {
             dao.close();
         }

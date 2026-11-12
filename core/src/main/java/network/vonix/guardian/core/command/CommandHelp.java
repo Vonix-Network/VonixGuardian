@@ -58,6 +58,13 @@ public final class CommandHelp {
             case "undo" -> List.of(
                 "[VonixGuardian] /vg undo",
                 "  Reverses your last rollback or restore. This changes the world again.");
+            case "batch" -> List.of(
+                "[VonixGuardian] /vg batch [list|show <id>|close <id>]",
+                "  Example: /vg batch",
+                "  Example: /vg batch show 17",
+                "  Example: /vg batch close 17",
+                "  Lists a rollback that did not finish. Closing marks the audit row finished.",
+                "  The world is not changed.");
             default -> full();
         };
     }

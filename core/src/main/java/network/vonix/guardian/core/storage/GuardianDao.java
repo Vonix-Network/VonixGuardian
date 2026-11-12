@@ -99,12 +99,46 @@ public interface GuardianDao extends AutoCloseable {
     record OpenRollbackBatch(long id, int mode, int affected) {}
 
     /**
+     * One rollback or restore batch, open or already finished.
+     * {@code open} is true only while {@code completed = 0}.
+     */
+    record RollbackBatch(long id, int mode, int affected, boolean open) {}
+
+    /**
      * Open ({@code completed = 0}) rollback/restore batches, oldest id first.
      * Default is empty so mocks and partial test DAOs keep compiling. Does not
      * close, replay, or mutate the batches.
      */
     default List<OpenRollbackBatch> findOpenRollbackBatches(int limit) throws Exception {
         return List.of();
+    }
+
+    /**
+     * Load one batch by id, whether or not it is still open.
+     * Default is {@code null} so mocks and partial test DAOs keep compiling.
+     */
+    default RollbackBatch findRollbackBatch(long batchId) throws Exception {
+        return null;
+    }
+
+    /**
+     * Action ids stored for one batch, in ascending id order.
+     * Default is empty so mocks and partial test DAOs keep compiling.
+     */
+    default List<Long> findRollbackBatchActionIds(long batchId) throws Exception {
+        return List.of();
+    }
+
+    /**
+     * Mark an open batch finished. Only a row with {@code completed = 0} is
+     * updated, so a second call returns 0. This does not change the world and
+     * does not delete action rows. {@link #closeRollbackBatch(long)} is a
+     * different statement and still matches by id alone.
+     *
+     * @return rows updated, 1 when an open batch was closed, otherwise 0
+     */
+    default int closeOpenRollbackBatch(long batchId) throws Exception {
+        return 0;
     }
 
     /**

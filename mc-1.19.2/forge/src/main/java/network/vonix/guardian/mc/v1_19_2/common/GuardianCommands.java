@@ -160,6 +160,22 @@ public final class GuardianCommands {
                 .then(Commands.literal("undo")
                         .requires(s -> hasPerm(s, PermissionNode.UNDO, g))
                         .executes(ctx -> Undo.run(ctx, g)))
+                // unfinished rollback batches: list, show, or close the audit row
+                .then(Commands.literal("batch")
+                        .requires(s -> hasPerm(s, PermissionNode.ROLLBACK, g))
+                        .executes(ctx -> Batch.run(ctx, g, "list", null))
+                        .then(Commands.literal("list")
+                                .executes(ctx -> Batch.run(ctx, g, "list", null)))
+                        .then(Commands.literal("show")
+                                .executes(ctx -> Help.usage(ctx, g, "batch"))
+                                .then(Commands.argument("id", StringArgumentType.word())
+                                        .executes(ctx -> Batch.run(ctx, g, "show",
+                                                StringArgumentType.getString(ctx, "id")))))
+                        .then(Commands.literal("close")
+                                .executes(ctx -> Help.usage(ctx, g, "batch"))
+                                .then(Commands.argument("id", StringArgumentType.word())
+                                        .executes(ctx -> Batch.run(ctx, g, "close",
+                                                StringArgumentType.getString(ctx, "id"))))))
                 // near (CP parity: radius=5 t:1h, current player only)
                 .then(Commands.literal("near")
                         .requires(s -> hasPerm(s, PermissionNode.NEAR, g))
@@ -702,6 +718,54 @@ public final class GuardianCommands {
                     LOG.warn(Guardian.MARKER, "Purge failed", t);
                     server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
                             "[VonixGuardian] Purge error: " + t.getMessage())));
+                }
+            });
+            return 1;
+        }
+    }
+
+    // ====================================================================== Batch
+
+    /** {@code /vg batch} — see or close an unfinished rollback. Does not change the world. */
+    public static final class Batch {
+        private Batch() {}
+
+        public static int run(CommandContext<CommandSourceStack> ctx, Guardian g, String verb, String rawId) {
+            CommandSourceStack src = ctx.getSource();
+            Long id = null;
+            if (rawId != null) {
+                id = network.vonix.guardian.core.rollback.RollbackBatches.parseId(rawId);
+                if (id == null) {
+                    send(src, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Batch id must be a positive number. Nothing was changed."));
+                    return 0;
+                }
+            }
+            MinecraftServer server = src.getServer();
+            final UUID actor = actorUuid(src);
+            final Long batchId = id;
+            submitAsync(src, g, () -> {
+                try {
+                    List<String> lines;
+                    if ("show".equals(verb)) {
+                        lines = network.vonix.guardian.core.rollback.RollbackBatches.show(g.dao(), batchId);
+                    } else if ("close".equals(verb)) {
+                        lines = network.vonix.guardian.core.rollback.RollbackBatches.close(g.dao(), batchId);
+                    } else {
+                        lines = network.vonix.guardian.core.rollback.RollbackBatches.list(g.dao());
+                    }
+                    server.execute(() -> {
+                        for (String line : lines) {
+                            sendToPlayerOrSrc(server, src, actor, "close".equals(verb)
+                                    ? ChatRenderer.warning(g.theme(), line)
+                                    : ChatRenderer.muted(g.theme(), line));
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.warn(Guardian.MARKER, "Batch command failed", t);
+                    String detail = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+                    server.execute(() -> sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(),
+                            "[VonixGuardian] Batch error: " + detail)));
                 }
             });
             return 1;
