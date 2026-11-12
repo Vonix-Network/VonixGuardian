@@ -75,6 +75,15 @@ class GuardianCommandsContractStructuralTest {
             assertThat(countOccurrences(text, "QueryParser.enforceMaxRadius("))
                 .as("%s should enforce radius for lookup, rollback, restore, and purge", cell)
                 .isEqualTo(4);
+            // A bare purge used to chain withDefaultWorld onto the caller's world
+            // and then report a small delete. The caller's world must not be applied.
+            assertThat(text)
+                .as("%s purge must span every world unless the operator named one", cell)
+                .contains("PurgeScope.prepare(qf, playerWorldOf(src))")
+                .contains("PurgeReport.lines(result, filter)")
+                .doesNotContain(
+                    "QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius())\n"
+                        + "                    .withDefaultWorld(playerWorldOf(src));");
             assertThat(text)
                 .as("%s should make #count a count-only lookup", cell)
                 .contains("if (filter.countOnly())")

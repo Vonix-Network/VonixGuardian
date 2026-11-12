@@ -38,7 +38,7 @@ class PurgeDryRunTest {
         assertThat(result.matchedCount()).isEqualTo(4L);
         assertThat(result.sample()).isEmpty();
         assertThat(PurgeReport.lines(result))
-            .containsExactly("[VonixGuardian] Purge count: 4 rows match. Nothing was deleted.");
+            .containsExactly("[VonixGuardian] Purge count: 4 rows match in all worlds. Nothing was deleted.");
     }
 
     @Test

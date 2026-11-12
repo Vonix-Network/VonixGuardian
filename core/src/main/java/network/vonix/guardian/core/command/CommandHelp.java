@@ -50,8 +50,10 @@ public final class CommandHelp {
             case "purge" -> List.of(
                 "[VonixGuardian] /vg purge <filter>",
                 "  Example: /vg purge t:30d",
-                "  Example: /vg purge t:60d #preview",
-                "  A single t: deletes rows older than that age. #preview and #count do not delete.",
+                "  Example: /vg purge t:40d-60d r:#nether #preview",
+                "  A bare purge covers every world. Name one with r:#nether, r:#overworld, r:#end, or r:#world_<name>.",
+                "  A single t: deletes rows older than that age. t:40d-60d deletes only the rows inside that window.",
+                "  #preview and #count do not delete.",
                 "  Console refuses anything newer than 24h. In-game refuses anything newer than 30d.");
             case "undo" -> List.of(
                 "[VonixGuardian] /vg undo",

@@ -665,8 +665,10 @@ public final class GuardianCommands {
             QueryFilter qf;
             try {
                 qf = PARSER.parse(raw, ctxOf(src));
-                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius())
-                    .withDefaultWorld(playerWorldOf(src));
+                qf = QueryParser.enforceMaxRadius(qf, g.config().lookup().maxRadius());
+                // A bare purge covers every world. The caller's world is passed
+                // and deliberately not applied; a named r: world is kept.
+                qf = network.vonix.guardian.core.rollback.PurgeScope.prepare(qf, playerWorldOf(src));
             } catch (QueryParseException e) {
                 send(src, ChatRenderer.error(g.theme(), "[VonixGuardian] " + e.getMessage()));
                 return 0;
@@ -682,7 +684,7 @@ public final class GuardianCommands {
             submitAsync(src, g, () -> {
                 try {
                     var result = g.purgeEngine().purge(filter, minAgeSeconds);
-                    var lines = network.vonix.guardian.core.command.PurgeReport.lines(result);
+                    var lines = network.vonix.guardian.core.command.PurgeReport.lines(result, filter);
                     boolean dryRun = result.dryRun();
                     server.execute(() -> {
                         for (String line : lines) {

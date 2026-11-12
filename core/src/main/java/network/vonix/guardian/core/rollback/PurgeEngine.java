@@ -88,8 +88,17 @@ public final class PurgeEngine {
             throw new IllegalArgumentException("minAgeSeconds must be >= 0");
         }
         Long since = filter.sinceMillis();
-        long cutoff = System.currentTimeMillis() - (minAgeSeconds * 1000L);
-        if (since == null || since > cutoff) {
+        if (since == null) {
+            throw new IllegalArgumentException(
+                "purge requires a time filter at least " + minAgeSeconds + "s old");
+        }
+        // A range's youngest deleted row is the newer edge. A single t:90d
+        // stores that edge as sinceMillis. Either way it must clear the floor.
+        long youngestDeleted = filter.untilMillis() == null
+            ? since
+            : Math.max(since, filter.untilMillis());
+        long floor = System.currentTimeMillis() - (minAgeSeconds * 1000L);
+        if (youngestDeleted > floor) {
             throw new IllegalArgumentException(
                 "purge requires a time filter at least " + minAgeSeconds + "s old");
         }
@@ -141,10 +150,18 @@ public final class PurgeEngine {
     /**
      * Turn a lookup-shaped time filter into the rows a purge would remove.
      * A single {@code t:90d} is stored as a lower bound; purge deletes rows
-     * at or before that instant.
+     * at or before that instant. A two-sided {@code t:40d-60d} keeps both
+     * edges and deletes only the rows inside the window.
      */
     static QueryFilter retentionFilter(QueryFilter base) {
-        return copyTime(base, null, base.sinceMillis());
+        Long since = base.sinceMillis();
+        Long until = base.untilMillis();
+        if (since != null && until != null) {
+            long older = Math.min(since, until);
+            long newer = Math.max(since, until);
+            return copyTime(base, older, newer);
+        }
+        return copyTime(base, null, since);
     }
 
     private static QueryFilter copyTime(QueryFilter base, Long sinceMillis, Long untilMillis) {

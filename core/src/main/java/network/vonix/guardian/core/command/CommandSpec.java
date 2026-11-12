@@ -74,7 +74,7 @@ public final class CommandSpec {
             List.of(ArgumentSpec.FILTER_TOKENS)),
         sub(RESTORE,  "rs", true,  "Put back actions that a rollback changed in the world.",
             List.of(ArgumentSpec.FILTER_TOKENS)),
-        sub(PURGE,    null, true,  "Permanently delete old log rows. #preview and #count do not delete.",
+        sub(PURGE,    null, true,  "Permanently delete old log rows in every world unless you name one. #preview and #count do not delete.",
             List.of(ArgumentSpec.FILTER_TOKENS)),
         sub(NEAR,     "n",  false, "Show recent activity in a small radius around you.",
             List.of()),
