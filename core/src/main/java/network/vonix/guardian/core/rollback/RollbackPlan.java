@@ -126,7 +126,10 @@ public final class RollbackPlan {
             if (dedupeByPosition(a)) {
                 PosKey k = new PosKey(a.worldId(), a.x(), a.y(), a.z());
                 if (!seen.add(k)) {
-                    // a later (newer) event already covers this slot — drop this older one
+                    // A newer row already restores this block. The older row is
+                    // not applied, and it must be counted — dropping it made
+                    // skipped=0 while rows the operator asked about vanished.
+                    skipped.add(a);
                     continue;
                 }
             }
@@ -183,6 +186,7 @@ public final class RollbackPlan {
             if (dedupeByPosition(a)) {
                 PosKey k = new PosKey(a.worldId(), a.x(), a.y(), a.z());
                 if (!seen.add(k)) {
+                    skipped.add(a);
                     return;
                 }
             }

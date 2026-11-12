@@ -119,6 +119,29 @@ class RollbackPlanTest {
     }
 
     @Test
+    void olderBlocksAtTheSamePositionAreCountedAsSkipped() throws Exception {
+        // diamond_ore broken, then cobble placed twice. Only the newest row
+        // restores the block. The two older rows used to disappear with
+        // skipped=0, so the result looked like one action was the whole story.
+        Action broken = action(1L, 100L, ActionType.BLOCK_BREAK,
+            "minecraft:overworld", 4, 64, 4, "minecraft:diamond_ore", null, 1, false);
+        Action firstCobble = action(2L, 200L, ActionType.BLOCK_PLACE,
+            "minecraft:overworld", 4, 64, 4, "minecraft:cobblestone", null, 1, false);
+        Action secondCobble = action(3L, 300L, ActionType.BLOCK_PLACE,
+            "minecraft:overworld", 4, 64, 4, "minecraft:cobblestone", null, 1, false);
+
+        RollbackPlan built = RollbackPlan.build(List.of(broken, firstCobble, secondCobble));
+        assertThat(built.actionIds()).containsExactly(3L);
+        assertThat(built.skippedIds()).containsExactly(2L, 1L);
+
+        when(dao.query(any(), anyInt(), anyInt()))
+            .thenReturn(List.of(secondCobble, firstCobble, broken));
+        RollbackPlan planned = engine.plan(filter, RollbackResult.Mode.ROLLBACK, null);
+        assertThat(planned.actionIds()).containsExactly(3L);
+        assertThat(planned.skippedIds()).containsExactly(2L, 1L);
+    }
+
+    @Test
     void planCanBeDiscardedWithoutSideEffects() throws Exception {
         Action place = action(3L, 100L, ActionType.BLOCK_PLACE,
             "w", 1, 64, 0, "minecraft:stone", null, 1, false);
