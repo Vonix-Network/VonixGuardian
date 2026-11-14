@@ -17,6 +17,10 @@ description = '''${mod_description}'''
 authors = "${mod_authors}"
 logoFile = ""
 displayURL = "${mod_homepage}"
+# Server-side mod: clients must not be required to install it. Without
+# displayTest, Forge/NeoForge's default version check makes every client refuse
+# to join a server that has it.
+displayTest = "IGNORE_ALL_VERSION"
 
 [[dependencies.${mod_id}]]
 modId = "neoforge"

@@ -62,15 +62,15 @@ class RetentionAndConfirmDefaultsTest {
     }
 
     @Test
-    void publicDocsMatchShippedPrivacyAndThe220Release() throws Exception {
+    void publicDocsMatchShippedPrivacyAndTheCurrentRelease() throws Exception {
         Path root = repoRoot();
         String faq = Files.readString(root.resolve("docs/FAQ.md"));
         assertThat(faq).contains("privacy.hashIps: false");
         assertThat(faq).doesNotContain("The default is\n`hashIps: true`");
         assertThat(faq).contains("JSON-lines");
         String changelog = Files.readString(root.resolve("CHANGELOG.md"));
-        int start = changelog.indexOf("## [2.2.0]");
-        int end = changelog.indexOf("## [2.1.1]");
+        int start = changelog.indexOf("## [2.3.0]");
+        int end = changelog.indexOf("## [2.2.1]");
         assertThat(start).isGreaterThanOrEqualTo(0);
         assertThat(end).isGreaterThan(start);
         String section = changelog.substring(start, end);
@@ -78,7 +78,13 @@ class RetentionAndConfirmDefaultsTest {
         assertThat(section).doesNotContain("nine-cell");
         String workflow = Files.readString(root.resolve(".github/workflows/release.yml"));
         assertThat(workflow).doesNotContain("schema v8");
-        assertThat(workflow).contains("## \\[2\\.2\\.0\\]");
+        // The workflow must extract release notes from the section for the version
+        // being tagged. Pinning a literal here is what let a 2.3.0 tag ship 2.2.0
+        // notes: the assertion passed while the workflow was wrong.
+        assertThat(workflow)
+            .as("release notes must come from the current CHANGELOG section, not a stale one")
+            .contains("## \\[2\\.3\\.0\\]")
+            .doesNotContain("## \\[2\\.2\\.0\\]");
         assertThat(workflow).contains("prerelease: false");
     }
 

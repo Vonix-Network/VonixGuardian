@@ -10,6 +10,10 @@ displayName = "${mod_name}"
 description = '''${mod_description}'''
 authors = "${mod_authors}"
 displayURL = "${mod_homepage}"
+# This is a server-side mod: clients must not be required to install it.
+# Without displayTest, Forge's default IGNORE_SERVER_VERSION makes every client
+# refuse to join a server that has it, which defeats the whole point.
+displayTest = "IGNORE_ALL_VERSION"
 
 [[dependencies.${mod_id}]]
 modId = "forge"
