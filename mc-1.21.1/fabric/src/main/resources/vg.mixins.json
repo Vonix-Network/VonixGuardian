@@ -6,6 +6,7 @@
   "refmap": "vonixguardian-fabric-1.21.1-refmap.json",
   "mixins": [
     "BaseContainerBlockEntityMixin",
+    "ChiseledBookShelfBlockEntityMixin",
     "BlockPlaceMixin",
     "BucketItemMixin",
     "ConcretePowderBlockMixin",
