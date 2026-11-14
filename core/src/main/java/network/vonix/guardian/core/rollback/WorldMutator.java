@@ -31,14 +31,23 @@ import java.util.UUID;
  * {@code no-op} defaults, so the interface keeps evolving without breaking
  * third-party implementations.
  *
- * <p>The checked {@code try*} methods, however, have <strong>no
- * mutating default</strong>. An implementation that only provides the {@code
- * void} methods cannot supply checked success evidence, so every checked
- * default answers {@code false} <em>without touching the world</em>. This is
- * deliberate: a default that forwarded to {@code setBlock(...)} and then
- * returned {@code false} would mutate the world and simultaneously report
- * failure — the worst of both outcomes, leaving a change the operator can
- * neither see in the applied count nor reverse by re-running.
+ * <p>The checked {@code try*} methods have <strong>no mutating default</strong>.
+ * An implementation that only provides the {@code void} methods cannot supply
+ * checked success evidence, so a checked default never reaches a {@code void}
+ * method. Several checked defaults do delegate to another checked overload —
+ * but only when the two requests are identical, so nothing is silently
+ * discarded: a null slot is the same request as the slot-less overload, and an
+ * absent NBT payload is the same request as the NBT-less overload. In every
+ * case the chain terminates in a default that answers {@code false} without
+ * touching the world.
+ *
+ * <p>This matters because the old behaviour was the worst of both outcomes. A
+ * default that forwarded to {@code setBlock(...)} and then returned {@code
+ * false} mutated the world while reporting failure: the engine reads {@code
+ * false} as "this row did not apply", so the change was invisible in the
+ * applied count and could not be undone by re-running — the second run finds
+ * pre-state it did not expect. A default that cannot verify must not claim to
+ * have acted, and must not act either.
  *
  * <p>Loader implementations override the checked methods. A checked overload
  * that an implementation does not override reports "not supported", and the
@@ -72,15 +81,21 @@ public interface WorldMutator {
     /**
      * Checked NBT-aware block mutation path used by RollbackEngine.
      *
-     * <p>Default is unsupported: it does not mutate and returns {@code false}.
-     * It deliberately does not fall through to {@link #trySetBlock(String, int,
-     * int, int, String, String)} — dropping a block-entity payload because an
-     * implementation forgot the overload would silently restore a container as
+     * <p>The default delegates to {@link #trySetBlock(String, int, int, int,
+     * String, String)} <em>only</em> when the caller supplied no payload at all,
+     * where the two requests are identical and nothing can be lost. When either
+     * {@code blockState} or {@code blockEntityNbt} is present it refuses without
+     * mutating, because falling through would reach a real override with the
+     * payload stripped and still answer {@code true} — restoring a container as
      * an empty one, which is worse than an explicit "not applied".
      */
     default boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
                                 String blockState, byte[] blockEntityNbt) {
-        return false;
+        if ((blockState != null && !blockState.isEmpty())
+                || (blockEntityNbt != null && blockEntityNbt.length > 0)) {
+            return false;
+        }
+        return trySetBlock(worldId, x, y, z, targetId, targetMeta);
     }
 
     /** Stable legacy ABI: insert a stack or drop it. Inert default; checked loader paths override tryGiveOrDrop. */
@@ -103,13 +118,17 @@ public interface WorldMutator {
     /**
      * Checked NBT-aware insert/drop path used by RollbackEngine.
      *
-     * <p>Default is unsupported: no mutation, {@code false}. It does not fall
-     * through to the NBT-less overload, because that would apply the item with
-     * its enchantments and contents stripped and still answer {@code true}.
+     * <p>The default delegates to the NBT-less overload only when {@code itemNbt}
+     * is absent, where the two requests are identical. With a payload present it
+     * refuses without mutating: falling through would apply the item with its
+     * enchantments and contents stripped and still answer {@code true}.
      */
     default boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount,
                                   String targetMeta, byte[] itemNbt) {
-        return false;
+        if (itemNbt != null && itemNbt.length > 0) {
+            return false;
+        }
+        return tryGiveOrDrop(worldId, x, y, z, itemId, amount, targetMeta);
     }
 
     /**
@@ -212,15 +231,21 @@ public interface WorldMutator {
      * the integrity boundary; implementations must fail closed when the player
      * is not online or the complete stack cannot be inserted.
      *
-     * <p>Default is unsupported: no mutation, {@code false}. It does not
-     * delegate to the slot-less overload — an unknown target slot is not the
-     * same request as "any slot", and silently widening it would restore stack
-     * contents to a position the operator did not ask for.
+     * <p>{@code inventorySlot == null} means the row recorded no slot, so the
+     * historical any-slot insertion is the same request and the default
+     * delegates to {@link #tryAddToPlayerInventory(UUID, String, int, String,
+     * byte[])}. A non-null slot is a different request: widening it to "any
+     * slot" would restore the stack to a position the operator never asked for,
+     * so an implementation that cannot honour the slot answers {@code false}
+     * without mutating.
      */
     default boolean tryAddToPlayerInventory(UUID playerUuid, String itemId, int amount,
                                              String targetMeta, byte[] itemNbt,
                                              Integer inventorySlot) {
-        return false;
+        if (inventorySlot != null) {
+            return false;
+        }
+        return tryAddToPlayerInventory(playerUuid, itemId, amount, targetMeta, itemNbt);
     }
 
     /**
@@ -237,14 +262,17 @@ public interface WorldMutator {
      * match item metadata/components, not merely the registry id, and must not
      * report success after a partial removal.
      *
-     * <p>Default is unsupported: no mutation, {@code false} (see {@link
-     * #tryAddToPlayerInventory(UUID, String, int, String, byte[], Integer)} for
-     * why it does not widen to the slot-less overload).
+     * <p>As with insertion, a null slot delegates to the slot-less overload
+     * (same request) and a non-null slot that cannot be honoured answers
+     * {@code false} without mutating.
      */
     default boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
                                                 String targetMeta, byte[] itemNbt,
                                                 Integer inventorySlot) {
-        return false;
+        if (inventorySlot != null) {
+            return false;
+        }
+        return tryRemoveFromPlayerInventory(playerUuid, itemId, amount, targetMeta, itemNbt);
     }
 
     /** Stable legacy ABI: respawn an entity. Inert default; checked loader paths override tryRespawnEntity. */
@@ -267,14 +295,18 @@ public interface WorldMutator {
     /**
      * Checked NBT-aware entity-respawn path used by RollbackEngine.
      *
-     * <p>Default is unsupported: no mutation, {@code false}. It does not fall
-     * through to the plain overload — respawning a killed entity without its
-     * NBT produces a different entity (wrong variant, empty inventory, no
-     * name) that still answers {@code true}.
+     * <p>The default delegates to the plain overload only when {@code entityNbt}
+     * is absent, where the two requests are identical. With a payload present it
+     * refuses without mutating: respawning a killed entity without its NBT
+     * produces a different entity (wrong variant, empty inventory, no name) that
+     * still answers {@code true}.
      */
     default boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType,
                                      String targetMeta, byte[] entityNbt) {
-        return false;
+        if (entityNbt != null && entityNbt.length > 0) {
+            return false;
+        }
+        return tryRespawnEntity(worldId, x, y, z, entityType, targetMeta);
     }
 
     /** Stable legacy ABI: remove a matching hanging entity. Inert default; checked loader paths override tryRemoveEntity. */

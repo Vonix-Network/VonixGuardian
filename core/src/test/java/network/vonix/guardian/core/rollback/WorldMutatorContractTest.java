@@ -118,10 +118,11 @@ class WorldMutatorContractTest {
     }
 
     @Test
-    void nbtCheckedDefaults_doNotFallThroughToTheNbtlessOverload() {
-        // A fall-through here is not a no-op: it calls a *real* override with the
-        // NBT payload dropped, so a container restores empty or an enchanted item
-        // restores plain — and the call still answers true.
+    void nbtCheckedDefaults_delegateOnlyWhenThereIsNoPayloadToLose() {
+        // A fall-through is only safe when the two requests are byte-identical.
+        // With a payload present it is not a no-op: it reaches a real override
+        // with the payload stripped and still answers true, restoring a chest
+        // empty or a sword unenchanted.
         NbtlessOnlyMutator mutator = new NbtlessOnlyMutator();
 
         assertThat(mutator.trySetBlock("w", 0, 64, 0, "minecraft:chest", null,
@@ -130,8 +131,17 @@ class WorldMutatorContractTest {
                 new byte[]{2})).isFalse();
         assertThat(mutator.tryRespawnEntity("w", 0, 64, 0, "minecraft:zombie", null,
                 new byte[]{3})).isFalse();
+        assertThat(mutator.calls)
+                .as("a payload-bearing request must not reach the payload-less override")
+                .isEmpty();
 
-        assertThat(mutator.calls).isEmpty();
+        // Absent payload: the requests are identical, so compat delegation is
+        // correct and keeps a pre-NBT loader cell working unchanged.
+        assertThat(mutator.trySetBlock("w", 0, 64, 0, "minecraft:stone", null, null, new byte[0]))
+                .isTrue();
+        assertThat(mutator.tryGiveOrDrop("w", 0, 64, 0, "minecraft:diamond", 1, null, null)).isTrue();
+        assertThat(mutator.tryRespawnEntity("w", 0, 64, 0, "minecraft:zombie", null, null)).isTrue();
+        assertThat(mutator.calls).containsExactly("setBlock", "giveOrDrop", "respawnEntity");
     }
 
     @Test
