@@ -60,6 +60,45 @@ public final class RollbackEngine {
     /** Inert block id used to clear a {@code BLOCK_PLACE}. */
     static final String AIR = "minecraft:air";
 
+    /**
+     * Registry id of a dropped item entity. Rolling back an {@code ITEM_DROP}
+     * means removing that entity, and {@code tryRemoveEntity} matches the type
+     * strictly so a mob or player standing on the recorded block is never
+     * discarded by mistake.
+     */
+    static final String ITEM_ENTITY_TYPE = "minecraft:item";
+
+    /**
+     * One audit row expanded to many block mutations, and only some of them
+     * landed. The world is neither untouched nor fully restored, so the caller
+     * must persist {@link WorldMutationResult.Status#REPAIR_REQUIRED} instead of
+     * reporting a plain failure — the operator needs to know blocks did change.
+     *
+     * <p>Declared here rather than as its own top-level type so the rollback
+     * package surface stays small: it is only ever thrown and caught by this
+     * engine.</p>
+     */
+    static final class PartialExplosionMutationException extends RuntimeException {
+        private final int applied;
+        private final int total;
+
+        PartialExplosionMutationException(String message, int applied, int total) {
+            super(message);
+            this.applied = applied;
+            this.total = total;
+        }
+
+        /** Affected blocks written before the failure. */
+        int applied() {
+            return applied;
+        }
+
+        /** Affected blocks the row describes. */
+        int total() {
+            return total;
+        }
+    }
+
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     /**
@@ -93,6 +132,39 @@ public final class RollbackEngine {
      * the slice without rebuilding the engine.
      */
     private volatile int mutationBatchSize = BATCH_SIZE;
+
+    /**
+     * Serialises plan+execute so two staff cannot plan against the same
+     * pre-state and apply twice.
+     *
+     * <p>A fair {@link java.util.concurrent.Semaphore} with one permit rather
+     * than a {@code ReentrantLock}: the asynchronous entry points release the
+     * permit from whichever thread completes the result future, and a
+     * {@code ReentrantLock} may only be unlocked by its owning thread.</p>
+     *
+     * <p>The permit is held across the whole plan-and-apply span, not per
+     * batch: the hazard is two concurrent readers of the same pre-state, which
+     * per-batch locking would not prevent. {@code preview} never takes it — a
+     * preview mutates nothing and an operator must be able to inspect while a
+     * long rollback runs.</p>
+     */
+    private final java.util.concurrent.Semaphore rollbackExclusion =
+        new java.util.concurrent.Semaphore(1, true);
+
+    /** Rollbacks that had to wait for the exclusion permit instead of proceeding. */
+    private final java.util.concurrent.atomic.AtomicLong exclusionWaits =
+        new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Whether this engine currently holds the permit. Informational only —
+     * release uses a per-invocation token, not this flag, so a late duplicate
+     * callback can never free the next holder's permit.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean exclusionHeld =
+        new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** Current holder description, for the wait log line. */
+    private volatile String exclusionHolder = "idle";
 
     /**
      * @param dao                action store; must not be {@code null}
@@ -231,14 +303,14 @@ public final class RollbackEngine {
     public CompletionStage<RollbackResult> rollbackAsync(QueryFilter filter, boolean preview,
                                                           UUID actorUuid,
                                                           RollbackOptions options) throws Exception {
-        return executeAsync(plan(filter, RollbackResult.Mode.ROLLBACK, actorUuid, options), preview);
+        return planAndExecuteAsync(filter, RollbackResult.Mode.ROLLBACK, actorUuid, options, preview);
     }
 
     /** Non-blocking restore entry point with actor and safety controls. */
     public CompletionStage<RollbackResult> restoreAsync(QueryFilter filter, boolean preview,
                                                          UUID actorUuid,
                                                          RollbackOptions options) throws Exception {
-        return executeAsync(plan(filter, RollbackResult.Mode.RESTORE, actorUuid, options), preview);
+        return planAndExecuteAsync(filter, RollbackResult.Mode.RESTORE, actorUuid, options, preview);
     }
 
     /** Execute rollback with explicit large-job safety controls. */
@@ -253,12 +325,136 @@ public final class RollbackEngine {
 
     /** Execute rollback with explicit actor + large-job safety controls. */
     public RollbackResult rollback(QueryFilter filter, boolean preview, UUID actorUuid, RollbackOptions options) throws Exception {
-        return execute(plan(filter, RollbackResult.Mode.ROLLBACK, actorUuid, options), preview);
+        return awaitPlanAndExecute(filter, RollbackResult.Mode.ROLLBACK, actorUuid, options, preview);
     }
 
     /** Execute restore with explicit actor + large-job safety controls. */
     public RollbackResult restore(QueryFilter filter, boolean preview, UUID actorUuid, RollbackOptions options) throws Exception {
-        return execute(plan(filter, RollbackResult.Mode.RESTORE, actorUuid, options), preview);
+        return awaitPlanAndExecute(filter, RollbackResult.Mode.RESTORE, actorUuid, options, preview);
+    }
+
+    /**
+     * Blocking plan+execute under the exclusion permit.
+     *
+     * <p>Kept as the single blocking implementation so the per-actor command
+     * paths, {@code /vg undo}, and tests all share one serialisation rule.</p>
+     */
+    private RollbackResult awaitPlanAndExecute(QueryFilter filter,
+                                               RollbackResult.Mode mode,
+                                               UUID actorUuid,
+                                               RollbackOptions options,
+                                               boolean preview) throws Exception {
+        if (preview) {
+            // Previews never mutate and never block a running rollback.
+            return executeInternal(plan(filter, mode, actorUuid, options), true);
+        }
+        acquireExclusion(mode, actorUuid);
+        Runnable release = newReleaser();
+        try {
+            // Plan AFTER winning the permit, so this request sees the world
+            // state left by the rollback ahead of it, not the pre-state it read
+            // while queued.
+            return executeInternal(plan(filter, mode, actorUuid, options), false);
+        } finally {
+            release.run();
+        }
+    }
+
+    /**
+     * Non-blocking plan+execute under the exclusion permit. The permit is
+     * released by the completion callback, whichever thread runs it.
+     *
+     * <p>Planning happens on the caller's thread (the DAO contract requires it),
+     * so a caller that is itself waiting on the permit blocks that thread. That
+     * is the intended semantics: a second staff member's rollback waits instead
+     * of reading the same pre-state.</p>
+     */
+    private CompletionStage<RollbackResult> planAndExecuteAsync(QueryFilter filter,
+                                                                RollbackResult.Mode mode,
+                                                                UUID actorUuid,
+                                                                RollbackOptions options,
+                                                                boolean preview) throws Exception {
+        if (preview) {
+            return executeAsyncInternal(plan(filter, mode, actorUuid, options), true);
+        }
+        acquireExclusion(mode, actorUuid);
+        Runnable release = newReleaser();
+        CompletionStage<RollbackResult> stage;
+        try {
+            stage = executeAsyncInternal(plan(filter, mode, actorUuid, options), false);
+        } catch (Throwable planningFailure) {
+            release.run();
+            throw planningFailure;
+        }
+        return stage.whenComplete((outcome, failure) -> release.run());
+    }
+
+    /**
+     * Take the plan+execute permit, waiting if another rollback holds it.
+     *
+     * <p>Waiting is the correct behaviour, not a failure: two staff planning
+     * against the same pre-state is the defect, and a queued rollback still
+     * re-plans after it wins the permit, so it sees the post-state of the one
+     * ahead of it.</p>
+     */
+    private void acquireExclusion(RollbackResult.Mode mode, UUID actorUuid) throws InterruptedException {
+        if (rollbackExclusion.tryAcquire()) {
+            exclusionHeld.set(true);
+            exclusionHolder = describe(mode, actorUuid);
+            return;
+        }
+        long waits = exclusionWaits.incrementAndGet();
+        String holder = exclusionHolder;
+        LOG.warn("RollbackEngine.{}: waiting for the active rollback to finish (holder={}, wait #{})",
+            mode, holder, waits);
+        try {
+            rollbackExclusion.acquire();
+        } catch (InterruptedException interrupted) {
+            exclusionWaits.decrementAndGet();
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        }
+        exclusionHeld.set(true);
+        exclusionHolder = describe(mode, actorUuid);
+        LOG.info("RollbackEngine.{}: acquired the rollback exclusion permit after waiting", mode);
+    }
+
+    /**
+     * One-shot releaser for a single permit acquisition.
+     *
+     * <p>Returning a fresh releaser per acquisition — rather than a shared
+     * "is it held?" flag — is what makes a duplicated completion callback
+     * harmless: a second call on the same releaser does nothing, and it can
+     * never release a permit that belongs to the next rollback in the queue.</p>
+     */
+    private Runnable newReleaser() {
+        java.util.concurrent.atomic.AtomicBoolean released =
+            new java.util.concurrent.atomic.AtomicBoolean();
+        return () -> {
+            if (!released.compareAndSet(false, true)) {
+                return;
+            }
+            exclusionHeld.set(false);
+            exclusionHolder = "idle";
+            rollbackExclusion.release();
+        };
+    }
+
+    private static String describe(RollbackResult.Mode mode, UUID actorUuid) {
+        return mode + (actorUuid == null ? " by console" : " by " + actorUuid);
+    }
+
+    /**
+     * How many rollbacks have had to wait for the exclusion permit — exposed for
+     * {@code /vg status} and tests. Zero on a quiet server.
+     */
+    public long exclusionWaitCount() {
+        return exclusionWaits.get();
+    }
+
+    /** Whether a rollback currently holds the plan+execute permit. */
+    public boolean rollbackInProgress() {
+        return exclusionHeld.get();
     }
 
     /**
@@ -303,8 +499,143 @@ public final class RollbackEngine {
      * In {@code preview} mode no batch is opened and no mutations are dispatched.
      */
     public RollbackResult execute(RollbackPlan plan, boolean preview) throws Exception {
+        Objects.requireNonNull(plan, "plan");
+        if (preview) {
+            return executeInternal(plan, true);
+        }
+        acquireExclusion(plan.mode(), plan.actorUuid());
+        Runnable release = newReleaser();
         try {
-            return executeAsync(plan, preview).toCompletableFuture().join();
+            return executeInternal(plan, false);
+        } finally {
+            release.run();
+        }
+    }
+
+    /**
+     * Execute a plan without blocking for server-thread work. A non-preview
+     * stage is completed only after confirmed mutation outcomes have been
+     * persisted and the rollback batch has been closed.
+     *
+     * <p>A non-preview execute takes the same plan+execute exclusion permit as
+     * the one-shot entry points, so a caller that planned earlier cannot apply
+     * against a pre-state another rollback has already changed. The permit is
+     * released when the returned stage completes.</p>
+     */
+    public CompletionStage<RollbackResult> executeAsync(RollbackPlan plan, boolean preview) throws Exception {
+        Objects.requireNonNull(plan, "plan");
+        if (preview) {
+            return executeAsyncInternal(plan, true);
+        }
+        acquireExclusion(plan.mode(), plan.actorUuid());
+        Runnable release = newReleaser();
+        CompletionStage<RollbackResult> stage;
+        try {
+            stage = executeAsyncInternal(plan, false);
+        } catch (Throwable failure) {
+            release.run();
+            throw failure;
+        }
+        return stage.whenComplete((outcome, failure) -> release.run());
+    }
+
+    /**
+     * Execute an already-built plan. Does not take the exclusion permit — every
+     * public entry point that mutates the world holds it for this call.
+     */
+    private CompletionStage<RollbackResult> executeAsyncInternal(RollbackPlan plan, boolean preview) throws Exception {
+        RollbackResult.Mode mode = plan.mode();
+        if (mode == null) {
+            throw new IllegalArgumentException(
+                "RollbackPlan has no mode — use RollbackEngine.plan(...) to build it");
+        }
+        UUID actorUuid = plan.actorUuid();
+        QueryFilter effective = plan.originalFilter();
+        List<Long> affectedIds = plan.actionIds();
+        List<Long> skippedIds = plan.skippedIds();
+        Map<RollbackResult.SkipReason, Integer> skippedByReason = plan.skippedByReason();
+        int planned = plan.plannedSteps();
+
+        if (!plan.skipped().isEmpty()) {
+            LOG.warn("RollbackEngine.{}: {} action(s) excluded at plan time ({})",
+                mode, plan.skipped().size(), describeSkips(plan));
+        }
+
+        if (preview || (planned == 0 && skippedIds.isEmpty())) {
+            // A genuinely empty match opens nothing. A request that matched rows
+            // but could not apply any of them still opens a batch below: the
+            // operator asked for something, and the audit row is where that
+            // request plus its named reasons is recorded.
+            return CompletableFuture.completedFuture(new RollbackResult(actorUuid, mode, preview,
+                affectedIds, skippedIds, planned, 0, effective,
+                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true, skippedByReason));
+        }
+
+        String filterJson = encodeFilter(effective);
+        long batchId = dao.openRollbackBatch(actorUuid, mode.ordinal(), filterJson, affectedIds);
+
+        if (planned == 0) {
+            // Every row was resolved at plan time. Nothing is dispatched, so the
+            // batch is closed immediately rather than left open for recovery.
+            return CompletableFuture.completedFuture(closeEmptyBatch(
+                batchId, actorUuid, mode, effective, skippedIds, skippedByReason, planned));
+        }
+
+        CompletionStage<List<WorldMutationResult>> mutations;
+        try {
+            mutations = dispatchBatches(plan.ordered(), mode);
+        } catch (RuntimeException e) {
+            LOG.error("RollbackEngine.{}: batch id={} failed during dispatch; vg_rollback_batches row left OPEN for recovery",
+                mode, batchId, e);
+            return CompletableFuture.completedFuture(failedResult(
+                batchId, actorUuid, mode, effective, skippedIds, skippedByReason, planned, 0, e));
+        }
+        return finalizeAsync(mutations, batchId, actorUuid, mode, effective, skippedIds,
+            skippedByReason, planned);
+    }
+
+    /** Engine-side per-reason log rendering; the operator text lives on the result. */
+    private static String describeSkips(RollbackPlan plan) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<RollbackResult.SkipReason, Integer> e : plan.skippedByReason().entrySet()) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(e.getKey()).append('=').append(e.getValue());
+        }
+        return sb.length() == 0 ? "reason unavailable" : sb.toString();
+    }
+
+    /**
+     * Close a batch that was opened for a request whose every row was resolved
+     * at plan time. Nothing was dispatched, so no world state is pending; the
+     * batch is finished so startup recovery does not later report it as a crash.
+     */
+    private RollbackResult closeEmptyBatch(long batchId,
+                                            UUID actorUuid,
+                                            RollbackResult.Mode mode,
+                                            QueryFilter effective,
+                                            List<Long> skippedIds,
+                                            Map<RollbackResult.SkipReason, Integer> skippedByReason,
+                                            int planned) {
+        boolean closed = false;
+        try {
+            int updated = dao.closeRollbackBatch(batchId);
+            closed = updated == 1;
+            if (!closed) {
+                LOG.error("RollbackEngine.{}: closeRollbackBatch id={} updated {} rows (expected 1) "
+                        + "for a fully-skipped request", mode, batchId, updated);
+            }
+        } catch (Exception e) {
+            LOG.error("RollbackEngine.{}: failed to close fully-skipped batch id={}", mode, batchId, e);
+        }
+        return new RollbackResult(actorUuid, mode, false,
+            List.of(), skippedIds, planned, 0, effective,
+            closed ? RollbackResult.Status.SUCCESS : RollbackResult.Status.PARTIAL,
+            batchId, 0, 0, 0, closed, skippedByReason);
+    }
+
+    private RollbackResult executeInternal(RollbackPlan plan, boolean preview) throws Exception {
+        try {
+            return executeAsyncInternal(plan, preview).toCompletableFuture().join();
         } catch (CompletionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof Exception exception) {
@@ -317,56 +648,13 @@ public final class RollbackEngine {
         }
     }
 
-    /**
-     * Execute a plan without blocking for server-thread work. A non-preview
-     * stage is completed only after confirmed mutation outcomes have been
-     * persisted and the rollback batch has been closed.
-     */
-    public CompletionStage<RollbackResult> executeAsync(RollbackPlan plan, boolean preview) throws Exception {
-        Objects.requireNonNull(plan, "plan");
-        RollbackResult.Mode mode = plan.mode();
-        if (mode == null) {
-            throw new IllegalArgumentException(
-                "RollbackPlan has no mode — use RollbackEngine.plan(...) to build it");
-        }
-        UUID actorUuid = plan.actorUuid();
-        QueryFilter effective = plan.originalFilter();
-        List<Long> affectedIds = plan.actionIds();
-        List<Long> skippedIds = plan.skippedIds();
-        int planned = plan.plannedSteps();
-
-        if (!plan.skipped().isEmpty()) {
-            LOG.warn("RollbackEngine.{}: {} action(s) excluded as not rollbackable",
-                mode, plan.skipped().size());
-        }
-
-        if (preview || planned == 0) {
-            return CompletableFuture.completedFuture(new RollbackResult(actorUuid, mode, preview,
-                affectedIds, skippedIds, planned, 0, effective,
-                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true));
-        }
-
-        String filterJson = encodeFilter(effective);
-        long batchId = dao.openRollbackBatch(actorUuid, mode.ordinal(), filterJson, affectedIds);
-
-        CompletionStage<List<WorldMutationResult>> mutations;
-        try {
-            mutations = dispatchBatches(plan.ordered(), mode);
-        } catch (RuntimeException e) {
-            LOG.error("RollbackEngine.{}: batch id={} failed during dispatch; vg_rollback_batches row left OPEN for recovery",
-                mode, batchId, e);
-            return CompletableFuture.completedFuture(failedResult(
-                batchId, actorUuid, mode, effective, skippedIds, planned, e));
-        }
-        return finalizeAsync(mutations, batchId, actorUuid, mode, effective, skippedIds, planned);
-    }
-
     private CompletionStage<RollbackResult> finalizeAsync(CompletionStage<List<WorldMutationResult>> mutations,
                                                             long batchId,
                                                             UUID actorUuid,
                                                             RollbackResult.Mode mode,
                                                             QueryFilter effective,
                                                             List<Long> plannedSkippedIds,
+                                                            Map<RollbackResult.SkipReason, Integer> plannedSkipsByReason,
                                                             int planned) {
         CompletableFuture<RollbackResult> result = new CompletableFuture<>();
         mutations.whenComplete((outcomes, failure) -> executeCompletion(() -> {
@@ -376,11 +664,11 @@ public final class RollbackEngine {
                     LOG.error("RollbackEngine.{}: batch id={} failed mid-flight; vg_rollback_batches row left OPEN for recovery",
                         mode, batchId, cause);
                     result.complete(failedResult(batchId, actorUuid, mode, effective,
-                        plannedSkippedIds, planned, cause));
+                        plannedSkippedIds, plannedSkipsByReason, planned, 0, cause));
                     return;
                 }
                 result.complete(finishBatch(batchId, actorUuid, mode, effective,
-                    plannedSkippedIds, planned, outcomes));
+                    plannedSkippedIds, plannedSkipsByReason, planned, outcomes));
             } catch (Throwable finalizationFailure) {
                 result.completeExceptionally(finalizationFailure);
             }
@@ -388,16 +676,24 @@ public final class RollbackEngine {
         return result;
     }
 
+    /**
+     * Terminal result for a dispatch that died before producing outcomes.
+     *
+     * @param partialApplied number of rows already applied when the failure hit;
+     *                       their world state is changed and not rolled back
+     */
     private RollbackResult failedResult(long batchId,
                                         UUID actorUuid,
                                         RollbackResult.Mode mode,
                                         QueryFilter effective,
                                         List<Long> plannedSkippedIds,
+                                        Map<RollbackResult.SkipReason, Integer> skippedByReason,
                                         int planned,
+                                        int partialApplied,
                                         Throwable cause) {
         return new RollbackResult(actorUuid, mode, false,
-            List.of(), plannedSkippedIds, planned, 0, effective,
-            RollbackResult.Status.FAILED, batchId, 1, 0, 0, false);
+            List.of(), plannedSkippedIds, planned, partialApplied, effective,
+            RollbackResult.Status.FAILED, batchId, 1, 0, 0, false, skippedByReason);
     }
 
     private RollbackResult finishBatch(long batchId,
@@ -405,17 +701,28 @@ public final class RollbackEngine {
                                        RollbackResult.Mode mode,
                                        QueryFilter effective,
                                        List<Long> plannedSkippedIds,
+                                       Map<RollbackResult.SkipReason, Integer> plannedSkipsByReason,
                                        int planned,
                                        List<WorldMutationResult> outcomes) {
         List<Long> appliedIds = new ArrayList<>();
         List<Long> dispatchSkipped = new ArrayList<>();
+        Map<RollbackResult.SkipReason, Integer> dispatchSkipsByReason =
+            new java.util.EnumMap<>(RollbackResult.SkipReason.class);
         List<WorldMutationResult> failed = new ArrayList<>();
         List<WorldMutationResult> compensated = new ArrayList<>();
         List<WorldMutationResult> repairRequired = new ArrayList<>();
         for (WorldMutationResult outcome : outcomes) {
             switch (outcome.status()) {
                 case APPLIED -> appliedIds.add(outcome.actionId());
-                case SKIPPED -> dispatchSkipped.add(outcome.actionId());
+                case SKIPPED -> {
+                    dispatchSkipped.add(outcome.actionId());
+                    // A dispatch skip must still name its reason, or the count
+                    // regresses to the unexplained number this lane removes.
+                    RollbackResult.SkipReason reason = outcome.skipReason() == null
+                        ? RollbackResult.SkipReason.UNTRACKED_STATE
+                        : outcome.skipReason();
+                    dispatchSkipsByReason.merge(reason, 1, Integer::sum);
+                }
                 case COMPENSATED -> compensated.add(outcome);
                 case REPAIR_REQUIRED -> repairRequired.add(outcome);
                 case FAILED -> failed.add(outcome);
@@ -425,6 +732,8 @@ public final class RollbackEngine {
         List<Long> allSkipped = new ArrayList<>(plannedSkippedIds.size() + dispatchSkipped.size());
         allSkipped.addAll(plannedSkippedIds);
         allSkipped.addAll(dispatchSkipped);
+        Map<RollbackResult.SkipReason, Integer> allSkipsByReason =
+            mergeReasons(plannedSkipsByReason, dispatchSkipsByReason);
 
         boolean targetFlag = mode == RollbackResult.Mode.ROLLBACK;
         boolean persistOk = true;
@@ -486,7 +795,34 @@ public final class RollbackEngine {
 
         return new RollbackResult(actorUuid, mode, false,
             appliedIds, allSkipped, planned, appliedIds.size(), effective,
-            status, batchId, failed.size(), compensated.size(), repairRequired.size(), batchClosed);
+            status, batchId, failed.size(), compensated.size(), repairRequired.size(), batchClosed,
+            allSkipsByReason);
+    }
+
+    /** Add two reason histograms into one immutable map; zero buckets are dropped. */
+    private static Map<RollbackResult.SkipReason, Integer> mergeReasons(
+            Map<RollbackResult.SkipReason, Integer> a,
+            Map<RollbackResult.SkipReason, Integer> b) {
+        if ((a == null || a.isEmpty()) && (b == null || b.isEmpty())) {
+            return Map.of();
+        }
+        Map<RollbackResult.SkipReason, Integer> merged =
+            new java.util.EnumMap<>(RollbackResult.SkipReason.class);
+        if (a != null) {
+            for (Map.Entry<RollbackResult.SkipReason, Integer> e : a.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null && e.getValue() > 0) {
+                    merged.merge(e.getKey(), e.getValue(), Integer::sum);
+                }
+            }
+        }
+        if (b != null) {
+            for (Map.Entry<RollbackResult.SkipReason, Integer> e : b.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null && e.getValue() > 0) {
+                    merged.merge(e.getKey(), e.getValue(), Integer::sum);
+                }
+            }
+        }
+        return merged.isEmpty() ? Map.of() : java.util.Collections.unmodifiableMap(merged);
     }
 
     private void markApplied(long batchId, List<Long> ids, boolean targetFlag) {
@@ -1262,9 +1598,6 @@ public final class RollbackEngine {
     }
 
     private WorldMutationResult applyMutation(Action action, RollbackResult.Mode mode) {
-        if (isUnsupportedAtDispatch(action, mode)) {
-            return WorldMutationResult.skipped(action.id());
-        }
         try {
             // Capture the mutator boolean. false is not APPLIED: no markRolledBack,
             // action id stays out of confirmed IDs, audit batch remains open.
@@ -1287,24 +1620,20 @@ public final class RollbackEngine {
                     + "persisting repair-required",
                     action.id(), action.type(), failure);
             return WorldMutationResult.repairRequired(action.id(), action.pairId(), failure);
+        } catch (PartialExplosionMutationException failure) {
+            // Some affected blocks were written and the rest were not. A FAILED
+            // status here would tell the operator nothing changed, which is
+            // false; the blocks that did change must be recorded as needing
+            // repair so they can be found again.
+            LOG.error("RollbackEngine: partial explosion mutation for action id={} ({} of {} blocks); "
+                    + "persisting repair-required",
+                    action.id(), failure.applied(), failure.total(), failure);
+            return WorldMutationResult.repairRequired(action.id(), action.pairId(), failure);
         } catch (Throwable failure) {
             LOG.warn("RollbackEngine: mutation failed for action id={} type={} ({})",
                 action.id(), action.type(), failure.toString());
             return WorldMutationResult.failed(action.id(), failure);
         }
-    }
-
-    private static boolean isUnsupportedAtDispatch(Action action, RollbackResult.Mode mode) {
-        if (mode == RollbackResult.Mode.RESTORE && action.type() == ActionType.ENTITY_KILL) {
-            return true;
-        }
-        if (action.type() == ActionType.EXPLOSION) {
-            boolean hasSidecar = action.blockEntityNbt() != null && action.blockEntityNbt().length > 0;
-            return (hasSidecar
-                ? ExplosionAffectedList.parse(action.targetId(), action.blockEntityNbt())
-                : ExplosionAffectedList.parse(action.targetId())).isEmpty();
-        }
-        return false;
     }
 
     /** Apply the inverse of the action (used by rollback). @return mutator success */
@@ -1348,9 +1677,27 @@ public final class RollbackEngine {
                         a.targetId(), Math.max(1, a.amount()), a.targetMeta());
                 }
             }
-            case ITEM_DROP, ITEM_PICKUP -> {
-                LOG.warn("RollbackEngine: refusing to roll back {} (id={}) — item entity identity required", a.type(), a.id());
-                yield false;
+            case ITEM_DROP -> {
+                // Rolling back a drop = the dropped stack never existed. Remove
+                // the item entity. tryRemoveEntity re-checks the entity type, so
+                // a mismatched entity at that position is not destroyed.
+                yield mutator.tryRemoveEntity(a.worldId(), a.x(), a.y(), a.z(), ITEM_ENTITY_TYPE);
+            }
+            case ITEM_PICKUP -> {
+                // Rolling back a pickup = the player never got the stack. Give it
+                // back at the pickup position, with the recorded item NBT so the
+                // stack is byte-identical rather than a lookalike.
+                if (a.targetId() == null) {
+                    LOG.warn("RollbackEngine: refusing to roll back ITEM_PICKUP (id={}) — item id missing", a.id());
+                    yield false;
+                }
+                if (nbt) {
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
             }
             case ENTITY_KILL -> {
                 if (nbt) {
@@ -1521,12 +1868,42 @@ public final class RollbackEngine {
                 yield mutator.tryRemoveFromContainer(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), Math.max(1, a.amount()));
             }
-            case ITEM_DROP, ITEM_PICKUP -> {
-                LOG.warn("RollbackEngine: refusing to restore {} (id={}) — item entity identity required", a.type(), a.id());
-                yield false;
+            case ITEM_DROP -> {
+                // Restoring a drop = re-create the dropped stack at the recorded
+                // position, with its item NBT so the re-dropped item is identical.
+                if (a.targetId() == null) {
+                    LOG.warn("RollbackEngine: refusing to restore ITEM_DROP (id={}) — item id missing", a.id());
+                    yield false;
+                }
+                if (nbt) {
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta(), a.itemNbt());
+                } else {
+                    yield mutator.tryGiveOrDrop(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), Math.max(1, a.amount()), a.targetMeta());
+                }
+            }
+            case ITEM_PICKUP -> {
+                // Restoring a pickup = the player picked the stack up again, so
+                // the stack must leave their inventory. Fail closed if the actor
+                // is unknown rather than removing items from the wrong player.
+                if (a.actorUuid() == null) {
+                    LOG.warn("RollbackEngine: refusing to restore ITEM_PICKUP (id={}) — actor UUID missing", a.id());
+                    yield false;
+                }
+                if (a.targetId() == null) {
+                    LOG.warn("RollbackEngine: refusing to restore ITEM_PICKUP (id={}) — item id missing", a.id());
+                    yield false;
+                }
+                yield mutator.tryRemoveFromPlayerInventory(a.actorUuid(), a.targetId(),
+                    Math.max(1, a.amount()), a.targetMeta(), a.itemNbt(), a.inventorySlot());
             }
             case ENTITY_KILL -> {
-                // Restoring a kill is intentionally a no-op (entity already dead path).
+                // Restoring a kill is a documented no-op, and
+                // RollbackPlan.rejectionReason now excludes it at plan time, so
+                // this arm is unreachable by construction. It stays because the
+                // switch must be exhaustive; it must never be the place a
+                // restore silently reports a skip.
                 LOG.debug("RollbackEngine: restore of ENTITY_KILL id={} is best-effort no-op", a.id());
                 yield true;
             }
@@ -1652,14 +2029,32 @@ public final class RollbackEngine {
         };
     }
 
+    /**
+     * Restore every pre-blast block state for an explosion row.
+     *
+     * <p>A blast is one audit row but N block mutations. If some of those blocks
+     * are written and others fail, the row is neither "applied" nor "failed" —
+     * the world is in a state nobody chose. That is exactly
+     * {@link WorldMutationResult.Status#REPAIR_REQUIRED}, and it must be
+     * persisted: reporting {@code FAILED} for a half-restored crater tells the
+     * operator nothing changed, which is false and leaves them unable to find
+     * the blocks that did.</p>
+     *
+     * @return {@code true} only when every affected block was restored
+     * @throws PartialExplosionMutationException when some but not all blocks
+     *         were written, carrying the count so the repair row can name it
+     */
     private boolean restoreExplosion(Action a) {
         boolean hasSidecar = a.blockEntityNbt() != null && a.blockEntityNbt().length > 0;
         ExplosionAffectedList list = hasSidecar
             ? ExplosionAffectedList.parse(a.targetId(), a.blockEntityNbt())
             : ExplosionAffectedList.parse(a.targetId());
         if (list.isEmpty()) return false;
+        int applied = 0;
+        int total = 0;
         boolean allOk = true;
         for (ExplosionAffectedList.Entry e : list.entries()) {
+            total++;
             // Restore the pre-blast block state at each affected coord. Legacy
             // inline meta remains targetMeta; sidecar meta is v5 block-state props.
             boolean ok;
@@ -1669,26 +2064,55 @@ public final class RollbackEngine {
             } else {
                 ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
             }
-            if (!ok) allOk = false;
+            if (ok) {
+                applied++;
+            } else {
+                allOk = false;
+            }
+        }
+        if (!allOk && applied > 0) {
+            throw new PartialExplosionMutationException(
+                "explosion row id=" + a.id() + " restored " + applied + " of " + total
+                    + " block(s); the remaining coords still carry blast damage",
+                applied, total);
         }
         return allOk;
     }
 
+    /**
+     * Clear every affected block for a restore of an explosion row.
+     *
+     * @return {@code true} only when every affected block was cleared
+     * @throws PartialExplosionMutationException when some but not all blocks
+     *         were cleared
+     */
     private boolean clearExplosionBlocks(Action a) {
         ExplosionAffectedList list = ExplosionAffectedList.parse(a.targetId());
         if (list.isEmpty()) return false;
+        int applied = 0;
+        int total = 0;
         boolean allOk = true;
         for (ExplosionAffectedList.Entry e : list.entries()) {
+            total++;
             // Restore direction: re-clear the affected area (re-apply the blast).
-            if (!mutator.tryClearBlock(a.worldId(), e.x(), e.y(), e.z())) {
+            if (mutator.tryClearBlock(a.worldId(), e.x(), e.y(), e.z())) {
+                applied++;
+            } else {
                 allOk = false;
             }
+        }
+        if (!allOk && applied > 0) {
+            throw new PartialExplosionMutationException(
+                "explosion row id=" + a.id() + " re-cleared " + applied + " of " + total
+                    + " block(s); the remaining coords were left untouched",
+                applied, total);
         }
         return allOk;
     }
 
     /** For tests + internal use only. */
     static boolean isRollbackable(ActionType t) {
+        if (t == null) return false;
         return switch (t) {
             case BLOCK_PLACE, BLOCK_BREAK,
                  CONTAINER_DEPOSIT, CONTAINER_WITHDRAW,
@@ -1698,16 +2122,35 @@ public final class RollbackEngine {
                  HOPPER_PUSH, HOPPER_PULL,
                  HANGING_PLACE, HANGING_BREAK,
                  STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW,
-                 INVENTORY_DEPOSIT, INVENTORY_WITHDRAW -> true;
+                 INVENTORY_DEPOSIT, INVENTORY_WITHDRAW,
+                 ITEM_DROP, ITEM_PICKUP -> true;
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE,
                  DISPENSE, PISTON_EXTEND, PISTON_RETRACT,
-                 ITEM_DROP, ITEM_PICKUP,
                  FORM, SPREAD,
                  ITEM_CRAFT,
                  ENTITY_SPAWN, ENTITY_INTERACT,
                  CHUNK_POPULATE, CLICK -> false;
+        };
+    }
+
+    /**
+     * Types that never recorded a world change, so there is nothing to undo and
+     * skipping them is correct rather than a limitation. Everything else that is
+     * not {@link #isRollbackable(ActionType)} is a real world change this build
+     * cannot invert because it does not record the prior state.
+     *
+     * <p>Splitting these two keeps {@code skipped=N} honest: "126 chat lines"
+     * and "126 dispenser events" mean very different things to an operator.</p>
+     */
+    static boolean isAuditOnly(ActionType t) {
+        if (t == null) return false;
+        return switch (t) {
+            case CHAT, COMMAND, SIGN,
+                 SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE,
+                 CLICK -> true;
+            default -> false;
         };
     }
 }
