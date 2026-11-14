@@ -14,15 +14,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * {@code batchSize} must bound every sink call, including the worker's final drain.
  *
- * <p>Two ways it previously did not:</p>
- * <ol>
- *   <li>The shutdown remainder was handed to the sink as ONE list holding up to
- *       {@code maxSize} actions (50&#8239;000 at the shipped default), so the operator's
- *       {@code batchSize} was ignored on the last flush.</li>
- *   <li>The running batch was budgeted in queue <em>slots</em> rather than actions. A
- *       two-row inventory replacement occupies one slot, so a batch of pairs reached
- *       roughly 1.5&times;{@code batchSize} actions.</li>
- * </ol>
+ * <p>The terminal remainder path in {@code flushWorkerRemainder} handed the whole ring
+ * tail to a single {@link BatchSink#flush}. That tail can hold up to {@code maxSize}
+ * actions (50&#8239;000 at the shipped default), so {@code batchSize} was ignored on the
+ * last flush of a shutdown: one oversized JDBC transaction, and with
+ * {@link network.vonix.guardian.core.storage.IdempotentAuditSink} the entire tail encoded
+ * into a single {@code vg_sink_outbox} payload. One poison row also condemned the whole
+ * tail instead of one bounded slice.</p>
+ *
+ * <p><b>Why this test reaches that path deterministically.</b> The worker is paused and
+ * waited on until the queue reports itself idle, which can only happen while the worker is
+ * parked in its paused sleep — a paused worker never polls. Actions are submitted after
+ * that, then {@code drainAndFlush} publishes shutdown. On waking, the paused branch's
+ * {@code if (shutdown) break} is the first statement, so the loop exits with a full ring
+ * buffer and the <em>terminal</em> path is the only path that can flush it. Without that
+ * wait the worker could instead take the normal poll path, where the old code already
+ * honoured {@code batchSize} and this test would prove nothing.</p>
  */
 class BatchedAsyncWriteQueueShutdownSliceTest {
 
@@ -46,18 +53,19 @@ class BatchedAsyncWriteQueueShutdownSliceTest {
     }
 
     @Test
-    void finalDrainDoesNotExceedBatchSize() {
+    void terminalDrainDoesNotExceedBatchSize() throws Exception {
         final int batchSize = 5;
         final int submitted = 20;
         List<Integer> flushSizes = new CopyOnWriteArrayList<>();
-        BatchSink sink = batch -> flushSizes.add(batch.size());
 
-        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(submitted * 2, 5_000L, batchSize, sink, DAEMON);
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                submitted * 2, 5_000L, batchSize, batch -> flushSizes.add(batch.size()), DAEMON);
         try {
-            // Paused keeps every action in the ring buffer, so drainAndFlush exercises
-            // the worker's terminal remainder path — the same path a server shutdown
-            // takes. That path used to hand the whole tail to one sink call.
             q.setPaused(true);
+            assertThat(q.awaitIdle(2_000L))
+                    .as("worker must be parked in the paused loop before we rely on the terminal path")
+                    .isTrue();
+
             for (int i = 0; i < submitted; i++) {
                 assertThat(q.submit(action(i))).isTrue();
             }
@@ -83,35 +91,32 @@ class BatchedAsyncWriteQueueShutdownSliceTest {
     }
 
     @Test
-    void finalDrainKeepsInventoryPairsInOneBatch() {
+    void terminalDrainKeepsInventoryPairsInOneBatch() throws Exception {
         final int batchSize = 4;
         final int pairs = 6;
         List<List<ActionType>> flushTypes = new CopyOnWriteArrayList<>();
 
-        BatchSink sink = batch -> flushTypes.add(batch.stream().map(Action::type).toList());
-
-        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(64, 5_000L, batchSize, sink, DAEMON);
+        BatchedAsyncWriteQueue q = new BatchedAsyncWriteQueue(
+                64, 5_000L, batchSize, batch -> flushTypes.add(batch.stream().map(Action::type).toList()), DAEMON);
         try {
             q.setPaused(true);
+            assertThat(q.awaitIdle(2_000L)).isTrue();
+
             for (int i = 0; i < pairs; i++) {
                 assertThat(q.submitPair(
                         inventory(ActionType.INVENTORY_WITHDRAW, 500L + i, i),
                         inventory(ActionType.INVENTORY_DEPOSIT, 500L + i, i))).isTrue();
             }
-            // drainAndFlush with a paused worker forces the whole ring tail through
-            // the bounded slicing path.
+
             q.drainAndFlush(10_000L);
 
             assertThat(flushTypes)
                     .as("the tail must be split across several sink calls")
                     .hasSizeGreaterThan(1);
             for (List<ActionType> batch : flushTypes) {
-                // batchSize is a SLOT budget on the drain path (each pair is one
-                // slot, two actions), so the bound that actually matters is that
-                // the whole queued tail is no longer handed over in one call.
                 assertThat(batch)
-                        .as("a sink call must stay within the queue-slot budget")
-                        .hasSizeLessThanOrEqualTo(batchSize * 2);
+                        .as("a terminal slice must stay within batchSize actions")
+                        .hasSizeLessThanOrEqualTo(batchSize);
                 assertThat(batch.stream().filter(t -> t == ActionType.INVENTORY_WITHDRAW).count())
                         .as("each sink call must carry whole replacement pairs")
                         .isEqualTo(batch.stream().filter(t -> t == ActionType.INVENTORY_DEPOSIT).count());
