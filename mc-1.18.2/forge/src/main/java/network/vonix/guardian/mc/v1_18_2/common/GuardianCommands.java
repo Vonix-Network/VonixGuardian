@@ -987,6 +987,14 @@ public final class GuardianCommands {
         // reconcile, which is the invariant this whole surface exists to protect.
         java.util.Map<String, Integer> reasons = skipReasons(result);
         java.util.List<String> lines = MutationOutcomeFormatter.lines(verb, result, filter, reasons);
+        // Optional companion: ship the same lines to a client that can render them
+        // properly. Vanilla clients are skipped, so this never affects them.
+        if (actor != null) {
+            var recipient = server.getPlayerList().getPlayer(actor);
+            if (recipient != null) {
+                network.vonix.guardian.mc.v1_18_2.forge.GuardianChannel.send(recipient, result, lines);
+            }
+        }
         for (String line : lines) {
             if (result.status() == RollbackResult.Status.FAILED) {
                 sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(), line));
@@ -995,6 +1003,32 @@ public final class GuardianCommands {
             } else {
                 sendToPlayerOrSrc(server, src, actor, ChatRenderer.warning(g.theme(), line));
             }
+        }
+        // A preview now carries where it would change the world. Draw it for the
+        // operator who asked, client-side only, and caption what the markers mean.
+        if (result.preview() && result.previewOutline() != null && !result.previewOutline().isEmpty()) {
+            var outline = result.previewOutline();
+            var caption = PreviewRenderer.caption(outline);
+            server.execute(() -> {
+                var player = actor == null ? null : server.getPlayerList().getPlayer(actor);
+                if (player == null) {
+                    // Console has no client to draw for. Say why there is no map.
+                    sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] " + outline.total()
+                            + " position(s) would change (no in-world preview from console)."));
+                    return;
+                }
+                int marked = PreviewRenderer.show(player, outline);
+                if (caption != null) {
+                    sendToPlayerOrSrc(server, src, actor,
+                        ChatRenderer.muted(g.theme(), caption.getString()));
+                }
+                if (marked == 0) {
+                    sendToPlayerOrSrc(server, src, actor, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] Affected chunks are not loaded, so nothing was marked. "
+                            + "Move closer and re-run the preview."));
+                }
+            });
         }
     }
 

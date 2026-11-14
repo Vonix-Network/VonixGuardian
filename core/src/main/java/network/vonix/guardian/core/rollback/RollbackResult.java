@@ -60,7 +60,12 @@ public record RollbackResult(
     int compensatedCount,
     int repairRequiredCount,
     boolean batchClosed,
-    Map<SkipReason, Integer> skippedByReason
+    Map<SkipReason, Integer> skippedByReason,
+    /**
+     * Where a preview would have touched the world, for a client to draw.
+     * Empty for a non-preview result or when the plan had nothing to dispatch.
+     */
+    PreviewOutline previewOutline
 ) {
 
     /**
@@ -129,6 +134,7 @@ public record RollbackResult(
         affectedIds = affectedIds == null ? List.of() : List.copyOf(affectedIds);
         skippedIds = skippedIds == null ? List.of() : List.copyOf(skippedIds);
         skippedByReason = freezeReasons(skippedByReason);
+        previewOutline = previewOutline == null ? PreviewOutline.empty() : previewOutline;
         if (plannedSteps < 0) {
             throw new IllegalArgumentException("plannedSteps < 0");
         }
@@ -192,7 +198,33 @@ public record RollbackResult(
                           boolean batchClosed) {
         this(actorUuid, mode, preview, affectedIds, skippedIds, plannedSteps, dispatchedSteps,
             originalFilter, status, batchId, failedCount, compensatedCount, repairRequiredCount,
-            batchClosed, Map.of());
+            batchClosed, Map.of(), PreviewOutline.empty());
+    }
+
+    /**
+     * Constructor for callers that supply the skip histogram but predate
+     * {@link #previewOutline()}. A preview outline is only meaningful for a
+     * preview, and a caller that cannot describe one simply gets an empty
+     * outline rather than an invented one.
+     */
+    public RollbackResult(UUID actorUuid,
+                          Mode mode,
+                          boolean preview,
+                          List<Long> affectedIds,
+                          List<Long> skippedIds,
+                          int plannedSteps,
+                          int dispatchedSteps,
+                          QueryFilter originalFilter,
+                          Status status,
+                          long batchId,
+                          int failedCount,
+                          int compensatedCount,
+                          int repairRequiredCount,
+                          boolean batchClosed,
+                          Map<SkipReason, Integer> skippedByReason) {
+        this(actorUuid, mode, preview, affectedIds, skippedIds, plannedSteps, dispatchedSteps,
+            originalFilter, status, batchId, failedCount, compensatedCount, repairRequiredCount,
+            batchClosed, skippedByReason, PreviewOutline.empty());
     }
 
     /**

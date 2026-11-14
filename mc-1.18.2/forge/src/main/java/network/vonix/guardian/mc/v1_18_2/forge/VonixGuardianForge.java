@@ -31,6 +31,9 @@ public final class VonixGuardianForge {
         LOG.info(Guardian.MARKER, "VonixGuardian (Forge 1.18.2) loading.");
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(ForgeEvents.class);
+        // Optional client-companion channel. Registering it costs nothing for a
+        // vanilla client; every send is gated on the client having advertised it.
+        GuardianChannel.register();
         ForgePreLogBridge.wire();
     }
 

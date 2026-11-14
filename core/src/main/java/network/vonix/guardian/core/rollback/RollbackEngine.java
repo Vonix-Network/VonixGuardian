@@ -573,9 +573,16 @@ public final class RollbackEngine {
             // but could not apply any of them still opens a batch below: the
             // operator asked for something, and the audit row is where that
             // request plus its named reasons is recorded.
+            //
+            // A preview also carries where it would touch the world, so a client
+            // can show the operator the area before anything changes. This is the
+            // only place the plan is still in hand; after this the rows are gone.
+            PreviewOutline outline = preview
+                ? PreviewOutline.fromPlanned(plan.ordered())
+                : PreviewOutline.empty();
             return CompletableFuture.completedFuture(new RollbackResult(actorUuid, mode, preview,
                 affectedIds, skippedIds, planned, 0, effective,
-                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true, skippedByReason));
+                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true, skippedByReason, outline));
         }
 
         String filterJson = encodeFilter(effective);
