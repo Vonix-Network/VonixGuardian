@@ -69,8 +69,8 @@ class RetentionAndConfirmDefaultsTest {
         assertThat(faq).doesNotContain("The default is\n`hashIps: true`");
         assertThat(faq).contains("JSON-lines");
         String changelog = Files.readString(root.resolve("CHANGELOG.md"));
-        int start = changelog.indexOf("## [2.3.0]");
-        int end = changelog.indexOf("## [2.2.1]");
+        int start = changelog.indexOf("## [2.3.1]");
+        int end = changelog.indexOf("## [2.3.0]");
         assertThat(start).isGreaterThanOrEqualTo(0);
         assertThat(end).isGreaterThan(start);
         String section = changelog.substring(start, end);
@@ -83,8 +83,8 @@ class RetentionAndConfirmDefaultsTest {
         // notes: the assertion passed while the workflow was wrong.
         assertThat(workflow)
             .as("release notes must come from the current CHANGELOG section, not a stale one")
-            .contains("## \\[2\\.3\\.0\\]")
-            .doesNotContain("## \\[2\\.2\\.0\\]");
+            .contains("## \\[2\\.3\\.1\\]")
+            .doesNotContain("## \\[2\\.3\\.0\\]");
         assertThat(workflow).contains("prerelease: false");
     }
 

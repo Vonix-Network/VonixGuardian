@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-11-14
+
+Rollback of a used container no longer fails. A live server logged **257 failed rows in a
+single batch** — every `CONTAINER_WITHDRAW` and `CONTAINER_DEPOSIT` — and left the batch open
+with `REPAIR_REQUIRED`.
+
+### Fixed
+
+- **A container rollback insisted on the exact slot it recorded.** Returning items to a chest
+  is not the same as returning them to one coordinate: by the time an operator runs the
+  rollback the chest has been used again, so that slot holds something else, or holds the same
+  item but is full. The mutator refused in both cases, which is why one batch failed hundreds
+  of rows at once. It now places the stack wherever it fits — topping up matching partial
+  stacks first, then any empty slot — and fails only when the container is genuinely full.
+  Applied to all thirteen loader cells; the container code is duplicated per cell, and the
+  first pass fixed only 1.18.2 Forge.
+- **The failure line now names the row's data.** The old message was
+  `mutation unsuccessful for action id=14356372 type=CONTAINER_WITHDRAW`, repeated 257 times.
+  It could not distinguish a missing container from a full one from one holding different
+  items — three different problems with three different fixes. It now reports world,
+  position, target item, amount and slot.
+
+### Added
+
+- A boundary guard fails the build if any loader cell loses the anywhere-fallback, which is
+  what caught that the first pass had fixed only one of thirteen.
+
+### Verification
+
+- **1,531 tests, 0 failures** on the core module.
+- All thirteen cells rebuilt and packaged: 1.18.2 through 26.3 on Fabric, Forge and NeoForge.
+- **Not verified on a live server.** The 257-failure batch has not been re-run against the
+  world that produced it, so this fix is proven by compilation and unit coverage, not by
+  observing the batch complete.
+- The underlying type-only item matching in `tryRemoveFromContainer` (it matches on item id,
+  not NBT) is unchanged and still a known limitation against modded items with identical ids
+  and different payloads.
+
 ## [2.3.0] - 2026-11-14
 
 Command replies now say what happened, and the dangerous commands do what their flags

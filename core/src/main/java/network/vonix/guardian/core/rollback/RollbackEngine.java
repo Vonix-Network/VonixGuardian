@@ -1674,8 +1674,15 @@ public final class RollbackEngine {
                 IllegalStateException failure = new IllegalStateException(
                     "WorldMutator reported unsuccessful mutation for action id="
                         + action.id() + " type=" + action.type());
-                LOG.warn("RollbackEngine: mutation unsuccessful for action id={} type={}",
-                    action.id(), action.type());
+                // Name the row's own data. "mutation unsuccessful for id=14356372" left
+                // an operator with 257 identical lines and no way to tell whether the
+                // container was missing, full, or holding different items - which are
+                // three different problems with three different fixes.
+                LOG.warn("RollbackEngine: mutation unsuccessful for action id={} type={} "
+                        + "at {} {},{},{} target={} amount={} slot={}",
+                    action.id(), action.type(), action.worldId(),
+                    action.x(), action.y(), action.z(),
+                    action.targetId(), action.amount(), action.inventorySlot());
                 return WorldMutationResult.failed(action.id(), failure);
             }
             return WorldMutationResult.applied(action.id());

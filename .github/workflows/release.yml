@@ -141,9 +141,9 @@ jobs:
             echo
             echo "### Highlights"
             echo
-            echo "Taken from CHANGELOG.md section [2.3.0]. Schema version is 9."
+            echo "Taken from CHANGELOG.md section [2.3.1]. Schema version is 9."
             echo
-            awk 'BEGIN{p=0} /^## \[2\.3\.0\]/{p=1; next} /^## \[/{if(p) exit} p' CHANGELOG.md
+            awk 'BEGIN{p=0} /^## \[2\.3\.1\]/{p=1; next} /^## \[/{if(p) exit} p' CHANGELOG.md
             echo
             echo "Thirteen primary jars share version ${VERSION}. The NeoForge 26.3 cell is built against the NeoForge loader pin \`26.3.0.6-beta\`. The jar name is \`vonixguardian-neoforge-26.3-${VERSION}.jar\`."
             echo

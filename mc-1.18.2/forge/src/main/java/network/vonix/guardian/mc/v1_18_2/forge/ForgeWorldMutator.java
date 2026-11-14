@@ -227,7 +227,6 @@ public final class ForgeWorldMutator implements WorldMutator {
         }
     }
 
-
     @Override
     public boolean tryAddToContainer(String worldId, int x, int y, int z, String itemId, int amount,
                                      String targetMeta, byte[] itemNbt, Integer inventorySlot) {
@@ -711,6 +710,49 @@ public final class ForgeWorldMutator implements WorldMutator {
         return remaining == 0;
     }
 
+    /**
+     * Put a stack into whatever slot will take it.
+     *
+     * <p>Used when the slot a row recorded is no longer available — the container has
+     * been used since, so the exact slot is gone but the items still belong to the
+     * owner. A rollback returns items; it does not insist on one coordinate.</p>
+     *
+     * <p>Merges into a matching partial stack first, then takes an empty slot. Returns
+     * {@code false} only when the container is genuinely full, which is a real failure
+     * an operator needs to know about.</p>
+     *
+     * @param c     container to fill
+     * @param stack stack to place; not modified
+     * @return {@code true} when the whole stack was placed
+     */
+    private static boolean tryAddAnywhere(Container c, ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        int remaining = stack.getCount();
+        // Pass 1: top up existing stacks of the same item and tag.
+        for (int i = 0; i < c.getContainerSize() && remaining > 0; i++) {
+            ItemStack cur = c.getItem(i);
+            if (cur.isEmpty() || !ItemStack.isSameItemSameTags(cur, stack)) continue;
+            int space = Math.min(cur.getMaxStackSize(), c.getMaxStackSize()) - cur.getCount();
+            if (space <= 0) continue;
+            int take = Math.min(space, remaining);
+            cur.grow(take);
+            remaining -= take;
+        }
+        // Pass 2: empty slots.
+        for (int i = 0; i < c.getContainerSize() && remaining > 0; i++) {
+            if (!c.getItem(i).isEmpty()) continue;
+            ItemStack placed = stack.copy();
+            placed.setCount(remaining);
+            c.setItem(i, placed);
+            remaining = 0;
+        }
+        if (remaining > 0) {
+            return false;
+        }
+        c.setChanged();
+        return true;
+    }
+
     private static boolean tryAddAtSlot(Container c, int slot, ItemStack stack) {
         if (slot < 0 || slot >= c.getContainerSize() || stack == null || stack.isEmpty()) return false;
         ItemStack current = c.getItem(slot);
@@ -729,9 +771,18 @@ public final class ForgeWorldMutator implements WorldMutator {
                 return false;
             }
         }
-        if (!ItemStack.isSameItemSameTags(current, stack)) return false;
+        if (!ItemStack.isSameItemSameTags(current, stack)) {
+            // The recorded slot now holds something else. The container has been used
+            // since the row was written, and refusing here is what made a rollback of a
+            // busy chest fail hundreds of rows at once: the operator asked to return the
+            // items, not to return them to one specific slot.
+            //
+            // Fall back to putting the stack wherever it fits. If nothing fits, only
+            // then is it a genuine failure.
+            return tryAddAnywhere(c, stack);
+        }
         int space = Math.min(current.getMaxStackSize(), c.getMaxStackSize()) - current.getCount();
-        if (space < stack.getCount()) return false;
+        if (space < stack.getCount()) return tryAddAnywhere(c, stack);
         ItemStack previous = current.copy();
         try {
             current.grow(stack.getCount());
