@@ -11,11 +11,15 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 > Built and maintained by [Vonix Network](https://vonix.network).
 >
-> **Current release:** `2.2.1` across thirteen primary jars. The published `3.0.0-m1` preview remains historical provenance for its separate two-cell preview and is not reclassified by this release.
+> **Current release:** `2.2.1` across thirteen primary jars. The `2.3.0` change set in
+> [CHANGELOG.md](CHANGELOG.md) is an unreleased candidate on this tree — `mod_version` is
+> still `2.2.1` and nothing described there is published. The published `3.0.0-m1`
+> preview remains historical provenance for its separate two-cell preview and is not
+> reclassified by this release.
 >
 > **Public wiki:** https://modwiki.vonix.network/mods/vonixguardian/
 
-## Feature surface (`2.2.1`)
+## Feature surface
 
 - **Logged actions** (40 action types): block place / break, container transactions, item drop / pickup / craft, entity kill, explosions, sessions (join / leave), chat, commands, sign edits (front / back / dye / waxed on 1.20+), player interactions, world events (burn, ignite, fade, form, spread, dispense, leaves decay, piston extend/retract, buckets, fluid flow), hopper push/pull, structure grow, portal create, hanging place/break, username changes.
 
@@ -25,11 +29,12 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
   - `/vg lookup <filters>` (alias `/vg l`) — paginated query with full CP filter syntax.
   - `/vg rollback <filters>` (alias `/vg rb`) — undo actions in scope (default radius 10).
   - `/vg restore <filters>` (alias `/vg rs`) — redo a rollback or apply a forward-restore.
-  - `/vg purge <filters>` — delete old rows (safety floors: console ≥ 24h, in-game ≥ 30d).
+  - `/vg purge <filters>` — delete old rows. A bare purge spans **every world**; limit it with `r:#nether`, `r:#overworld`, `r:#end`, or `r:#world_<name>`. `#preview` and `#count` report and delete nothing. Safety floors: console ≥ 24h, in-game ≥ 30d.
+  - `/vg batch [list|show <id>|close <id>]` — inspect an unfinished rollback batch, or mark its audit row finished. Closing does not replay, undo, or delete anything, and does not touch the world.
   - `/vg near` — quick lookup `r:5 t:1h` around you.
-  - `/vg undo` — reverse the last rollback / restore (real world revert, not history-pop).
+  - `/vg undo` — reverse the last rollback / restore. This changes the world again.
   - `/vg consumer pause | resume | toggle` — manage the writer queue.
-  - `/vg status` — full multi-section observability surface (version, storage, queue, coalescer, hooks, permissions, API — mirrors `/co status`).
+  - `/vg status` — the diagnostic surface: a one-sentence summary, then version, storage, writer, recovery, and configuration sections. The database read runs off the server thread.
   - `/vg reload` — re-read `config/vonixguardian/config.json`, hot-swap safe subsections.
   - `/vg config get <key>` / `/vg config set <key> <value>` — key-level hot-swap for whitelisted config keys.
   - `/vg migrate-db <sqlite | mysql | postgresql> CONFIRM` — console-only backend copy.
@@ -40,9 +45,9 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
   - Users: `u:Notch`, `u:Notch,Intelli`, `u:#fire,#tnt,#creeper,#explosion`, plus `#mob:<ns>:<path>`.
   - Time: `t:2w5d7h`, `t:2.50h`, `t:1h-2h`.
   - Radius: `r:10`, `r:#global`, `r:#world_the_nether`, `r:#worldedit` / `r:#we`, `r:#nether` / `r:#overworld` / `r:#end`.
-  - Actions: `a:block`, `a:+block`, `a:-block`, `a:container`, `a:kill`, `a:chat`, `a:command`, `a:sign`, `a:session`, `a:username`, `a:click`, `a:inventory`, `a:item`, plus 22 VG-only expansion tokens (burn, ignite, fade, form, spread, dispense, piston, bucket, fluid, decay, hanging, spawn, einteract, hopper, craft, grow, portal, populate, entityblock).
+  - Actions: `a:block`, `a:+block`, `a:-block`, `a:container`, `a:kill`, `a:chat`, `a:command`, `a:sign`, `a:session`, `a:username`, `a:click`, `a:inventory`, `a:item`, plus 19 VG-only expansion tokens (burn, ignite, fade, form, spread, dispense, piston, bucket, fluid, decay, hanging, spawn, einteract, hopper, craft, grow, portal, populate, entityblock). `a:click` is only produced when `actions.logInteractions` is on, and only for player right-clicks.
   - Includes / excludes: `i:stone,dirt`, `e:minecraft:tnt`.
-  - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, `#optimize`.
+  - Hash flags: `#preview`, `#count`, `#verbose`, `#silent`, `#optimize`. On `purge`, `#preview` shows up to eight sample rows plus a count; on rollback/restore it counts the plan and keeps it for `/vg apply` — it does not draw anything in the world.
 
 - **Storage**: SQLite (default, zero-config), MySQL, MariaDB, **PostgreSQL** (VG uniqueness). Schema migrations are dialect-aware and idempotent. Current schema is **v9**: v8 `vg_repair_required` / `vg_sink_outbox` plus the additive `vg_actions(ts, id)` index. `/vg migrate-db` copies between backends under a maintenance write-block that freezes queue admission and waits for the ring buffer, worker local batch, and in-flight sink transaction to idle before copying. This is a best-effort snapshot barrier, not a global database freeze.
 
@@ -54,7 +59,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 
 - **Extensibility**: soft-dep pattern via reflection. Third-party mods can subscribe to `PreLogEvent` on any of the loader cells to cancel or annotate audit entries. See `docs/PLUGINS.md`.
 
-- **i18n**: 14 language bundles ported from CoreProtect (en, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh-cn, zh-tw). Select via `config.language`.
+- **i18n**: 15 bundles (en, en_us, de, es, fr, ja, ko, pl, ru, tr, tt, uk, vi, zh_cn, zh_tw). All hold the full 32-key set. The 32 keys cover the query-parser error vocabulary only — command replies are still English literals, so this is not a translated command surface. Select via `config.language`. The `tt` bundle is intentionally part-English, marked `#TODO-i18n`.
 
 - **Performance**: bounded async writer queue with time-budgeted poll, batch INSERTs, prepared statements, indexed by `(world, x, z, y, time)`. A producer-side coalescer absorbs event storms such as the pre-coalescer HTTYD dragon flood (about 200k `LivingDestroyBlockEvent` callbacks per second before coalescing). That figure is the flood the coalescer was added to collapse, not a sustained insert rate. Auto-purge is optional: the shipped `purge.autoPurgeSeconds` is `0` (unbounded; the daemon does not run). `7776000` (90 days) is the suggested busy-server horizon.
 
@@ -74,7 +79,7 @@ Drop-in CoreProtect-grade auditing for the modern modded ecosystem — Fabric, F
 | 1.19.2     |   ✅   |   ✅  |    —     |
 | 1.18.2     |   ✅   |   ✅  |    —     |
 
-Thirteen primary jars: Fabric and Forge on 1.18.2, 1.19.2, and 1.20.1; Fabric and NeoForge on 1.21.1; NeoForge on 26.1.2; Fabric and NeoForge on 26.2; Fabric and NeoForge on 26.3. NeoForge did not exist before 1.20.4, so the 1.21.1 and 26.x jars replace Forge on those versions. Every jar embeds `mod_version` `2.2.0`. The 26.3 NeoForge cell's **loader pin** is NeoForge `26.3.0.6-beta` (no stable 26.3 loader exists yet). That pin is the NeoForge version the cell compiles against. The jar is `vonixguardian-neoforge-26.3-2.2.0.jar`, with no extra version suffix.
+Thirteen primary jars: Fabric and Forge on 1.18.2, 1.19.2, and 1.20.1; Fabric and NeoForge on 1.21.1; NeoForge on 26.1.2; Fabric and NeoForge on 26.2; Fabric and NeoForge on 26.3. NeoForge did not exist before 1.20.4, so the 1.21.1 and 26.x jars replace Forge on those versions. Every jar embeds the root `mod_version`, which is `2.2.1` on this tree. The 26.3 NeoForge cell's **loader pin** is NeoForge `26.3.0.6-beta` (no stable 26.3 loader exists yet). That pin is the NeoForge version the cell compiles against. The jar is `vonixguardian-neoforge-26.3-2.2.1.jar`, with no extra version suffix.
 
 ## Architecture
 
@@ -121,7 +126,7 @@ packaging. The root `build` task configures every loader cell and is intentional
 CI/release flows because multiple Fabric Loom versions can conflict when configured in one
 Gradle invocation. Classifier artifacts such as `-shadow`, `-all`, and `-slim` are not release assets.
 
-The release workflow publishes **thirteen** primary jars for `2.2.0` (the matrix above) plus `SHA256SUMS`. NeoForge 26.2 and 26.3 build on Gradle 9.2.0 under profiles `mc262` and `mc263`. Fabric 26.2 and 26.3 build on Gradle 9.6.0 under `mc262fabric` and `mc263fabric`. Those Fabric cells are not included in the NeoForge profiles.
+The release workflow publishes **thirteen** primary jars (the matrix above) plus `SHA256SUMS`. NeoForge 26.2 and 26.3 build on Gradle 9.2.0 under profiles `mc262` and `mc263`. Fabric 26.2 and 26.3 build on Gradle 9.6.0 under `mc262fabric` and `mc263fabric`. Those Fabric cells are not included in the NeoForge profiles.
 
 ## Configuration
 
@@ -174,7 +179,13 @@ First boot writes `config/vonixguardian/config.json`:
 
 ## Permissions
 
-Every command is gated by `vonixguardian.command.<cmd>` (e.g. `vonixguardian.command.rollback`). LuckPerms is auto-detected via reflection — no hard dependency. Without LP, permission level 3 (`op`) is required.
+Most subcommands are gated by `vonixguardian.<cmd>` (e.g. `vonixguardian.rollback`). Three shapes exist for historical reasons, and `/vg help` prints the authoritative set:
+
+- `vonixguardian.<sub>` — most subcommands.
+- `vonixguardian.command.<sub>` — `config`, `entitylog` (which reuses `config`), `teleport`, `give`.
+- `vonixguardian.migrate_db` — `migrate-db` (underscore).
+
+`/vg batch` uses `vonixguardian.rollback`. `/vg apply` and `/vg cancel` gate on whichever of `rollback` or `restore` the pending preview came from, so there is no node to grant for them; `/vg help` and the bare `/vg` gate on `vonixguardian.base`. Two nodes are declared and enforced by nothing: `vonixguardian.lookup.ip` and `vonixguardian.bypass.inspector`. LuckPerms is auto-detected via reflection — no hard dependency. Without LP, each node's own default op level applies (0–4; see `PermissionNode`), not one uniform level.
 
 ## License
 

@@ -7,6 +7,162 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - Unreleased candidate (2026-11-14)
+
+Command replies now say what happened, and the dangerous commands do what their flags
+claim. A purge marked as a preview or a count leaves the log in place. Changing one
+`actions` setting keeps the item and entity blacklists. Help lists every command.
+Rollback, lookup, and status are written so the outcome and the number that matters are
+visible on the first read.
+
+Every claim below was checked against this tree at `a668a66`, not copied from a commit
+message. Claims this entry could not verify are named in **Verification** and are not
+asserted.
+
+### Breaking changes
+
+- **A purge with no world selector covers every world.** The reply names the scope it
+  used (`all worlds`, or the world you named). Limit a purge with `r:#nether`,
+  `r:#overworld`, `r:#end`, or `r:#world_<name>`. Rollback and lookup still default to
+  the world you are standing in.
+- **A window such as `t:1h-2h` deletes only rows inside that window.** A single age such
+  as `t:90d` still deletes rows older than that age. The safety floor is checked against
+  the newest row that would be deleted, so a window reaching into the last 30 days
+  (in-game) or 24 hours (console) is refused even when its older edge is old enough.
+- **Rollback output no longer contains `affected=`.** A check that parsed the old
+  key=value line will not find it. Zero counters are omitted from the line entirely.
+  A clean rollback reads `Done — SUCCESS`; a result needing repair reads
+  `Needs repair — REPAIR_REQUIRED`.
+- **Chat colours are lighter.** In the default `aqua` theme, block and item ids are
+  near-white (`#F4FFFF`) instead of `#00AAAA`, which measured 3.85:1 against a mid-grey
+  chat background — below WCAG AA — and disappeared against a bright scene.
+
+### Added
+
+- **`/vg batch`, `/vg batch show <id>`, `/vg batch close <id>`** (permission
+  `vonixguardian.rollback`). List shows open batches with mode and action count; show
+  lists the action ids the batch covered; close marks the audit row finished. Close does
+  not replay the rollback, undo it, delete its action rows, or otherwise touch the world,
+  and the reply says so on every path — including "already closed" and "no such batch".
+  Registered in all ten command cells.
+- **Purge preview prints the match count, up to eight sample rows** (world, coordinates,
+  target, actor), and how many more match. Nothing is deleted.
+- **Lookup rows show the world**, the item amount where one applies, and a UTC clock time
+  beside the relative time. Sign side, dye colour, and waxed state appear when stored.
+  `#verbose` adds the inventory slot, source tag, paired row id, and the before/after
+  block state. The row id is click-to-copy, the target copies its full id, and the
+  coordinates offer `/vg tp` in the chat box. Where a client's chat API refuses the
+  click event, the text still renders.
+- **A command failure names the failure.** When a throwable carries no message — the
+  common case — the reply uses the exception type instead of printing `null`.
+
+### Fixed
+
+- **`/vg purge #preview` and `/vg purge #count` deleted rows.** The documented dry run
+  performed the purge: the flags were copied onto the filter and never read. They now
+  count (preview also samples) and call neither the delete nor the optimize path.
+- **`/vg purge` silently narrowed to the caller's world.** The handler applied the
+  sender's world as a default, so an operator standing in the Overworld purged only the
+  Overworld and was told the row count as if that were the whole server. A bare purge
+  now spans every world and names the scope; a `r:` selector is kept as given.
+- **A two-sided time range inverted the purge window.** `t:1h-2h` deleted everything
+  older than the newer edge. It now deletes only rows inside the window.
+- **`/vg config set` on an `actions` key wiped both blacklists to disk.** The handler
+  rebuilt the `Actions` block through a compatibility constructor that substitutes empty
+  lists for `itemBlacklist` and `entityBlacklist`, then saved it. Every write now starts
+  from the live block and changes one field.
+- **Rolling back several edits of one block restored only the newest and reported
+  `skipped=0`.** Older rows at an already-planned position were dropped from the plan
+  without being counted, so rows the operator asked about vanished from the operation
+  entirely. They are now counted as skipped; the newest row is still the one applied.
+- **A failed rollback left its batch open forever and logged one WARN per affected
+  action on every boot.** Boot now logs a single line naming the open batch ids and the
+  action count, and points at `/vg batch`.
+- **`/vg status` read the database on the server thread.** The report is built off-thread
+  and the lines are sent back on the server thread. On a slow or remote database the
+  diagnostic no longer stalls the tick it is being used to investigate.
+- **`/vg status` labelled `SELECT 1` as "health".** A trivial query cannot see a locked
+  table, a full disk, or a permission failure, so the row is now `reachable` and states
+  what answered. The schema row reads `vg_schema_version` and compares it with the
+  version this jar creates, so drift is named instead of assumed. A configured theme
+  name that is not registered is reported rather than silently resolved away.
+- **`/vg status` flooded chat.** 62 lines with `[VonixGuardian]` on every one is now a
+  one-sentence opener plus five sections (version, storage, writer, recovery,
+  configuration) with the brand on the first section only. Counters that answer one
+  question share a row; per-type and per-batch detail still prints when it exists.
+- **`r:#worldedit` answered "no results"** when WorldEdit was absent, no selection
+  existed, or the selection could not be read. Each case now names itself.
+- **`/vg help` described undo as dropping history.** It now says undo changes the world
+  again. The command list is rendered from `CommandSpec`, so it cannot omit a
+  subcommand that the spec knows about. It still does not list the registered
+  compatibility literals that are not in the spec (`inspector`, `page`, `stats`,
+  `version`) or the `re`/`ro` aliases — see Known open.
+- **Error paths ended in the word `null`.** See Added.
+- **A paused audit writer could let one row escape and accept another in the same
+  instant.** The worker had already removed the held row when pause became visible, so
+  the queue looked empty. The row goes back and the next submit is rejected and recorded.
+
+### Changed
+
+- **The rollback line reconciles against the plan.** It reports the plan total whenever
+  it differs from what changed (`251 changed (of 468 planned)`), and states plainly when
+  a gap has no other explanation — `unplannedGap` names the remainder rather than leaving
+  the operator to subtract. The formatter accepts a per-reason skip histogram and will
+  render it, but no caller supplies one yet, so the line reports the skip total only.
+- **`#count` on rollback and restore is one line** and says nothing was changed.
+  `#preview` says how many blocks would change and that the world was not changed.
+- **`#verbose` on a lookup adds its fields on the same line** rather than a second row;
+  the hover text carries the same detail without the flag. Long names are shortened on
+  screen while the click-to-copy value keeps the full id.
+- **All fifteen language bundles now carry the full 32-key set.** Fourteen bundles held
+  7 of 32 keys, so a non-English locale silently fell through to English for the other
+  25. The `tt` (Tatar) bundle resolves every key but keeps 29 lines in English
+  deliberately, each marked `#TODO-i18n` with the reason, rather than inventing a
+  translation. The bundles only cover the parser and status vocabulary; every command
+  reply in `GuardianCommands`, `LookupText`, and `MutationOutcomeFormatter` is still a
+  hardcoded English literal — see Known open.
+- **`/vg batch` closing an audit row is reported separately from changing the world.**
+  The two are never conflated in one sentence.
+
+### Removed
+
+- **`LookupPermissionFilter.filter()`** — unreachable; the live path uses `visiblePage()`
+  and `countVisible()`. Proven unreachable by grep before deletion.
+- **`CommandSpec` aliases no loader registers** (`n` for near, `?` for help), and
+  `Lookup.atPos` on the 1.18.2 Forge cell. The spec had drifted from the real command
+  tree; the drift was removed rather than the tree changed to match it.
+
+### Known open — not fixed in this entry
+
+Stated explicitly, because these will still surprise an operator:
+
+| Issue | Effect |
+|---|---|
+| `ITEM_DROP` / `ITEM_PICKUP` are still not rollbackable | Items dropped or picked up are never restored; they inflate `skipped`. The row data needed (`item_nbt`, `entity_nbt`) is stored. The refuse-at-dispatch branch for these types is still present and still unreachable. |
+| No logging for sheep shearing, cauldrons, cake, anvils, armor stands, jukeboxes, note blocks, waxing, beds, lecterns, decorated pots, sponge, coral, plant growth, or wolves/cats | Griefing through those paths has no record at all. Verified by grep: no source reference to any of those block or entity classes in any loader cell. `Creeper` and `Cat` appear only in `SourceTagger` as attribution labels, not as event sources. |
+| `#preview` paints nothing in the world | It counts the plan and keeps it for `/vg apply` or `/vg cancel`; it sends no ghost blocks or block updates. The only `ClientboundBlockUpdatePacket` use in a loader cell is the inspector. Help now says so. |
+| `/vg undo` history is in-memory, 20 entries, lost on restart | `/vg batch` can show the batch but cannot replay it, so undo does not survive a restart. |
+| `a:+block` / `a:-block` sign is still ignored | Place-only and break-only filters behave as the whole family. The parser records the sign; the SQL compiler does not read it. |
+| `lookup.maxResultRows` is still not hot-swappable | Bound into a DAO field at construction. `/vg reload` reports the lookup subsection as hot-swapped, so a changed cap looks applied and is not. |
+| Ten near-duplicate `GuardianCommands` copies, ~15.4k lines | A single defect has to be fixed ten times, and they have already diverged. |
+| `/vg help` does not list four registered literals | `inspector`, `page`, `stats`, and `version` are registered in the command tree but absent from `CommandSpec`, so the rendered list omits them. The `re` and `ro` aliases are likewise unlisted. Conversely `CommandSpec`'s `status` summary still says "DB health" although the row is now `reachable`. |
+| Command replies are not translatable | The 15 bundles hold 32 keys covering the query parser and a status vocabulary that the renderer no longer uses (`status.section.*` is dead; the report is built from `row(...)` pairs). Every reply in `GuardianCommands`, `LookupText`, and `MutationOutcomeFormatter` is a hardcoded English literal, so `language=de` changes 24 parser strings and nothing else. |
+
+### Verification
+
+What was and was not proven for this entry:
+
+- **Source-verified.** Every behaviour above was read out of the implementation named in
+  the item, at `a668a66`. Nothing here is inferred from a commit message.
+- **Test suite: not run for this entry.** The core suite was last reported at 1,276 tests,
+  0 failures, 0 errors on the release candidate this change set descends from. That number
+  is not a claim about this tree and is not restated as one.
+- **Not runtime-verified.** No Minecraft server was started. Chat rendering, click
+  events, a live WorldEdit selection, boot with an open batch, and a real rollback
+  against a world remain untested. A server boot and a real rollback are still the gate
+  before release.
+- **Not compiled here.** No loader cell was compiled while preparing this entry.
+
 ## [2.2.1] - 2026-10-20
 
 ### Fixed
