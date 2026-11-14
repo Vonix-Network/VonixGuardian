@@ -33,20 +33,21 @@ import java.util.Map;
  * lane owns honeycomb wax/scrape only. The filter is exact rather than
  * heuristic: a row is emitted only when the pre-state block is a key of
  * {@link HoneycombItem#WAX_OFF_BY_BLOCK} <em>and</em> the post-state is that
- * key's mapped value — vanilla's own definition of "this axe click removed
- * wax". Stripping and oxidation scraping never satisfy it, so they never produce
- * a row from this mixin. (Stripping in particular is a wood-transform, not a wax
- * action; logging it here would misattribute one action as another.)</p>
+ * key's mapped value — vanilla's own definition of "this axe click removed wax".
+ * Stripping and oxidation scraping never satisfy it, so they never produce a row
+ * from this mixin. Log stripping in particular is a wood transform, not a wax
+ * action; logging it here would file one action as another.</p>
  *
  * <p>Row shape matches {@link HoneycombItemMixin}: {@code ENTITY_CHANGE_BLOCK}
  * carrying both sides of the transition, so the existing inverse in
  * {@code RollbackEngine} restores the waxed block.</p>
+ *
+ * <p>No mutable state is declared here: the pre-interaction snapshot lives in
+ * {@link MixinAuditSupport}, because a field declared in a mixin is merged into
+ * the target class and cannot be reasoned about as one stash.</p>
  */
 @Mixin(AxeItem.class)
 public abstract class AxeItemMixin {
-
-    /** Pre-use block state per server thread; cleared on HEAD and consumed on RETURN. */
-    private static final ThreadLocal<BlockState> VG$BEFORE = new ThreadLocal<>();
 
     @Inject(
             method = "m_6225_(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;",
@@ -55,15 +56,12 @@ public abstract class AxeItemMixin {
             remap = false
     )
     private void vg$beforeUseOn(UseOnContext ctx, CallbackInfoReturnable<InteractionResult> cir) {
-        VG$BEFORE.remove();
         try {
-            Level level = ctx == null ? null : ctx.getLevel();
+            if (ctx == null) return;
+            Level level = ctx.getLevel();
             if (level == null || level.isClientSide) return;
-            BlockPos pos = ctx.getClickedPos();
-            if (pos == null) return;
-            VG$BEFORE.set(level.getBlockState(pos));
+            MixinAuditSupport.pushUseBefore(level, ctx.getClickedPos());
         } catch (Throwable ignored) {
-            VG$BEFORE.remove();
         }
     }
 
@@ -74,10 +72,10 @@ public abstract class AxeItemMixin {
             remap = false
     )
     private void vg$afterUseOn(UseOnContext ctx, CallbackInfoReturnable<InteractionResult> cir) {
-        BlockState before = VG$BEFORE.get();
-        VG$BEFORE.remove();
         try {
-            if (before == null || ctx == null) return;
+            if (ctx == null) return;
+            BlockState before = MixinAuditSupport.popUseBefore();
+            if (before == null) return;
             Level level = ctx.getLevel();
             Player player = ctx.getPlayer();
             if (level == null || level.isClientSide || player == null) return;

@@ -23,13 +23,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <p>Waxing a copper block replaces one block id with another
  * ({@code minecraft:copper_block} -&gt; {@code minecraft:waxed_copper_block}).
  * Vanilla does it inside {@code HoneycombItem#useOn} with a plain
- * {@code Level#setBlock}; Forge fires no event for it, so today the change
- * leaves no audit row at all and a rollback cannot know the block was waxed.</p>
+ * {@code Level#setBlock}; Forge fires no event for it, so today the change leaves
+ * no audit row at all and a rollback cannot know the block was ever waxed.</p>
  *
  * <p><b>Why {@code ENTITY_CHANGE_BLOCK} and not {@code CLICK}.</b> This is a
  * block identity change with a well-defined inverse, and
- * {@code ENTITY_CHANGE_BLOCK} already carries both sides ({@code targetId} =
- * pre-change block, {@code targetMeta} = post-change block) with a working
+ * {@code ENTITY_CHANGE_BLOCK} already carries both sides of it ({@code targetId}
+ * = pre-change block, {@code targetMeta} = post-change block) with a working
  * inverse in {@code RollbackEngine}. {@code CLICK} carries neither side and is
  * refused by both {@code applyInverse} and {@code applyForward}, so a CLICK row
  * here would record the event and still be unable to undo it.</p>
@@ -37,18 +37,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <p><b>Method binding.</b> The packaged Forge runtime exposes
  * {@code HoneycombItem#m_6225_(UseOnContext)InteractionResult}; bind that SRG
  * name with {@code remap = false} so the injector never depends on a refmap
- * entry. {@code require = 1} makes a mapping change fail loudly at apply time
- * instead of silently logging nothing.</p>
+ * entry. {@code require = 1} makes a mapping change fail at apply time instead
+ * of silently logging nothing.</p>
+ *
+ * <p>No mutable state is declared here: the pre-interaction snapshot lives in
+ * {@link MixinAuditSupport}, because a field declared in a mixin is merged into
+ * the target class and cannot be reasoned about as one stash.</p>
  */
 @Mixin(HoneycombItem.class)
 public abstract class HoneycombItemMixin {
-
-    /**
-     * Pre-use block state for the in-flight {@code useOn}. One slot per server
-     * thread; cleared at HEAD so a throw between HEAD and RETURN cannot leak a
-     * stale snapshot into the next interaction.
-     */
-    private static final ThreadLocal<BlockState> VG$BEFORE = new ThreadLocal<>();
 
     @Inject(
             method = "m_6225_(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;",
@@ -57,15 +54,12 @@ public abstract class HoneycombItemMixin {
             remap = false
     )
     private void vg$beforeUseOn(UseOnContext ctx, CallbackInfoReturnable<InteractionResult> cir) {
-        VG$BEFORE.remove();
         try {
-            Level level = ctx == null ? null : ctx.getLevel();
+            if (ctx == null) return;
+            Level level = ctx.getLevel();
             if (level == null || level.isClientSide) return;
-            BlockPos pos = ctx.getClickedPos();
-            if (pos == null) return;
-            VG$BEFORE.set(level.getBlockState(pos));
+            MixinAuditSupport.pushUseBefore(level, ctx.getClickedPos());
         } catch (Throwable ignored) {
-            VG$BEFORE.remove();
         }
     }
 
@@ -76,10 +70,10 @@ public abstract class HoneycombItemMixin {
             remap = false
     )
     private void vg$afterUseOn(UseOnContext ctx, CallbackInfoReturnable<InteractionResult> cir) {
-        BlockState before = VG$BEFORE.get();
-        VG$BEFORE.remove();
         try {
-            if (before == null || ctx == null) return;
+            if (ctx == null) return;
+            BlockState before = MixinAuditSupport.popUseBefore();
+            if (before == null) return;
             Level level = ctx.getLevel();
             Player player = ctx.getPlayer();
             if (level == null || level.isClientSide || player == null) return;
@@ -87,8 +81,8 @@ public abstract class HoneycombItemMixin {
             if (pos == null) return;
             BlockState after = level.getBlockState(pos);
             if (after == null || after == before) return;
-            // Only a block *identity* change is a waxing; a same-block state
-            // change would not be one, and logging it would be a false row.
+            // Only a block *identity* change is a waxing. A same-block state
+            // change is not one, and logging it would be a false row.
             if (after.getBlock() == before.getBlock()) return;
 
             String oldId = MixinAuditSupport.blockId(before);
