@@ -139,13 +139,18 @@ class NbtRollbackFidelityTest {
         assertThat(a.blockEntityNbt()).isNull();
         assertThat(a.oldBlockState()).isNull();
 
-        // A mutator that only implements the legacy (non-NBT) overload — this
-        // is the state of every loader cell in the repo at X1 time. The default
-        // NBT overload from the interface must delegate here.
+        // A mutator that only implements the legacy (non-NBT) overload. Every loader
+        // cell in the tree now overrides trySetBlock, so this models the ABI contract
+        // itself: the interface default must route a null-payload request into the
+        // overload a legacy implementation actually provides, or an old cell would
+        // silently stop mutating.
         LegacyOnlyMutator legacy = new LegacyOnlyMutator();
-        legacy.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
-                       a.oldBlockState(), a.blockEntityNbt());
+        boolean applied = legacy.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(),
+            a.targetMeta(), a.oldBlockState(), a.blockEntityNbt());
         assertThat(legacy.legacyCalls).isEqualTo(1);
+        assertThat(applied)
+            .as("a legacy-only mutator must report the mutation actually happened")
+            .isTrue();
     }
 
     private static byte[] utf8(String s) {
@@ -195,6 +200,10 @@ class NbtRollbackFidelityTest {
     private static final class LegacyOnlyMutator implements WorldMutator {
         int legacyCalls = 0;
 
+        @Override public boolean trySetBlock(String w, int x, int y, int z, String t, String m) {
+            legacyCalls++;
+            return true;
+        }
         @Override public void setBlock(String w, int x, int y, int z, String t, String m) {
             legacyCalls++;
         }

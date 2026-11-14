@@ -88,6 +88,13 @@ public final class RollbackEngine {
             this.total = total;
         }
 
+        /** Variant that preserves the originating mutator failure as the cause. */
+        PartialExplosionMutationException(String message, int applied, int total, Throwable cause) {
+            super(message, cause);
+            this.applied = applied;
+            this.total = total;
+        }
+
         /** Affected blocks written before the failure. */
         int applied() {
             return applied;
@@ -2096,11 +2103,26 @@ public final class RollbackEngine {
             // Restore the pre-blast block state at each affected coord. Legacy
             // inline meta remains targetMeta; sidecar meta is v5 block-state props.
             boolean ok;
-            if (hasSidecar && (e.meta() != null || e.blockEntityNbt() != null)) {
-                ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), null,
-                    e.meta(), e.blockEntityNbt());
-            } else {
-                ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
+            try {
+                if (hasSidecar && (e.meta() != null || e.blockEntityNbt() != null)) {
+                    ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), null,
+                        e.meta(), e.blockEntityNbt());
+                } else {
+                    ok = mutator.trySetBlock(a.worldId(), e.x(), e.y(), e.z(), e.blockId(), e.meta());
+                }
+            } catch (RuntimeException thrown) {
+                // A loader mutator can throw mid-explosion (chunk unloaded, world
+                // locked). The blocks already written stay written, so this is a
+                // partial mutation and must be reported as one rather than swallowed
+                // by the generic failure path — otherwise a half-restored blast looks
+                // like nothing happened and never reaches vg_repair_required.
+                // total is the row's full block count, not the iteration counter: the
+                // operator needs "1 of 3" (what this row describes), not "1 of 2"
+                // (how far the loop got).
+                throw new PartialExplosionMutationException(
+                    "explosion row id=" + a.id() + " threw after restoring " + applied + " of "
+                        + list.entries().size() + " block(s): " + thrown,
+                    applied, list.entries().size(), thrown);
             }
             if (ok) {
                 applied++;

@@ -326,7 +326,52 @@ public final class EventGate {
         return out;
     }
 
+    /**
+     * Whether this configuration records {@code t} at all.
+     *
+     * <p>Public so config and diagnostics can answer "would this type be logged?"
+     * without constructing an event. Delegates to the same logic the gate uses, so
+     * the answer cannot drift from real behaviour.</p>
+     *
+     * @param cfg action configuration
+     * @param t   action type
+     * @return {@code true} when events of this type are recorded
+     */
+    public static boolean logsType(GuardianConfig.Actions cfg, ActionType t) {
+        return cfg != null && t != null && typeEnabled(cfg, t);
+    }
+
+    /**
+     * Whether {@code t} appears in {@code actions.actionTypeBlacklist}.
+     *
+     * <p>Names are matched case-insensitively against {@link ActionType#name()},
+     * because operators write {@code explosion} as often as {@code EXPLOSION}. An
+     * unrecognised name is ignored rather than throwing: a typo in config must not
+     * stop the server from booting.</p>
+     *
+     * @param cfg action config
+     * @param t   the type being considered
+     * @return {@code true} when this type must never be recorded
+     */
+    private static boolean isTypeBlacklisted(GuardianConfig.Actions cfg, ActionType t) {
+        List<String> bl = cfg.actionTypeBlacklist();
+        if (bl == null || bl.isEmpty()) {
+            return false;
+        }
+        for (String name : bl) {
+            if (name != null && name.trim().equalsIgnoreCase(t.name())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean typeEnabled(GuardianConfig.Actions cfg, ActionType t) {
+        // Per-type blacklist first: it is more specific than the category toggles,
+        // so an operator can silence one noisy type without losing the category.
+        if (isTypeBlacklisted(cfg, t)) {
+            return false;
+        }
         return switch (t.category()) {
             case BLOCK -> cfg.logBlocks();
             case CONTAINER -> cfg.logContainers();

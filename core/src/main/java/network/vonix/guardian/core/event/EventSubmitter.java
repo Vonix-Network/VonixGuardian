@@ -45,6 +45,62 @@ public interface EventSubmitter {
     void submit(Action a);
 
     /**
+     * Number of actions accepted by the gate since construction.
+     *
+     * <p>Cells report throughput and operators read it from {@code /vg status}.
+     * It lives on the interface because {@code Guardian} is not reachable from a
+     * loader cell — a counter only the core can read is a counter nobody uses.</p>
+     *
+     * <p>Default {@code 0}: test doubles and out-of-tree implementations predate
+     * this counter and must keep compiling. A real implementation overrides it.</p>
+     *
+     * @return accepted action count, monotonic
+     */
+    default long submitted() {
+        return 0L;
+    }
+
+    /**
+     * Submit an action and report whether it reached the write queue.
+     *
+     * <p>The historic {@link #submit(Action)} is void, so a cell cannot tell an
+     * accepted action from a rejected one. Cells that need the answer — to count
+     * drops, or to fall back when a payload is refused — use this.</p>
+     *
+     * <p>Default returns {@code false} after attempting the submission, so a
+     * pre-existing implementation still compiles while every in-tree one overrides
+     * it.</p>
+     *
+     * @param a fully-built immutable action; must not be {@code null}
+     * @return {@code true} when the action was accepted and queued
+     */
+    default boolean submitAccepted(Action a) {
+        submit(a);
+        return false;
+    }
+
+    /**
+     * Submit a replacement pair and report whether both halves were queued.
+     *
+     * <p>Container and hopper replacements are only meaningful as a pair: writing
+     * one half records a transfer that never happened. Cells holding an
+     * {@code EventSubmitter} need this entry point for the same reason they need
+     * {@link #submitAccepted(Action)}.</p>
+     *
+     * @param first  the first half; must not be {@code null}
+     * @param second the second half; must not be {@code null}
+     * @return {@code true} when both halves were accepted and queued
+     */
+    default boolean submitAcceptedPair(Action first, Action second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        boolean a = submitAccepted(first);
+        boolean b = submitAccepted(second);
+        return a && b;
+    }
+
+    /**
      * Convenience for {@code BlockBreakEvent}.
      *
      * @param actorUuid player UUID, or {@code null} for synthetic sources

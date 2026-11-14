@@ -48,7 +48,12 @@ class ActionTypeCoverageStructuralTest {
      * entry point and takes a caller-built action, so it maps to no single type
      * and is excluded rather than special-cased by name at every call site.
      */
-    private static final Set<String> NOT_A_PRODUCER = Set.of("submit", "shouldLogItem", "shouldLogEntity");
+    private static final Set<String> NOT_A_PRODUCER = Set.of("submit", "shouldLogItem", "shouldLogEntity",
+        // Not producers: a counter and two generic passthroughs that emit whatever
+        // the caller built. They start with "submit" but map to no single ActionType.
+        "submitted", "submitAccepted", "submitAcceptedPair",
+        // An accessor returning the submitter, not a producer.
+        "submitter");
 
     @Test
     void everySubmitterMethodMapsToAtLeastOneRealActionType() {

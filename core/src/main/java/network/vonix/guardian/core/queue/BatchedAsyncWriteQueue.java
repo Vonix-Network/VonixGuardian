@@ -148,6 +148,16 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private volatile boolean shutdown = false;
     private volatile boolean closed = false;
     private volatile boolean paused = false;
+    /**
+     * Set when an unpause must force an immediate flush rather than waiting out the
+     * current flush window.
+     *
+     * <p>Waking the worker alone is not enough: the worker re-enters the normal path
+     * and then waits for {@code remainingNs} of a window that was frozen while
+     * paused. A {@code /vg consumer resume} that leaves rows unwritten for a whole
+     * flush interval looks like it did nothing.</p>
+     */
+    private volatile boolean flushOnResume = false;
     /** Set under {@link #admissionLock}; rejects {@link #offerWrite} during migrate-db. */
     private volatile boolean admissionFrozen = false;
     /**
@@ -756,6 +766,11 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         // /vg consumer pause/resume is an operator command; the resume must be
         // immediate, not up to a flush interval later.
         if (!shutdown && p != wasPaused) {
+            if (!p) {
+                // Resuming: the next iteration must flush what paused left behind,
+                // not wait out a window measured from before the pause began.
+                flushOnResume = true;
+            }
             worker.interrupt();
         }
     }
@@ -796,6 +811,14 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 // reality drainAndFlush was force-flushing what runWorker never had cause
                 // to flush). See Kafka producer linger.ms / log4j2 AsyncAppender for
                 // prior art.
+                if (flushOnResume && !paused) {
+                    flushOnResume = false;
+                    // Move the window origin, not just a local: the flush decision
+                    // below recomputes windowExpired from lastFlushNs, so an override
+                    // of the local elapsed value alone would be discarded and the
+                    // resume would still wait out the full interval.
+                    lastFlushNs = System.nanoTime() - flushIntervalNs;
+                }
                 long elapsedNs = System.nanoTime() - lastFlushNs;
                 long remainingNs = flushIntervalNs - elapsedNs;
                 long pollMs = remainingNs > 0

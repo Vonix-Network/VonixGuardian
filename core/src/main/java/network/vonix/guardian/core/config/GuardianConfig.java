@@ -462,7 +462,14 @@ public record GuardianConfig(
         boolean logDuplicateSuppression,
         boolean logCancelledChat,
         // ---- v1.3.0 W4: kill-switch for hot-tick mixin-sourced events ----
-        boolean mixinHotEvents
+        boolean mixinHotEvents,
+        /**
+         * Action types that are never recorded, by name (e.g. {@code EXPLOSION},
+         * {@code FLUID_FLOW}). The per-category toggles are all-or-nothing, so
+         * silencing one noisy type used to cost the whole category. Absent means
+         * none, which is the pre-2.3.0 behaviour.
+         */
+        List<String> actionTypeBlacklist
     ) {
         public Actions {
             if (worldBlacklist == null) worldBlacklist = List.of();
@@ -471,12 +478,70 @@ public record GuardianConfig(
             if (itemBlacklist == null) itemBlacklist = List.of();
             if (entityBlacklist == null) entityBlacklist = List.of();
             if (entityChangeAllowlist == null) entityChangeAllowlist = List.of();
+            if (actionTypeBlacklist == null) actionTypeBlacklist = List.of();
         }
 
         /**
          * Backward-compat 32-arg constructor for callers/tests written before 2.1.1 added
          * {@code itemBlacklist} and {@code entityBlacklist}.
          */
+        /**
+         * Backward-compat 34-arg constructor for callers written before 2.3.0 added
+         * {@code actionTypeBlacklist}. Delegates with an empty blacklist, which is
+         * exactly the pre-2.3.0 behaviour (every type logged).
+         */
+        @Deprecated(since = "2.3.0")
+        public Actions(
+            boolean logBlocks,
+            boolean logContainers,
+            boolean logItems,
+            boolean logEntities,
+            boolean logExplosions,
+            boolean logChat,
+            boolean logCommands,
+            boolean logSessions,
+            boolean logSigns,
+            boolean logInteractions,
+            boolean logWorldEvents,
+            List<String> worldBlacklist,
+            List<String> blockBlacklist,
+            List<String> sourceBlacklist,
+            List<String> itemBlacklist,
+            List<String> entityBlacklist,
+            long entityBlockChangeCoalesceWindowMs,
+            int entityBlockChangeMaxTracked,
+            List<String> entityChangeAllowlist,
+            boolean entityChangeLogAllEntities,
+            boolean logNaturalBreaks,
+            boolean logTreeGrowth,
+            boolean logMushroomGrowth,
+            boolean logVineGrowth,
+            boolean logSculkSpread,
+            boolean logPortals,
+            boolean logWaterFlow,
+            boolean logLavaFlow,
+            boolean logFireExtinguish,
+            boolean logCampfireStart,
+            boolean logHopperMetaFilter,
+            boolean logDuplicateSuppression,
+            boolean logCancelledChat,
+            boolean mixinHotEvents
+        ) {
+            this(
+                logBlocks, logContainers, logItems, logEntities, logExplosions, logChat,
+                logCommands, logSessions, logSigns, logInteractions, logWorldEvents,
+                worldBlacklist, blockBlacklist, sourceBlacklist,
+                itemBlacklist, entityBlacklist,
+                entityBlockChangeCoalesceWindowMs, entityBlockChangeMaxTracked,
+                entityChangeAllowlist, entityChangeLogAllEntities,
+                logNaturalBreaks, logTreeGrowth, logMushroomGrowth, logVineGrowth,
+                logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
+                logFireExtinguish, logCampfireStart, logHopperMetaFilter,
+                logDuplicateSuppression, logCancelledChat,
+                mixinHotEvents, java.util.List.<String>of()
+            );
+        }
+
         @Deprecated
         public Actions(
             boolean logBlocks,
@@ -523,7 +588,7 @@ public record GuardianConfig(
                 logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
                 logFireExtinguish, logCampfireStart, logHopperMetaFilter,
                 logDuplicateSuppression, logCancelledChat,
-                mixinHotEvents
+                mixinHotEvents, java.util.List.<String>of()
             );
         }
         /**
@@ -669,7 +734,7 @@ public record GuardianConfig(
                 logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
                 logFireExtinguish, logCampfireStart, logHopperMetaFilter,
                 logDuplicateSuppression, logCancelledChat,
-                mixinHotEvents
+                mixinHotEvents, actionTypeBlacklist
             );
         }
 
@@ -690,7 +755,7 @@ public record GuardianConfig(
                 logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
                 logFireExtinguish, logCampfireStart, logHopperMetaFilter,
                 logDuplicateSuppression, logCancelledChat,
-                mixinHotEvents
+                mixinHotEvents, actionTypeBlacklist
             );
         }
 
@@ -711,7 +776,7 @@ public record GuardianConfig(
                 logSculkSpread, logPortals, logWaterFlow, logLavaFlow,
                 logFireExtinguish, logCampfireStart, logHopperMetaFilter,
                 logDuplicateSuppression, logCancelledChat,
-                mixinHotEvents
+                mixinHotEvents, actionTypeBlacklist
             );
         }
     }
