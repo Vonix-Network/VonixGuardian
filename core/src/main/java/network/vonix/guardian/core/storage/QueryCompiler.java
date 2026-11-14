@@ -216,18 +216,35 @@ public final class QueryCompiler {
             binds.add(b.minZ()); binds.add(b.maxZ());
         }
 
-        // action types
+        // action types — the a: selector's sign is resolved here, not just stored.
         if (f.actions() != null && !f.actions().isEmpty()) {
-            Set<Integer> ids = new LinkedHashSet<>();
-            for (QueryFilter.ActionSelect a : f.actions()) {
-                ActionType t = a.type();
-                if (t != null) {
-                    ids.add(t.id());
+            List<QueryFilter.ActionSelect> typed = new ArrayList<>(f.actions().size());
+            for (QueryFilter.ActionSelect sel : f.actions()) {
+                if (sel != null && sel.type() != null) {
+                    typed.add(sel);
                 }
             }
-            if (!ids.isEmpty()) {
-                clauses.add("a.type IN (" + placeholders(ids.size()) + ")");
-                binds.addAll(ids);
+            // An all-null selector list means "any type" — the same as an empty
+            // list. It must not emit a predicate.
+            if (!typed.isEmpty()) {
+                Set<Integer> ids = new LinkedHashSet<>();
+                for (QueryFilter.ActionSelect sel : typed) {
+                    if (signAdmits(sel)) {
+                        ids.add(sel.type().id());
+                    }
+                }
+                if (ids.isEmpty()) {
+                    // Every selector named a direction its action type does not
+                    // have (e.g. BLOCK_BREAK with PLACE_ONLY). Ignoring the sign
+                    // here — as this compiler used to — turned a place-only
+                    // filter into an unconstrained one, i.e. it widened. Fail
+                    // closed on an impossible predicate instead; {@code 1 = 0}
+                    // is portable across SQLite, MySQL and PostgreSQL.
+                    clauses.add("1 = 0");
+                } else {
+                    clauses.add("a.type IN (" + placeholders(ids.size()) + ")");
+                    binds.addAll(ids);
+                }
             }
         }
 
@@ -259,6 +276,43 @@ public final class QueryCompiler {
         if (!clauses.isEmpty()) {
             sb.append(" WHERE ").append(String.join(" AND ", clauses));
         }
+    }
+
+    /**
+     * Whether an {@code a:} selector's direction modifier admits its resolved
+     * {@link ActionType}.
+     *
+     * <p>The parser records the typed {@code +} / {@code -} prefix as
+     * {@link QueryFilter.ActionSelect.Sign}. Until this method existed nothing
+     * read it: {@code a:+block} selected every {@code BLOCK} row instead of only
+     * placements. Each {@link ActionType} already declares its own direction, so
+     * a selector is admitted when the two agree:
+     * <ul>
+     *   <li>{@code ANY} — always admitted; the bare token names the type.</li>
+     *   <li>{@code PLACE_ONLY} — admitted only for a type whose own sign is
+     *       {@link ActionType.Sign#PLACE}.</li>
+     *   <li>{@code BREAK_ONLY} — admitted only for a type whose own sign is
+     *       {@link ActionType.Sign#BREAK}.</li>
+     * </ul>
+     *
+     * <p>A {@link ActionType.Sign#NEUTRAL} type (chat, kill, click, …) is
+     * admitted by neither explicit direction: it is not a place and not a
+     * break, so {@code a:+chat} must not silently mean {@code a:chat}.
+     *
+     * @param sel selector to test; must be non-null with a non-null type
+     * @return {@code true} when the selector's direction matches the type's
+     */
+    static boolean signAdmits(QueryFilter.ActionSelect sel) {
+        QueryFilter.ActionSelect.Sign sign = sel.sign();
+        if (sign == null || sign == QueryFilter.ActionSelect.Sign.ANY) {
+            return true;
+        }
+        ActionType.Sign typeSign = sel.type().sign();
+        return switch (sign) {
+            case PLACE_ONLY -> typeSign == ActionType.Sign.PLACE;
+            case BREAK_ONLY -> typeSign == ActionType.Sign.BREAK;
+            default -> true;
+        };
     }
 
     private static void appendIncludeClause(List<String> clauses, List<Object> binds, List<String> values) {
