@@ -4,11 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,104 +54,96 @@ class LookupPermissionFilterTest {
                 "minecraft:overworld", 0, 64, 0, "minecraft:stone", null, 1, false, null);
     }
 
-    // --- We use the package-private test hook: since PermissionResolver is final, we
-    //     verify the filter with a real resolver where fallback grants everything, and
-    //     then a resolver where fallback denies everything. Per-child selective grants
-    //     are validated by exercising fall-open vs strict paths on rows of different
-    //     ActionTypes, since childForAction is pure.
-
     @Test
-    void nullResolverOrFamilyOrRowsRejected() {
-        assertThatThrownBy(() -> LookupPermissionFilter.filter(null, USER, PermissionNode.LOOKUP, List.of()))
+    void visiblePageRejectsNullArgumentsAndNonPositivePages() {
+        PermissionResolver r = fakeResolver(4);
+        GuardianDao dao = mock(GuardianDao.class);
+        assertThatThrownBy(() -> LookupPermissionFilter.visiblePage(
+                null, r, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 7))
                 .isInstanceOf(IllegalArgumentException.class);
-        PermissionResolver r = fakeResolver(4);
-        assertThatThrownBy(() -> LookupPermissionFilter.filter(r, USER, null, List.of()))
+        assertThatThrownBy(() -> LookupPermissionFilter.visiblePage(
+                dao, null, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 7))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, null))
+        assertThatThrownBy(() -> LookupPermissionFilter.visiblePage(
+                dao, r, USER, null, QueryFilter.empty(), 1, 7))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LookupPermissionFilter.visiblePage(
+                dao, r, USER, PermissionNode.LOOKUP, null, 1, 7))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LookupPermissionFilter.visiblePage(
+                dao, r, USER, PermissionNode.LOOKUP, QueryFilter.empty(), 0, 7))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void consoleBypass_returnsAllRows() {
-        PermissionResolver r = fakeResolver(4);
-        List<Action> rows = Arrays.asList(a(1, ActionType.CHAT), a(2, ActionType.BLOCK_PLACE));
-        List<Action> out = LookupPermissionFilter.filter(r, null, PermissionNode.LOOKUP, rows);
-        assertThat(out).hasSize(2);
+    void visiblePageConsoleBypassLeavesTheDaoFilterUnrestricted() throws Exception {
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(0), any(Integer.class)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(a(41, ActionType.CHAT)), false));
+        when(dao.queryPageForDisplay(any(QueryFilter.class), org.mockito.ArgumentMatchers.eq(1), any(Integer.class)))
+                .thenReturn(new GuardianDao.QueryPage(List.of(), false));
+
+        LookupPermissionFilter.VisiblePage page = LookupPermissionFilter.visiblePage(
+                dao, fakeResolver(0), null, PermissionNode.LOOKUP, QueryFilter.empty(), 1, 7);
+
+        assertThat(page.rows()).extracting(Action::id).containsExactly(41L);
+        ArgumentCaptor<QueryFilter> captor = ArgumentCaptor.forClass(QueryFilter.class);
+        verify(dao).queryPageForDisplay(
+                captor.capture(), org.mockito.ArgumentMatchers.eq(0), any(Integer.class));
+        assertThat(captor.getValue().actions()).isEmpty();
     }
 
     @Test
-    void resolverGrantsEverything_allRowsSurvive() {
-        // Fallback returns opLevel 4 → passes every default. All child nodes granted.
-        PermissionResolver r = fakeResolver(4);
-        List<Action> rows = Arrays.asList(
-                a(1, ActionType.BLOCK_PLACE),
-                a(2, ActionType.CHAT),
-                a(3, ActionType.COMMAND),
-                a(4, ActionType.CONTAINER_DEPOSIT),
-                a(5, ActionType.ITEM_DROP),
-                a(6, ActionType.ENTITY_KILL),
-                a(7, ActionType.SESSION_JOIN),
-                a(8, ActionType.SIGN),
-                a(9, ActionType.EXPLOSION));
-        List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, rows);
-        assertThat(out).hasSize(9);
-    }
-
-    @Test
-    void resolverDeniesAll_onlyFallOpenRowsSurvive() {
-        // Fallback returns 0 → denies every child. Only rows whose childForAction returns the
-        // family itself (fall-open) survive.
+    void rollbackFamilyFallsOpenForTypesWithNoDedicatedChildNode() throws Exception {
+        // CHAT/EXPLOSION/ENTITY_KILL/SESSION_JOIN have no ROLLBACK_* child, so
+        // childForAction returns the ROLLBACK family itself and the row survives
+        // even for a source that fails every child probe. BLOCK/CONTAINER/ITEM do
+        // have dedicated children and must be dropped.
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.count(any(QueryFilter.class))).thenReturn(3L);
         GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
-        PermissionResolver r = new PermissionResolver(cfg, uuid -> 0);
+        PermissionResolver denied = new PermissionResolver(cfg, uuid -> 0);
 
-        List<Action> rows = Arrays.asList(
-                a(1, ActionType.BLOCK_PLACE),      // childForAction → LOOKUP_BLOCK → denied
-                a(2, ActionType.EXPLOSION),        // WORLD → fall-open → survives
-                a(3, ActionType.CLICK));           // dedicated LOOKUP_CLICK → denied
-        List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, rows);
+        LookupPermissionFilter.countVisible(
+                dao, denied, USER, PermissionNode.ROLLBACK, QueryFilter.empty());
 
-        assertThat(out).extracting(Action::id).containsExactly(2L);
+        ArgumentCaptor<QueryFilter> captor = ArgumentCaptor.forClass(QueryFilter.class);
+        verify(dao, times(1)).count(captor.capture());
+        Set<ActionType> counted = new HashSet<>();
+        for (QueryFilter.ActionSelect select : captor.getValue().actions()) {
+            counted.add(select.type());
+        }
+        assertThat(counted).contains(
+                ActionType.CHAT, ActionType.EXPLOSION, ActionType.ENTITY_KILL, ActionType.SESSION_JOIN);
+        assertThat(counted).doesNotContain(
+                ActionType.BLOCK_PLACE, ActionType.CONTAINER_DEPOSIT, ActionType.ITEM_DROP);
     }
 
     @Test
-    void opLevelTwoLookupKeepsBlockButHidesChatAndCommandChildRows() {
-        // Regression for the legacy string path: LOOKUP itself and LOOKUP_BLOCK
-        // default to op level 2, but LOOKUP_CHAT / LOOKUP_COMMAND default to 3.
-        // The filter must therefore pass the child PermissionNode object through
-        // the resolver, not convert it to a string and fall back to defaultOpLevel=2.
+    void countVisibleProbesEachChildBucketOnceAcrossEveryActionType() throws Exception {
+        AtomicInteger probes = new AtomicInteger();
         GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
-        PermissionResolver r = new PermissionResolver(cfg, uuid -> 2);
+        PermissionResolver resolver = new PermissionResolver(cfg, uuid -> {
+            probes.incrementAndGet();
+            return 2;
+        });
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.count(any(QueryFilter.class))).thenReturn(1L);
 
-        List<Action> rows = Arrays.asList(
-                a(1, ActionType.BLOCK_PLACE),
-                a(2, ActionType.CHAT),
-                a(3, ActionType.COMMAND));
-        List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, rows);
+        LookupPermissionFilter.countVisible(
+                dao, resolver, USER, PermissionNode.LOOKUP, QueryFilter.empty());
 
-        assertThat(out).extracting(Action::id).containsExactly(1L);
+        // One resolver probe per distinct child node, not one per ActionType.
+        Set<PermissionNode> buckets = new HashSet<>();
+        for (ActionType type : ActionType.values()) {
+            PermissionNode child = PermissionNode.childForAction(PermissionNode.LOOKUP, type);
+            if (child != PermissionNode.LOOKUP) {
+                buckets.add(child);
+            }
+        }
+        assertThat(probes.get()).isEqualTo(buckets.size());
+        assertThat(probes.get()).isLessThan(ActionType.values().length);
     }
-
-    @Test
-    void rollbackFamily_messageRows_fallOpen() {
-        // CHAT under ROLLBACK family: childForAction returns ROLLBACK (no rollback-of-chat
-        // scoping in CP). Even when resolver denies, message rows survive under ROLLBACK.
-        GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
-        PermissionResolver r = new PermissionResolver(cfg, uuid -> 0);
-
-        List<Action> rows = Arrays.asList(
-                a(1, ActionType.CHAT),
-                a(2, ActionType.BLOCK_PLACE));   // → ROLLBACK_BLOCK → denied
-        List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.ROLLBACK, rows);
-        assertThat(out).extracting(Action::id).containsExactly(1L);
-    }
-
-    @Test
-    void emptyRowsInEmptyRowsOut() {
-        PermissionResolver r = fakeResolver(4);
-        List<Action> out = LookupPermissionFilter.filter(r, USER, PermissionNode.LOOKUP, new ArrayList<>());
-        assertThat(out).isEmpty();
-    }
-
     @Test
     void countVisibleCountsOnlyPermittedChildBucketsWithoutFetchingRows() throws Exception {
         PermissionResolver resolver = fakeResolver(2);
@@ -279,28 +268,31 @@ class LookupPermissionFilterTest {
     }
 
     @Test
-    void filterCachesChildPermissionProbesAcrossRowsOfTheSameType() {
+    void countVisibleNeverProbesTheResolverForFallOpenTypes() throws Exception {
         AtomicInteger probes = new AtomicInteger();
         GuardianConfig.Permissions cfg = new GuardianConfig.Permissions(false, 2, java.util.Map.of());
         PermissionResolver resolver = new PermissionResolver(cfg, uuid -> {
             probes.incrementAndGet();
             return 2;
         });
-        List<Action> rows = new ArrayList<>();
-        for (int i = 0; i < 8; i++) {
-            rows.add(a(i, ActionType.BLOCK_PLACE));
-            rows.add(a(100 + i, ActionType.CHAT));
-            rows.add(a(200 + i, ActionType.EXPLOSION));
-        }
+        GuardianDao dao = mock(GuardianDao.class);
+        when(dao.count(any(QueryFilter.class))).thenReturn(11L);
+        // EXPLOSION is Category.WORLD, which has no LOOKUP_* child, so
+        // childForAction falls open to the LOOKUP family itself.
+        QueryFilter worldOnly = QueryFilter.builder()
+                .addAction(new QueryFilter.ActionSelect(ActionType.EXPLOSION, QueryFilter.ActionSelect.Sign.ANY))
+                .build();
 
-        List<Action> out = LookupPermissionFilter.filter(resolver, USER, PermissionNode.LOOKUP, rows);
+        long visible = LookupPermissionFilter.countVisible(
+                dao, resolver, USER, PermissionNode.LOOKUP, worldOnly);
 
-        assertThat(out).extracting(Action::type)
-                .containsOnly(ActionType.BLOCK_PLACE, ActionType.EXPLOSION);
-        assertThat(out).hasSize(16);
-        // One probe per distinct child (LOOKUP_BLOCK, LOOKUP_CHAT). Fall-open
-        // EXPLOSION rows do not consult the resolver.
-        assertThat(probes.get()).isEqualTo(2);
+        assertThat(visible).isEqualTo(11L);
+        assertThat(probes.get()).isZero();
+        ArgumentCaptor<QueryFilter> captor = ArgumentCaptor.forClass(QueryFilter.class);
+        verify(dao, times(1)).count(captor.capture());
+        assertThat(captor.getValue().actions())
+                .extracting(QueryFilter.ActionSelect::type)
+                .containsExactly(ActionType.EXPLOSION);
     }
 
     @Test

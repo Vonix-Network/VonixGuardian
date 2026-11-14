@@ -25,6 +25,10 @@ import network.vonix.guardian.core.storage.GuardianDao;
  * matches CoreProtect's contract of "hide what you can't see" rather than
  * throwing a permission error mid-page.</p>
  *
+ * <p>The permitted types are pushed into the SQL predicate rather than being
+ * applied to an already-materialized row list, so a denied type never occupies
+ * a visible page slot. See {@link #visiblePage} and {@link #countVisible}.</p>
+ *
  * @since 1.1.7 (W3-B7)
  */
 public final class LookupPermissionFilter {
@@ -37,47 +41,8 @@ public final class LookupPermissionFilter {
     }
 
     /**
-     * Filter {@code rows} down to those the given source may see.
-     *
-     * @param resolver live resolver (must not be {@code null})
-     * @param uuid     player UUID; {@code null} = console (bypasses all child checks)
-     * @param family   coarse family node ({@link PermissionNode#LOOKUP},
-     *                 {@link PermissionNode#ROLLBACK}, {@link PermissionNode#RESTORE})
-     * @param rows     raw result rows (must not be {@code null}; may be empty)
-     * @return a new list containing only rows whose child node is granted
-     */
-    public static List<Action> filter(
-            PermissionResolver resolver,
-            UUID uuid,
-            PermissionNode family,
-            List<Action> rows) {
-        if (resolver == null) {
-            throw new IllegalArgumentException("resolver must not be null");
-        }
-        if (family == null) {
-            throw new IllegalArgumentException("family must not be null");
-        }
-        if (rows == null) {
-            throw new IllegalArgumentException("rows must not be null");
-        }
-        // Console bypass: consoles hold the family node by default op level;
-        // don't run n further probes.
-        if (uuid == null) {
-            return new ArrayList<>(rows);
-        }
-        Map<PermissionNode, Boolean> granted = new EnumMap<>(PermissionNode.class);
-        List<Action> out = new ArrayList<>(rows.size());
-        for (Action a : rows) {
-            if (isVisibleType(resolver, uuid, family, a.type(), granted)) {
-                out.add(a);
-            }
-        }
-        return out;
-    }
-
-    /**
      * Counts only rows visible under the same child-permission rules as
-     * {@link #filter(PermissionResolver, UUID, PermissionNode, List)}.
+     * {@link #visiblePage(GuardianDao, PermissionResolver, UUID, PermissionNode, QueryFilter, int, int)}.
      * Counts stay database-side: one bounded SQL COUNT of the permitted
      * action types, so unrestricted lookups do not issue one COUNT per
      * child-permission bucket. Denied child buckets are omitted from the
