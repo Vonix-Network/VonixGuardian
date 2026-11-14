@@ -1021,13 +1021,21 @@ public final class GuardianCommands {
         return MutationOutcomeFormatter.sortByCount(labelled);
     }
 
-    /** Operator wording for one skip reason; mirrors RollbackResult.skipReasonDetail. */
+    /**
+     * Operator wording for one skip reason.
+     *
+     * <p>Labels carry no comma: {@code MutationOutcomeFormatter} joins reasons
+     * with {@code ", "} inside a parenthetical, so a comma in a label made two
+     * reasons read as three. The wording matches
+     * {@code RollbackResult.skipReasonDetail} closely enough to compare, without
+     * its parenthetical commas.</p>
+     */
     private static String reasonLabel(RollbackResult.SkipReason reason) {
         if (reason == null) {
             return "reason not recorded";
         }
         return switch (reason) {
-            case AUDIT_ONLY -> "chat/session, nothing to undo";
+            case AUDIT_ONLY -> "audit-only chat/session";
             case UNTRACKED_STATE -> "state not tracked";
             case SUPERSEDED_POSITION -> "superseded by a newer edit";
             case UNSUPPORTED_ENTITY -> "entity restore unsupported";
