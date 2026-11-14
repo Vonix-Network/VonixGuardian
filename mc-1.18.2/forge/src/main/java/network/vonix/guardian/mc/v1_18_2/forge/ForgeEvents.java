@@ -413,7 +413,16 @@ public final class ForgeEvents {
                 }
                 idx++;
             }
+            // getSourceMob() returns the source only when it is a LivingEntity.
+            // A dragon's breath blast, a fireball and most modded explosions are
+            // created by a non-living entity (or by a projectile whose owner is the
+            // mount), so getSourceMob() is null and attribution fell through to
+            // "unknown" with a player visibly riding the thing that did it.
+            // getExploder() returns the raw source entity regardless of type.
             Entity source = ev.getExplosion().getSourceMob();
+            if (source == null) {
+                source = ev.getExplosion().getExploder();
+            }
             // v1.3.1 X7: PrimedTnt loses its igniter by the time
             // ExplosionEvent.Detonate fires. Consult TntPrimeMemory
             // (populated by Y2 event-bus handlers onTntRightClickPrime /
@@ -1350,8 +1359,12 @@ public final class ForgeEvents {
         if (!"fire".equals(prevCat) && "fire".equals(curCat)) {
             FireCauserResolution r = resolveFire(level, pos);
             if (r.suppress) return; // orphan fire from a non-allowlisted entity
+            // Rollback of an ignite removes the fire and puts back what was there.
+            // Recording curId (fire) as the target made rollback try to RE-PLACE
+            // fire over the burnt-away ground, which fails or is plainly wrong —
+            // the correct target is the block the fire consumed, prevId.
             s.submitIgnite(r.actorUuid, r.actorName != null ? r.actorName : Sentinel.FIRE, worldId,
-                    x, y, z, curId, r.sourceTag != null ? r.sourceTag : "#fire:ignite");
+                    x, y, z, prevId, r.sourceTag != null ? r.sourceTag : "#fire:ignite");
             return;
         }
         // FADE — ice/snow -> water/air (melt)

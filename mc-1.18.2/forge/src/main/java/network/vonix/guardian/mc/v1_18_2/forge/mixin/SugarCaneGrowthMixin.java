@@ -14,6 +14,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.Random;
+import network.vonix.guardian.mc.v1_18_2.forge.support.MixinLoggingSupport;
 
 /**
  * Sugar cane growth — {@code SugarCaneBlock#randomTick} increases {@code age} and,

@@ -44,6 +44,11 @@ public final class ForgeMixinBridge {
 
     private ForgeMixinBridge() {}
 
+    /** @return the live Guardian, or {@code null} before boot and after shutdown */
+    public static network.vonix.guardian.core.Guardian guardianOrNull() {
+        return network.vonix.guardian.mc.v1_18_2.forge.VonixGuardianForge.guardian();
+    }
+
     private static EventSubmitter sub() {
         Guardian g = VonixGuardianForge.guardian();
         return g == null ? null : g.submitter();
@@ -143,6 +148,56 @@ public final class ForgeMixinBridge {
     }
 
     // ================================================================== v1.3.1 X4 dispatchers
+
+    /**
+     * A block write that no event or mixer layer accounted for.
+     *
+     * <p>Reached only from {@code BlockWriteHook} when nothing known is in progress,
+     * which means the write came from a path we do not instrument — a modded
+     * explosion, a custom machine, a dragon's breath, a terrain-swapping teleport.
+     * Before this existed such changes were simply absent from the log, so a rollback
+     * could not undo them and an operator investigating a griefed base saw nothing.</p>
+     *
+     * <p>Recorded as a break or a place depending on which way the state moved, with
+     * the block id that a rollback needs to invert it. Attribution is
+     * {@link Sentinel#UNKNOWN}: the truthful answer, because this layer genuinely does
+     * not know who did it, and inventing an actor would be worse than admitting it.</p>
+     *
+     * @param worldId  dimension key
+     * @param x        block x
+     * @param y        block y
+     * @param z        block z
+     * @param previous state that was there
+     * @param next     state being written
+     */
+    public static void onUnattributedBlockChange(String worldId, int x, int y, int z,
+                                                 BlockState previous, BlockState next) {
+        try {
+            EventSubmitter s = sub();
+            if (s == null) return;
+            boolean wasAir = previous.isAir();
+            boolean isAir = next.isAir();
+            if (wasAir && !isAir) {
+                // Something appeared where there was nothing: a place.
+                s.submitBlockPlace(null, Sentinel.UNKNOWN, worldId, x, y, z,
+                    blockId(next), Sentinel.UNKNOWN);
+            } else if (!wasAir && isAir) {
+                // Something vanished: a break. Record the block that was destroyed so
+                // a rollback can put it back.
+                s.submitBlockBreak(null, Sentinel.UNKNOWN, worldId, x, y, z,
+                    blockId(previous), Sentinel.UNKNOWN);
+            }
+            // A non-air to non-air change (stone to cobble, log to planks) is a
+            // replacement. It is recorded as a break of the old block; the place of the
+            // new one is implied and would otherwise double every shape-change row.
+            else {
+                s.submitBlockBreak(null, Sentinel.UNKNOWN, worldId, x, y, z,
+                    blockId(previous), Sentinel.UNKNOWN);
+            }
+        } catch (Throwable t) {
+            warn("onUnattributedBlockChange", t);
+        }
+    }
 
     /** v1.3.1 X4 — Hopper push (item moved into a container). */
     public static void hopperPush(Level level, BlockPos pos, ItemStack stack) {

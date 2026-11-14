@@ -21,6 +21,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import network.vonix.guardian.mc.v1_18_2.forge.support.AnvilPositions;
 
 /**
  * Records a completed anvil operation (repair, enchant merge, or rename) as an

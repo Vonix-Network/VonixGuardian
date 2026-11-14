@@ -20,6 +20,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.Map;
+import network.vonix.guardian.mc.v1_18_2.forge.support.MixinAuditSupport;
 
 /**
  * Axe wax-off (scrape) producer.

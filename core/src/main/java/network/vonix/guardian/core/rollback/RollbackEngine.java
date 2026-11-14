@@ -117,6 +117,18 @@ public final class RollbackEngine {
      */
     public static final int MAX_TNT_REACH = 16;
 
+    /**
+     * Share of an explosion row's blocks that may fail to restore before the row is
+     * escalated to repair-required.
+     *
+     * <p>A handful of positions in a blast are routinely unplaceable — another mod
+     * claimed them, a player refilled them, a fluid flowed back. Treating any single
+     * miss as a failure meant a rollback of a large griefing incident could never
+     * report success: every blast row became REPAIR_REQUIRED and the batch stayed
+     * open. Escalate only when a real share of the row is unaccounted for.</p>
+     */
+    static final int SEVERE_EXPLOSION_FAILURE_PERCENT = 25;
+
     private final GuardianDao dao;
     private final WorldMutator mutator;
     private final Executor mainThreadExecutor;
@@ -2135,15 +2147,42 @@ public final class RollbackEngine {
                 applied++;
             } else {
                 allOk = false;
+                LOG.debug("RollbackEngine: explosion row id={} could not restore {} of {} "
+                        + "block(s) at {},{},{} — usually a position another mod or a "
+                        + "player already changed", a.id(), list.entries().size() - applied,
+                    list.entries().size(), e.x(), e.y(), e.z());
             }
         }
-        if (!allOk && applied > 0) {
-            throw new PartialExplosionMutationException(
-                "explosion row id=" + a.id() + " restored " + applied + " of " + total
-                    + " block(s); the remaining coords still carry blast damage",
-                applied, total);
+        // An explosion touches up to ~96 positions in one row. A handful that will
+        // not place — a block another mod claimed, a position a player already
+        // refilled, a fluid that immediately flows back — is normal. Demanding 96/96
+        // turned every large blast into REPAIR_REQUIRED and left the batch open, so
+        // a rollback of a serious griefing incident could never report success.
+        //
+        // Only a genuinely bad outcome is escalated: nothing restored at all, or a
+        // large share of the row unaccounted for.
+        if (!allOk) {
+            int total_ = list.entries().size();
+            int failed_ = total_ - applied;
+            if (applied == 0) {
+                // Nothing changed at all: this is an ordinary failure, not a repair
+                // gap. The row can be retried as-is and there is no half-restored
+                // state for an operator to reconcile.
+                return false;
+            }
+            boolean severe = total_ > 0
+                && failed_ * 100L / total_ > SEVERE_EXPLOSION_FAILURE_PERCENT;
+            if (severe) {
+                throw new PartialExplosionMutationException(
+                    "explosion row id=" + a.id() + " restored only " + applied + " of " + total_
+                        + " block(s); " + failed_ + " position(s) still carry blast damage",
+                    applied, total_);
+            }
+            LOG.warn("RollbackEngine: explosion row id={} restored {}/{} block(s); {} position(s) "
+                    + "are already in a different state and were left alone",
+                a.id(), applied, total_, failed_);
         }
-        return allOk;
+        return true;
     }
 
     /**

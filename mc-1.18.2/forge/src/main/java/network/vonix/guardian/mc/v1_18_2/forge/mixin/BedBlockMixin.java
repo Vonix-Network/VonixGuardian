@@ -18,6 +18,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import network.vonix.guardian.mc.v1_18_2.forge.support.MixinAuditSupport;
 
 /**
  * Bed producers — the two removals vanilla performs with no break event.

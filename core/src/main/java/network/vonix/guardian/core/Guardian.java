@@ -413,6 +413,20 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     public EventSubmitter submitter()      { return this; }
 
     /**
+     * Positions the attributed event layer has just recorded.
+     *
+     * <p>Consulted by the low-level block-write hook so a change that already produced
+     * an attributed row is not written a second time as {@code UNKNOWN}.</p>
+     */
+    private final network.vonix.guardian.core.rollback.RecentBlockWrites recentBlockWrites =
+        new network.vonix.guardian.core.rollback.RecentBlockWrites();
+
+    /** @return the suppression record shared with the loader's write hook */
+    public network.vonix.guardian.core.rollback.RecentBlockWrites recentBlockWrites() {
+        return recentBlockWrites;
+    }
+
+    /**
      * Public, version-stable Java API surface (W3-B12+B13). The default impl
      * ({@link GuardianAPI}) is constructed lazily on first access and cached
      * for the lifetime of this Guardian. Consumer mods should obtain this via
@@ -961,6 +975,13 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
         // callers may construct Actions directly, so command privacy must be
         // enforced before either gating or queueing can retain the payload.
         a = CommandPayloadSanitizer.sanitizeForPersistence(a);
+        // Remember attributed block changes so the loader's low-level write hook does
+        // not record the same position a second time as UNKNOWN. Done here because
+        // every attributed action passes through this method - one place instead of
+        // forty event handlers, none of which can be forgotten as handlers are added.
+        if (a.type() != null && a.type().category() == network.vonix.guardian.core.action.ActionType.Category.BLOCK) {
+            recentBlockWrites.record(a.worldId(), a.x(), a.y(), a.z(), System.currentTimeMillis());
+        }
         if (a.hasOversizedNbt()) {
             LOG.debug(MARKER,
                     "rejecting oversized NBT action type={} blockEntityBytes={} itemBytes={} entityBytes={}",

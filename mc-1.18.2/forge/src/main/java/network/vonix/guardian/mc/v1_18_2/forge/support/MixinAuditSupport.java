@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Vonix Network
  * Licensed under the MIT License.
  */
-package network.vonix.guardian.mc.v1_18_2.forge.mixin;
+package network.vonix.guardian.mc.v1_18_2.forge.support;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;

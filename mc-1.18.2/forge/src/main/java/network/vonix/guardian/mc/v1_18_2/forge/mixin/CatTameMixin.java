@@ -13,6 +13,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import network.vonix.guardian.mc.v1_18_2.forge.support.MixinLoggingSupport;
 
 /**
  * Cat taming — {@code Cat#mobInteract} calls {@code tame(Player)} on a successful

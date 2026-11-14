@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Vonix Network
  * Licensed under the MIT License.
  */
-package network.vonix.guardian.mc.v1_18_2.forge.mixin;
+package network.vonix.guardian.mc.v1_18_2.forge.support;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.inventory.ContainerLevelAccess;
@@ -19,7 +19,7 @@ import net.minecraft.world.level.Level;
  * through a class that does not exist at runtime. Keeping the lambda in an
  * ordinary class avoids the whole problem.
  */
-final class AnvilPositions {
+public final class AnvilPositions {
 
     private AnvilPositions() {
     }
@@ -30,7 +30,7 @@ final class AnvilPositions {
      * @return the immutable anvil position, or {@code null} when the access
      *         carries no server-side position
      */
-    static BlockPos resolve(ContainerLevelAccess access) {
+    public static BlockPos resolve(ContainerLevelAccess access) {
         if (access == null) {
             return null;
         }
