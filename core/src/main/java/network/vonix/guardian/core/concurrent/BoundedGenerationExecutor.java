@@ -161,21 +161,38 @@ public final class BoundedGenerationExecutor implements Executor {
                 completeNow = true;
             } else {
                 if (terminationWatcher != null && terminationWatcher.isAlive()) return;
-                Thread watcher = new Thread(() -> {
-                    try {
-                        old.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
-                        if (old.isTerminated()) completeGeneration(old);
-                    } catch (InterruptedException ex) {
-                        Thread.currentThread().interrupt();
-                        LOG.log(Level.WARNING, threadName + " termination watcher interrupted; generation remains closed", ex);
-                    }
-                }, threadName + "-shutdown-watcher");
+                Thread watcher = new Thread(() -> awaitAndComplete(old), threadName + "-shutdown-watcher");
                 watcher.setDaemon(true);
                 terminationWatcher = watcher;
                 watcher.start();
             }
         }
         if (completeNow) {
+            completeGeneration(old);
+        }
+    }
+
+    /**
+     * Wait for {@code old} to terminate, then run the deferred callbacks.
+     *
+     * <p>A stray interrupt must not be treated as cancellation. The callbacks in
+     * {@link #deferredTerminationCallbacks} include the resource-close chain
+     * ({@code Guardian.close()} drains the write queue and closes the DAO). If the
+     * watcher abandons its wait on an interrupt, that chain never runs, admission
+     * stays closed, and the pool is stranded for the life of the JVM &mdash; a
+     * shutdown that silently loses its tail. Retry until the pool is terminated.</p>
+     */
+    private void awaitAndComplete(ThreadPoolExecutor old) {
+        for (;;) {
+            try {
+                old.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+                break;
+            } catch (InterruptedException ex) {
+                LOG.log(Level.FINE, threadName
+                        + " termination watcher interrupted; resuming wait so deferred callbacks still run", ex);
+            }
+        }
+        if (old.isTerminated()) {
             completeGeneration(old);
         }
     }
