@@ -64,8 +64,8 @@ class RollbackExpansionParityTest {
             ActionType.DISPENSE,
             ActionType.PISTON_EXTEND,
             ActionType.PISTON_RETRACT,
-            ActionType.ITEM_DROP,
-            ActionType.ITEM_PICKUP,
+            // ITEM_DROP / ITEM_PICKUP are reversible as of 2.3.0 — removed from this
+            // list deliberately, not silently. See RollbackEngineTest#itemDropAndPickupAreNowReversible.
             ActionType.ITEM_CRAFT,
             ActionType.FORM,
             ActionType.SPREAD,

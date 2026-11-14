@@ -1437,12 +1437,33 @@ public final class RollbackEngine {
         }
     }
 
+    /**
+     * Mark every action from {@code start} onward as not applied.
+     *
+     * <p>When {@code anythingAlreadyApplied} is true the world is already half
+     * changed, so an unapplied row is {@code REPAIR_REQUIRED}, not a plain
+     * {@code FAILED}: the operator has to be able to find and finish the gap.
+     * Reporting these as ordinary failures is what let a partially applied
+     * explosion disappear from `vg_repair_required` entirely.</p>
+     */
     private static void appendFailed(List<WorldMutationResult> outcomes,
                                      List<Action> ordered,
                                      int start,
                                      Throwable failure) {
+        appendFailed(outcomes, ordered, start, failure, false);
+    }
+
+    private static void appendFailed(List<WorldMutationResult> outcomes,
+                                     List<Action> ordered,
+                                     int start,
+                                     Throwable failure,
+                                     boolean anythingAlreadyApplied) {
         for (int i = start; i < ordered.size(); i++) {
-            outcomes.add(WorldMutationResult.failed(ordered.get(i).id(), failure));
+            long id = ordered.get(i).id();
+            outcomes.add(anythingAlreadyApplied
+                ? WorldMutationResult.repairRequired(id, ordered.get(i).pairId(),
+                    new IllegalStateException("not applied after an earlier row changed the world", failure))
+                : WorldMutationResult.failed(id, failure));
         }
     }
 

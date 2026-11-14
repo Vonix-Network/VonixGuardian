@@ -20,15 +20,18 @@ Everywhere a `<filters>` argument appears, the same parser is used. Filters comp
 |---|---|---|
 | `u:<users>`  | `u:Steve`, `u:Steve,Alex`, `u:#mob:zombie`, `u:#natural` | Actor (player names or `#sentinel` tokens for non-player) |
 | `t:<time>`   | `t:1h`, `t:30m`, `t:1d12h`, `t:2w` | Time window back from now (suffixes: `s/m/h/d/w`) |
-| `r:<radius>` | `r:50`, `r:10`, `r:global` | Radius (blocks) from the executing player's position. `global` = unbounded |
+| `r:<radius>` | `r:50`, `r:10`, `r:#global`, `r:#world_nether` | Radius (blocks) from the executing player's position. `#global` = unbounded. `#world_<key>` scopes to a dimension |
 | `a:<action>` | `a:block`, `a:+block`, `a:-container`, `a:explosion,kill` | Action filter (see Action types below). `+` includes only; `-` excludes |
 | `i:<incl>`   | `i:minecraft:diamond_ore`, `i:create:andesite_alloy` | Include only these target IDs (block, item, entity) |
 | `e:<excl>`   | `e:minecraft:leaves`, `e:minecraft:air` | Exclude these target IDs |
-| `w:<world>`  | `w:overworld`, `w:the_nether` | World filter |
-| `#preview`   | — | Don't commit (preview a rollback in glass blocks) |
+| `#preview`   | — | Report what would change. **Does not modify the world and does not paint blocks** |
 | `#count`     | — | Don't return rows; return aggregate counts |
-| `#verbose`   | — | Include raw NBT in output |
+| `#verbose`   | — | Add slot, source, paired row and block state to each row |
 | `#silent`    | — | Don't broadcast to other staff |
+| `#optimize`  | — | (purge only) run storage maintenance after the delete |
+
+> There is no `w:` token. World scoping is `r:#world_<key>` or the dimension
+> shorthands `r:#overworld`, `r:#nether`, `r:#end`.
 
 ### Action types
 
@@ -85,19 +88,21 @@ Did Alex break/place anything in the last 3 days within 200 blocks of me.
 ### "Roll back a known griefer"
 
 ```
-/vg rollback u:Griefer t:24h r:global #preview
+/vg rollback u:Griefer t:24h r:#global #preview
 ```
-Place glass blocks where the rollback WOULD reverse — don't commit.
+Reports how many changes would be applied and a sample of the affected rows.
+**Nothing in the world changes** — there are no preview blocks to look at.
 
 ```
-/vg rollback u:Griefer t:24h r:global
+/vg rollback u:Griefer t:24h r:#global
 ```
-Commit the rollback.
+Apply the rollback.
 
 ```
 /vg undo
 ```
-Revert that rollback if you change your mind. (`undo` only undoes YOUR last rollback/restore.)
+Reverse that rollback if you change your mind. `undo` only reverses **your own** last
+rollback or restore, and it re-applies changes to the world a second time.
 
 ### "Find when a chest was last opened"
 

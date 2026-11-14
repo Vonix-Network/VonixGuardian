@@ -263,14 +263,15 @@ public final class PurgeEngine {
      * @param reason    {@code null} when {@code remaining} is zero; otherwise why
      *                  rows remain or why the count is unavailable
      */
-    public record OrphanReport(boolean scanned, long remaining, String reason) {
+    public record OrphanReport(boolean scanned, long remaining, long reclaimed, long scannedOwners,
+                               long reclaimedOwners, String reason) {
 
         /** Sentinel for "the backend could not measure". */
         public static final long UNKNOWN = ORPHAN_COUNT_UNKNOWN;
 
         /** A dry run: nothing was deleted, so nothing was stranded. */
         public static OrphanReport notApplicable() {
-            return new OrphanReport(false, 0L, null);
+            return new OrphanReport(false, 0L, 0L, 0L, 0L, null);
         }
 
         /** {@code true} when at least one unreferenced row is still there. */

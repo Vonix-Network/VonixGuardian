@@ -310,7 +310,7 @@ class RollbackEngineTest {
     }
 
     @Test
-    void itemDropAndPickupAreAuditOnlyUntilItemEntityIdentityIsTracked() throws Exception {
+    void itemDropAndPickupAreNowReversible() throws Exception {
         Action drop = action(71L, 100L, ActionType.ITEM_DROP,
             "w", 9, 64, 9, "minecraft:diamond", null, 3, false);
         Action pickup = action(72L, 99L, ActionType.ITEM_PICKUP,
@@ -319,10 +319,13 @@ class RollbackEngineTest {
 
         RollbackResult r = engine.rollback(filter, false);
 
-        assertThat(r.affectedIds()).isEmpty();
-        assertThat(r.skippedIds()).containsExactlyInAnyOrder(71L, 72L);
-        assertThat(mutator.calls).isEmpty();
-        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        // 2.3.0 reversed the old audit-only policy: item drops and pickups carry
+        // enough identity (item_nbt / entity_nbt) to reverse, and the mutator has a
+        // drift-tolerant entity removal. This test previously asserted they were
+        // skipped. The behaviour changed deliberately; the assertion follows it.
+        assertThat(r.skippedIds()).isEmpty();
+        assertThat(r.affectedIds()).contains(71L);
+        assertThat(mutator.calls).isNotEmpty();
     }
 
     @Test
@@ -333,10 +336,10 @@ class RollbackEngineTest {
 
         RollbackResult r = engine.restore(filter, false);
 
-        assertThat(r.affectedIds()).isEmpty();
-        assertThat(r.skippedIds()).containsExactly(73L);
-        assertThat(mutator.calls).isEmpty();
-        verify(dao, never()).markRolledBack(any(), anyBoolean());
+        // Restoring a pickup gives the item back; it must never reach into a
+        // container that happens to share these coordinates.
+        assertThat(r.skippedIds()).isEmpty();
+        assertThat(mutator.calls).noneMatch(c -> c.startsWith("container"));
     }
 
     @Test

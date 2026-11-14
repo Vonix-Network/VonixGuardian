@@ -6,6 +6,9 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Dialect-aware DDL for the VonixGuardian schema.
  *
@@ -92,6 +95,8 @@ import java.util.List;
  * a fresh install wants the pinned shape.
  */
 public final class Schema {
+
+    private static final Logger LOG = LoggerFactory.getLogger(Schema.class);
 
     /** Current schema version. */
     public static final int CURRENT_VERSION = 9;

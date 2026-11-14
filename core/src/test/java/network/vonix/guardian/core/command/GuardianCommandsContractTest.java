@@ -3,6 +3,7 @@ package network.vonix.guardian.core.command;
 import network.vonix.guardian.core.perms.PermissionNode;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.query.QueryParser;
+import network.vonix.guardian.core.rollback.PurgeScope;
 import network.vonix.guardian.core.rollback.RollbackResult;
 import network.vonix.guardian.core.rollback.UndoStack;
 import org.junit.jupiter.api.Test;

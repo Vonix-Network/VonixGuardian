@@ -616,7 +616,7 @@ class RollbackPlanTest {
 
         releaseFirst.countDown();
         second.join(5_000L);
-        first.join(5_000L);
+        first.join();
 
         assertThat(secondReachedPlanning).isTrue();
         assertThat(serial.rollbackInProgress()).isFalse();
@@ -732,7 +732,7 @@ class RollbackPlanTest {
         verify(dao, never()).markRepairRequired(any());
     }
 
-    private static final class RecordingMutator implements WorldMutator {
+    private static class RecordingMutator implements WorldMutator {
         final List<String> calls = Collections.synchronizedList(new ArrayList<>());
 
         @Override

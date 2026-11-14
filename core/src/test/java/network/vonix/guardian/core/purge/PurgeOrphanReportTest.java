@@ -100,7 +100,7 @@ class PurgeOrphanReportTest {
     }
 
     @Test
-    void dryRunNeverAsksForOrphanCountsAndDeletesNothing() {
+    void dryRunNeverAsksForOrphanCountsAndDeletesNothing() throws Exception {
         StubDao dao = new StubDao(9L);
 
         QueryFilter countOnly = aged().countOnly(true).build();
@@ -126,10 +126,10 @@ class PurgeOrphanReportTest {
 
     @Test
     void singularAndPluralResidueReadCorrectly() {
-        assertThat(new PurgeEngine.OrphanReport(true, 1L, "kept deliberately").lines())
+        assertThat(new PurgeEngine.OrphanReport(true, 1L, 0L, 0L, 0L, "kept deliberately").lines())
             .containsExactly("[VonixGuardian] 1 unused player/world row remains after this purge: "
                 + "kept deliberately.");
-        assertThat(new PurgeEngine.OrphanReport(true, 2L, null).lines())
+        assertThat(new PurgeEngine.OrphanReport(true, 2L, 0L, 0L, 0L, null).lines())
             .containsExactly("[VonixGuardian] 2 unused player/world rows remain after this purge: "
                 + "reason not recorded.");
     }
