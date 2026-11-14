@@ -74,7 +74,20 @@ public interface GuardianDao extends AutoCloseable {
     /** Row count for the same filter — used by {@code /vg lookup #count}. */
     long count(QueryFilter filter) throws Exception;
 
-    /** Mark a set of action IDs as rolled-back (used by RollbackEngine). */
+    /**
+     * Mark a set of action IDs as rolled-back (used by RollbackEngine).
+     *
+     * <p>Implementations MUST report how many rows the stamp actually touched and
+     * MUST NOT report success when it matched nothing: a caller that has already
+     * mutated the world and then sees zero here would otherwise believe the audit
+     * row records the rollback when it does not. {@code AbstractJdbcDao} fails
+     * closed with a {@link java.sql.SQLException} when every requested id is gone.
+     *
+     * @param ids        action ids to stamp; duplicates are counted once
+     * @param rolledBack the value to store
+     * @return rows actually updated
+     * @throws Exception when the update fails, or when it matched none of the ids
+     */
     int markRolledBack(List<Long> ids, boolean rolledBack) throws Exception;
 
     /**
@@ -170,8 +183,52 @@ public interface GuardianDao extends AutoCloseable {
         return List.of();
     }
 
-    /** Delete records matching filter (purge). Returns rows deleted. */
+    /**
+     * Delete records matching filter (purge). Returns rows deleted.
+     *
+     * <p>Implementations SHOULD reclaim {@code vg_users} / {@code vg_worlds} rows
+     * left unreferenced by the delete, as part of the same operation, and MUST
+     * NOT leave them for a later cleanup that does not exist. An implementation
+     * that keeps them MUST say so through {@link #countOrphanOwners()} so the
+     * purge result can report the residue instead of implying a clean database.
+     */
     long purge(QueryFilter filter) throws Exception;
+
+    /**
+     * Apply a new {@code lookup.maxResultRows} cap to a live DAO.
+     *
+     * <p>{@code /vg reload} reports {@code lookup.maxResultRows} as hot-swapped,
+     * so the enforcement point has to move — a cap captured at construction makes
+     * that report a lie. {@code AbstractJdbcDao} implements this by swapping a
+     * volatile field; the cap is then re-read on the next query.
+     *
+     * <p>Default is a no-op returning {@code maxResultRows}, for mocks and
+     * non-JDBC implementations that enforce no cap. A caller must treat the
+     * return value as authoritative: it is the cap actually in force, not the one
+     * requested.
+     *
+     * @param maxResultRows requested absolute row cap; {@code <= 0} means uncapped
+     * @return the cap in force after the call
+     * @throws Exception if the implementation cannot change it at runtime
+     */
+    default int applyLookupLimits(int maxResultRows) throws Exception {
+        return maxResultRows;
+    }
+
+    /**
+     * Owner rows ({@code vg_users} + {@code vg_worlds}) that no action references.
+     *
+     * <p>Zero after a purge that reclaimed them. Non-zero is a stated, operator
+     * visible residue: those rows cost storage and can never be returned by a
+     * lookup. Default is {@code 0} for mocks and partial DAOs that do not model
+     * owner tables.
+     *
+     * @return count of unreferenced owner rows, or {@code 0} when not modelled
+     * @throws Exception on query failure
+     */
+    default long countOrphanOwners() throws Exception {
+        return 0L;
+    }
 
     /**
      * Dialect-specific storage optimization for the Guardian tables

@@ -40,12 +40,50 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Result-size cap: {@link #query} and {@link #queryPageForDisplay} clamp the
  * {@code limit} argument to {@code min(limit, maxResultRows)}. A value of {@code 0}
- * disables the cap.
+ * disables the cap. The cap is re-read on every query, so
+ * {@link #applyLookupLimits(int)} — called by {@code /vg reload} — takes effect on
+ * the next lookup instead of the next server restart.
  */
 public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(AbstractJdbcDao.class);
+
     /** Keep the flag bind plus IDs safely below SQLite and common JDBC bind limits. */
     static final int MARK_ROLLED_BACK_CHUNK_SIZE = 500;
+
+    /**
+     * Declared width of {@code vg_actions.target} — see {@code Schema}. MySQL
+     * rejects an over-length value with {@code SQLDataException: Data truncation}
+     * unless strict mode is off, which would corrupt instead of failing; so the
+     * write path truncates deterministically before the driver ever sees it.
+     */
+    static final int TARGET_MAX_CHARS = 4096;
+
+    /**
+     * Marker appended to a {@code target} value that had to be shortened.
+     *
+     * <p>Deliberately not valid block/entity identifier syntax so a reader can
+     * tell a truncated row from a genuine one. ASCII on purpose: this string is
+     * written into a database column and compared in tests, and a non-ASCII
+     * literal would depend on the build's source encoding.
+     */
+    static final String TARGET_TRUNCATION_MARKER = "~[vg:truncated]";
+
+    /**
+     * Longest partial list entry {@link #admitTarget} will discard rather than
+     * keep a fragment of.
+     *
+     * <p>An {@code EXPLOSION} {@code target} is a comma-separated
+     * {@code x:y:z=blockId} list. Cutting one mid-entry leaves something like
+     * {@code 10:64:-3=minecraft:sto} that parses as a <em>valid</em> block id —
+     * a rollback would then place the wrong block. So the cut backs up to the
+     * previous comma whenever the dropped fragment is plausibly one entry. A
+     * single entry is a coordinate triple plus an identifier, far under this
+     * bound; a free-text chat body whose only comma sits thousands of characters
+     * back is left as a plain truncation instead of being gutted.
+     */
+    static final int TARGET_MAX_PARTIAL_ENTRY_CHARS = 512;
 
     private static final String INSERT_ACTION_SQL =
         "INSERT INTO vg_actions("
@@ -86,8 +124,16 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     /** Maximum time an operator lookup may wait for a saturated read permit. */
     static final long LOOKUP_PERMIT_WAIT_MS = 250L;
 
-    /** Maximum rows materialised per {@link #query}. {@code 0} disables the cap. */
-    private final int maxResultRows;
+    /**
+     * Maximum rows materialised per {@link #query}. {@code 0} disables the cap.
+     *
+     * <p>{@code volatile} because {@code /vg reload} applies a changed
+     * {@code lookup.maxResultRows} straight onto the live DAO through
+     * {@link #applyLookupLimits(int)}. Holding it {@code final} meant the config
+     * record updated while the enforcement point kept the boot-time value — the
+     * reload reported the cap as applied when nothing had changed.
+     */
+    private volatile int maxResultRows;
 
     /** Default constructor: no rate limit, no result cap. */
     protected AbstractJdbcDao() {
@@ -102,6 +148,28 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     protected AbstractJdbcDao(Semaphore lookupSemaphore, int maxResultRows) {
         this.lookupSemaphore = lookupSemaphore;
         this.maxResultRows = Math.max(0, maxResultRows);
+    }
+
+    /**
+     * Apply a new {@code lookup.maxResultRows} cap to this live DAO.
+     *
+     * <p>Called from {@code Guardian.reloadConfig} when the operator changes the
+     * knob. Returns the cap now in force so the caller can report the real value
+     * rather than the value it hoped to apply. A negative argument is treated as
+     * {@code 0} (uncapped), matching the constructor.
+     *
+     * @param maxResultRows new absolute row cap; {@code <= 0} disables the cap
+     * @return the cap in force after this call
+     */
+    @Override
+    public int applyLookupLimits(int maxResultRows) {
+        this.maxResultRows = Math.max(0, maxResultRows);
+        return this.maxResultRows;
+    }
+
+    /** @return the live row cap; {@code 0} when uncapped. */
+    public int maxResultRows() {
+        return maxResultRows;
     }
 
     /** Acquire a connection. Implementations decide pooling semantics. */
@@ -330,7 +398,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 ps.setInt(5, a.x());
                 ps.setInt(6, a.y());
                 ps.setInt(7, a.z());
-                ps.setString(8, a.targetId() == null ? "" : a.targetId());
+                ps.setString(8, admitTarget(a.targetId()));
                 if (a.targetMeta() == null) {
                     ps.setNull(9, java.sql.Types.VARCHAR);
                 } else {
@@ -412,6 +480,57 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         return a.actorName() != null ? a.actorName() : UNKNOWN_USER_NAME;
     }
 
+    /**
+     * Shorten a {@code target} value so it fits {@code VARCHAR(4096)}.
+     *
+     * <p>A single oversized explosion's {@code affectedJoined} list, a long
+     * {@code /tellraw} body, or a modded entity id can exceed the declared column
+     * width. Passing that through unchanged fails one of two ways depending on the
+     * backend: MySQL in strict mode raises {@code Data truncation} and the whole
+     * batch insert fails (so the event is lost), or with strict mode off the driver
+     * silently cuts the value at the column boundary — potentially mid-UTF-16
+     * surrogate pair — and the row now claims a target that never existed.
+     *
+     * <p>This truncates deterministically instead:
+     * <ol>
+     *   <li>the usable prefix is sized so that prefix plus
+     *       {@link #TARGET_TRUNCATION_MARKER} exactly fills the column;</li>
+     *   <li>the cut never lands inside a surrogate pair;</li>
+     *   <li>for a comma-separated affected-block list the cut backs up to the last
+     *       comma, so a half-written entry {@code x:y:z=blockId} is dropped whole
+     *       rather than stored as a <em>different, valid-looking</em> block id;</li>
+     *   <li>the marker makes the shortening visible to every reader.</li>
+     * </ol>
+     *
+     * @param target the value to store; {@code null} becomes the empty string
+     * @return a value of at most {@link #TARGET_MAX_CHARS} characters
+     */
+    static String admitTarget(String target) {
+        if (target == null) {
+            return "";
+        }
+        if (target.length() <= TARGET_MAX_CHARS) {
+            return target;
+        }
+        int keep = TARGET_MAX_CHARS - TARGET_TRUNCATION_MARKER.length();
+
+        // Drop a partially written list entry. Only when the fragment is short
+        // enough to plausibly be one entry — otherwise this is free text and the
+        // last comma carries no structural meaning.
+        int lastComma = target.lastIndexOf(',', keep - 1);
+        if (lastComma >= 0 && keep - lastComma <= TARGET_MAX_PARTIAL_ENTRY_CHARS) {
+            keep = lastComma + 1;   // keep the comma; it terminates the last whole entry
+        }
+
+        // Never split a surrogate pair: a lone high surrogate is not a character
+        // and would be rejected or replaced by the driver, changing the byte count
+        // just calculated.
+        if (keep > 0 && Character.isHighSurrogate(target.charAt(keep - 1))) {
+            keep--;
+        }
+        return target.substring(0, Math.max(0, keep)) + TARGET_TRUNCATION_MARKER;
+    }
+
     // ------------------------------------------------------------------ SELECT
 
     @Override
@@ -446,7 +565,8 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
 
     private List<Action> query(QueryFilter filter, int offset, int limit, boolean includePayload,
                                QueryCompiler.Seek after) throws SQLException {
-        int effectiveLimit = (maxResultRows > 0) ? Math.min(limit, maxResultRows) : limit;
+        int cap = maxResultRows;
+        int effectiveLimit = (cap > 0) ? Math.min(limit, cap) : limit;
         acquireLookupPermit();
         try {
             QueryCompiler.Compiled q;
@@ -482,9 +602,14 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         // only ambiguous when the caller asked for more than the cap AND the
         // response filled that cap — fewer rows means true EOF. Fail closed on
         // the ambiguous full-cap case so planners cannot treat it as completion.
-        boolean truncated = maxResultRows > 0
-                && requestedLimit > maxResultRows
-                && rows.size() == maxResultRows;
+        //
+        // Snapshot the cap once: it is volatile (a reload can swap it), and
+        // reading it three times could evaluate "is there a cap" against one
+        // value and "did we fill it" against another.
+        int cap = maxResultRows;
+        boolean truncated = cap > 0
+                && requestedLimit > cap
+                && rows.size() == cap;
         return new GuardianDao.QueryPage(rows, truncated);
     }
 
@@ -662,6 +787,10 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     @Override
     public int markRolledBack(List<Long> ids, boolean rolledBack) throws SQLException {
         if (ids == null || ids.isEmpty()) return 0;
+        // Deduplicate up front: the caller's id list can legitimately repeat an
+        // id (an expansion that reached one row twice), and the reported counts
+        // below are compared against "how many distinct rows were addressed".
+        List<Long> distinctIds = new ArrayList<>(new java.util.LinkedHashSet<>(ids));
         Connection c = borrow();
         boolean previousAutoCommit = true;
         boolean autoCommitKnown = false;
@@ -674,8 +803,8 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             // Chunking is paired with one transaction so a parameter-limit
             // workaround cannot create a partially marked rollback batch.
             c.setAutoCommit(false);
-            for (int start = 0; start < ids.size(); start += MARK_ROLLED_BACK_CHUNK_SIZE) {
-                int end = Math.min(start + MARK_ROLLED_BACK_CHUNK_SIZE, ids.size());
+            for (int start = 0; start < distinctIds.size(); start += MARK_ROLLED_BACK_CHUNK_SIZE) {
+                int end = Math.min(start + MARK_ROLLED_BACK_CHUNK_SIZE, distinctIds.size());
                 StringBuilder sb = new StringBuilder("UPDATE vg_actions SET rolled_back = ? WHERE id IN (");
                 for (int i = start; i < end; i++) {
                     if (i > start) sb.append(',');
@@ -685,7 +814,7 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                 try (PreparedStatement ps = c.prepareStatement(sb.toString())) {
                     ps.setInt(1, rolledBack ? 1 : 0);
                     for (int i = start; i < end; i++) {
-                        ps.setLong(i - start + 2, ids.get(i));
+                        ps.setLong(i - start + 2, distinctIds.get(i));
                     }
                     updated += ps.executeUpdate();
                 }
@@ -733,7 +862,75 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
         if (primaryFailure != null) {
             rethrowJdbcFailure(primaryFailure);
         }
+        // A stamp that matched nothing is ambiguous, and the two cases have
+        // opposite meanings:
+        //
+        //   - the rows are still there and already carried this value
+        //     (idempotent replay of a rollback the operator re-ran), or
+        //   - the rows no longer exist (purged between planning and stamping, or
+        //     an id list that never addressed real rows).
+        //
+        // Only the second is a failure: the caller already mutated the world and
+        // the audit trail can never record it. Probe to tell them apart rather
+        // than guessing from the update count, because drivers disagree about
+        // whether that count means "matched" (MySQL default) or "changed"
+        // (SQLite, PostgreSQL) — a true→true re-stamp reads as 0 on two of three
+        // backends and would otherwise be reported as data loss.
+        int distinctRequested = distinctIds.size();
+        if (updated == 0) {
+            int stillPresent = countExistingActions(distinctIds);
+            if (stillPresent == 0) {
+                throw new SQLException("markRolledBack matched 0 of " + distinctRequested
+                        + " action ids (rolledBack=" + rolledBack + "); none of those rows exist");
+            }
+            LOG.debug("markRolledBack changed 0 rows; {} action ids already carried "
+                    + "rolledBack={} (idempotent re-stamp)", stillPresent, rolledBack);
+            return 0;
+        }
+        if (updated < distinctRequested) {
+            LOG.error("markRolledBack changed {} of {} action ids (rolledBack={}); the rest "
+                    + "either already carried that value or no longer exist",
+                    updated, distinctRequested, rolledBack);
+        }
         return updated;
+    }
+
+    /**
+     * Count how many of {@code ids} still have a {@code vg_actions} row.
+     *
+     * <p>Used only to disambiguate a zero-row update: the difference between
+     * "already stamped" and "gone" decides whether a completed world mutation can
+     * still be recorded. Chunked for the same bind-limit reason as the update.
+     *
+     * @param ids candidate action ids
+     * @return number of ids present in {@code vg_actions}
+     * @throws SQLException on query failure
+     */
+    private int countExistingActions(List<Long> ids) throws SQLException {
+        Connection c = borrow();
+        try {
+            int found = 0;
+            for (int start = 0; start < ids.size(); start += MARK_ROLLED_BACK_CHUNK_SIZE) {
+                int end = Math.min(start + MARK_ROLLED_BACK_CHUNK_SIZE, ids.size());
+                StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM vg_actions WHERE id IN (");
+                for (int i = start; i < end; i++) {
+                    if (i > start) sb.append(',');
+                    sb.append('?');
+                }
+                sb.append(')');
+                try (PreparedStatement ps = c.prepareStatement(sb.toString())) {
+                    for (int i = start; i < end; i++) {
+                        ps.setLong(i - start + 1, ids.get(i));
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) found += rs.getInt(1);
+                    }
+                }
+            }
+            return found;
+        } finally {
+            release(c);
+        }
     }
 
     private static void rethrowJdbcFailure(Throwable failure) throws SQLException {
@@ -747,9 +944,144 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     public long purge(QueryFilter filter) throws SQLException {
         QueryCompiler.Compiled q = QueryCompiler.compileDelete(filter);
         Connection c = borrow();
-        try (PreparedStatement ps = c.prepareStatement(q.sql())) {
-            bind(ps, q.binds());
-            return ps.executeUpdate();
+        boolean prevAutoCommit = true;
+        boolean autoCommitKnown = false;
+        int ownersReclaimed = 0;
+        try {
+            // One transaction: the delete and the orphan reclamation describe a
+            // single destructive operation. Committing the delete first and then
+            // sweeping separately would let a crash in between leave vg_users /
+            // vg_worlds rows with nothing referencing them — exactly the orphan
+            // growth this method exists to stop.
+            prevAutoCommit = c.getAutoCommit();
+            autoCommitKnown = true;
+            c.setAutoCommit(false);
+            try {
+                long deleted;
+                try (PreparedStatement ps = c.prepareStatement(q.sql())) {
+                    bind(ps, q.binds());
+                    deleted = ps.executeUpdate();
+                }
+                if (deleted > 0) {
+                    ownersReclaimed = purgeOrphanOwners(c);
+                }
+                c.commit();
+                long total = deleted;
+                if (ownersReclaimed > 0) {
+                    invalidateOwnerCaches();
+                }
+                return total;
+            } catch (SQLException ex) {
+                try { c.rollback(); } catch (SQLException rollbackFailure) {
+                    ex.addSuppressed(rollbackFailure);
+                }
+                throw ex;
+            }
+        } finally {
+            if (autoCommitKnown) {
+                try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            }
+            release(c);
+        }
+    }
+
+    /**
+     * Delete {@code vg_users} / {@code vg_worlds} rows that no action references
+     * any more.
+     *
+     * <p>{@code vg_users} and {@code vg_worlds} are dimension-style owner tables:
+     * an action points at one and the owner row exists only to name it. Nothing
+     * deletes them when the last referencing action goes, so every purge — manual
+     * or the nightly auto-purge — left a permanent row behind per distinct
+     * player and world ever logged. On a busy server that is tens of thousands of
+     * dead rows that no query can ever return.
+     *
+     * <p>Both deletes run inside the caller's transaction, so a crash cannot
+     * commit the action delete and skip the sweep.
+     *
+     * <p>Two hazards make a naive {@code NOT EXISTS} sweep unsafe, and both are
+     * handled here:
+     * <ul>
+     *   <li><b>Stale id caches.</b> {@link #resolveUser} and
+     *       {@link #resolveWorld} memoize {@code uuid -> id}. Deleting the row
+     *       behind a cached id would make a later insert bind a {@code user_id}
+     *       that no longer exists — the action is written but the
+     *       {@code vg_users} join drops it, so it becomes invisible to every
+     *       lookup. The caches are cleared whenever a sweep removed anything.</li>
+     *   <li><b>In-flight first inserts.</b> A concurrent batch resolves its owner
+     *       rows and inserts its actions in one transaction
+     *       ({@link #insertBatch} → {@code insertActionsOn}), so an owner row is
+     *       never visible to this sweep before the action referencing it is.
+     *       Nothing else calls {@code resolveUser} / {@code resolveWorld}.</li>
+     * </ul>
+     *
+     * @param c connection carrying the open purge transaction
+     * @return total owner rows deleted (users + worlds), for logging
+     * @throws SQLException if a delete fails; the caller rolls back
+     */
+    int purgeOrphanOwners(Connection c) throws SQLException {
+        // NOT EXISTS rather than NOT IN: NOT IN produces no rows at all if the
+        // subquery ever yields a NULL, which is the classic silent no-op here.
+        int gone = 0;
+        try (PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM vg_users WHERE NOT EXISTS "
+              + "(SELECT 1 FROM vg_actions a WHERE a.user_id = vg_users.id)")) {
+            gone += ps.executeUpdate();
+        }
+        try (PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM vg_worlds WHERE NOT EXISTS "
+              + "(SELECT 1 FROM vg_actions a WHERE a.world_id = vg_worlds.id)")) {
+            gone += ps.executeUpdate();
+        }
+        return gone;
+    }
+
+    /**
+     * Drop the memoized {@code uuid -> id} maps after owner rows were deleted.
+     *
+     * <p>Must run only once the deleting transaction has committed. Clearing it
+     * earlier would let a concurrent {@code resolveUser} re-cache an id this purge
+     * is about to remove, which is the exact stale-entry hazard being avoided.
+     */
+    private void invalidateOwnerCaches() {
+        userIdByUuid.clear();
+        userIdByName.clear();
+        lastSeenLastWriteMs.clear();
+        worldIdByKey.clear();
+        LOG.info("purge: reclaimed orphaned vg_users/vg_worlds rows; owner id caches cleared");
+    }
+
+    /**
+     * Count the {@code vg_users} / {@code vg_worlds} rows that no action
+     * references.
+     *
+     * <p>Used by {@code /vg purge} to state, in the result it hands the operator,
+     * exactly how many owner rows are still unreferenced. That number is
+     * {@code 0} after {@link #purge} because the same transaction reclaims them;
+     * it exists so the operator never has to guess, and so a dialect that could
+     * not complete the sweep is visible rather than assumed clean.
+     *
+     * @return unreferenced owner rows across both tables
+     * @throws SQLException on query failure
+     */
+    @Override
+    public long countOrphanOwners() throws SQLException {
+        Connection c = borrow();
+        try {
+            long total = 0;
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM vg_users u WHERE NOT EXISTS "
+                  + "(SELECT 1 FROM vg_actions a WHERE a.user_id = u.id)");
+                 ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) total += rs.getLong(1);
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM vg_worlds w WHERE NOT EXISTS "
+                  + "(SELECT 1 FROM vg_actions a WHERE a.world_id = w.id)");
+                 ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) total += rs.getLong(1);
+            }
+            return total;
         } finally {
             release(c);
         }
@@ -898,11 +1230,44 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
           + "SELECT id FROM (SELECT id FROM vg_actions WHERE ts < ? ORDER BY ts ASC LIMIT ?) AS victims"
           + ")";
         Connection c = borrow();
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, cutoffMillis);
-            ps.setInt(2, chunkLimit);
-            return ps.executeUpdate();
+        boolean prevAutoCommit = true;
+        boolean autoCommitKnown = false;
+        try {
+            prevAutoCommit = c.getAutoCommit();
+            autoCommitKnown = true;
+            c.setAutoCommit(false);
+            try {
+                long deleted;
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
+                    ps.setLong(1, cutoffMillis);
+                    ps.setInt(2, chunkLimit);
+                    deleted = ps.executeUpdate();
+                }
+                // A short chunk means the retention horizon is exhausted: this is
+                // the last round of the scheduler's loop, so it is the right and
+                // only place to reclaim owner rows. Doing it per chunk would pay
+                // two full NOT EXISTS sweeps on every 500-row batch; skipping it
+                // entirely is what let vg_users / vg_worlds grow without bound
+                // after the nightly auto-purge.
+                int ownersReclaimed = 0;
+                if (deleted < chunkLimit) {
+                    ownersReclaimed = purgeOrphanOwners(c);
+                }
+                c.commit();
+                if (ownersReclaimed > 0) {
+                    invalidateOwnerCaches();
+                }
+                return deleted;
+            } catch (SQLException ex) {
+                try { c.rollback(); } catch (SQLException rollbackFailure) {
+                    ex.addSuppressed(rollbackFailure);
+                }
+                throw ex;
+            }
         } finally {
+            if (autoCommitKnown) {
+                try { c.setAutoCommit(prevAutoCommit); } catch (SQLException ignored) {}
+            }
             release(c);
         }
     }
