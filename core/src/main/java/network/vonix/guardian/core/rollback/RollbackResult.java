@@ -109,7 +109,24 @@ public record RollbackResult(
         /** The entity restore path is unsupported for this row in this mode. */
         UNSUPPORTED_ENTITY,
         /** The row's stored payload does not parse; nothing was attempted. */
-        MALFORMED_PAYLOAD
+        MALFORMED_PAYLOAD,
+        /**
+         * An inventory row with no item NBT.
+         *
+         * <p>Distinct from {@link #MALFORMED_PAYLOAD} because it has a different
+         * cause and a different fix: the payload was never captured, because
+         * {@code storage.persistNbt} was {@code false} when the row was written.
+         * Reporting it as an unreadable payload sent operators looking for corruption
+         * when the real answer was one config key.</p>
+         */
+        MISSING_ITEM_IDENTITY,
+        /**
+         * An inventory row with no actor UUID, so the mutation has no target.
+         *
+         * <p>Also not corruption: the row cannot be aimed at anyone, so it was never a
+         * valid request.</p>
+         */
+        MISSING_ACTOR
     }
 
     /** Operation kind. */
@@ -313,6 +330,9 @@ public record RollbackResult(
         appendReason(parts, SkipReason.SUPERSEDED_POSITION, "superseded by a newer edit");
         appendReason(parts, SkipReason.UNSUPPORTED_ENTITY, "entity restore unsupported");
         appendReason(parts, SkipReason.MALFORMED_PAYLOAD, "stored payload unreadable");
+        appendReason(parts, SkipReason.MISSING_ITEM_IDENTITY,
+            "no item NBT captured (storage.persistNbt was off)");
+        appendReason(parts, SkipReason.MISSING_ACTOR, "row has no actor, cannot be aimed");
         int unclassified = unclassifiedSkippedCount();
         if (unclassified > 0) {
             parts.add(unclassified + " unclassified");

@@ -309,11 +309,33 @@ public final class FabricWorldMutator implements WorldMutator {
     }
 
     @Override
+    /**
+     * Strip the sentinel wrapper an entity id may carry.
+     *
+     * <p>{@code EntitySentinel.of} records mobs as {@code #mob:minecraft:pillager},
+     * and {@code ResourceLocation.tryParse} cannot parse that — the {@code #} and the
+     * extra segment make it null, so every {@code ENTITY_KILL} respawn failed and the
+     * operator saw 74 unexplained failures. A bare id passes through unchanged.</p>
+     *
+     * @param entityType recorded target, possibly sentinel-wrapped
+     * @return a parseable {@code namespace:path} id, or the input unchanged
+     */
+    private static String stripEntitySentinel(String entityType) {
+        if (entityType == null) return null;
+        String s = entityType.trim();
+        if (s.startsWith("#mob:")) return s.substring("#mob:".length());
+        if (s.startsWith("#")) {
+            int colon = s.indexOf(':');
+            if (colon > 0 && colon < s.length() - 1) return s.substring(colon + 1);
+        }
+        return s;
+    }
+
     public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
         try {
             ServerLevel level = level(worldId);
             if (level == null) return false;
-            ResourceLocation rl = ResourceLocation.tryParse(entityType);
+            ResourceLocation rl = ResourceLocation.tryParse(stripEntitySentinel(entityType));
             if (rl == null) return false;
             EntityType<?> type = Registry.ENTITY_TYPE.get(rl);
             if (type == null || !rl.equals(Registry.ENTITY_TYPE.getKey(type))) return false;
@@ -465,7 +487,7 @@ public final class FabricWorldMutator implements WorldMutator {
             }
             ServerLevel level = level(worldId);
             if (level == null) return false;
-            ResourceLocation entityRl = ResourceLocation.tryParse(entityType);
+            ResourceLocation entityRl = ResourceLocation.tryParse(stripEntitySentinel(entityType));
             if (entityRl == null) return false;
             EntityType<?> requestedType = Registry.ENTITY_TYPE.get(entityRl);
             if (requestedType == null || !entityRl.equals(Registry.ENTITY_TYPE.getKey(requestedType))) return false;

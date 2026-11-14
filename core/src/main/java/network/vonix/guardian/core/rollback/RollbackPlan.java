@@ -404,11 +404,13 @@ public final class RollbackPlan {
                 // The actor UUID is the integrity boundary: without it the
                 // mutation cannot be aimed at anyone, so it was never a valid
                 // request. Refusing it mid-batch made the operator count wrong.
-                return RollbackResult.SkipReason.MALFORMED_PAYLOAD;
+                return RollbackResult.SkipReason.MISSING_ACTOR;
             }
             if (a.itemNbt() == null) {
-                // Item identity must be byte-exact or the wrong stack is moved.
-                return RollbackResult.SkipReason.MALFORMED_PAYLOAD;
+                // Item identity must be byte-exact or the wrong stack is moved. This is
+                // almost always storage.persistNbt=false at capture time, not damage -
+                // naming it separately turns an opaque count into an actionable one.
+                return RollbackResult.SkipReason.MISSING_ITEM_IDENTITY;
             }
         }
         if (type == ActionType.EXPLOSION) {

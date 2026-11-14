@@ -553,19 +553,35 @@ class RollbackPlanTest {
 
     @Test
     void inventoryRowWithoutItemPayloadIsRejectedAtPlanTime() throws Exception {
-        Action noNbt = new Action(
-            41L, 600L, ActionType.INVENTORY_WITHDRAW,
-            UUID.randomUUID(), "Player",
-            "w", 0, 64, 0, "minecraft:diamond", null, 1, false, null);
+        // Built through ActionBuilder so itemNbt is genuinely null. The 14-arg
+        // constructor cannot reach the itemNbt component, which is why this test
+        // silently asserted nothing after the skip reason was split out.
+        Action noNbt = new network.vonix.guardian.core.action.ActionBuilder()
+            .id(41L)
+            .timestamp(600L)
+            .type(ActionType.INVENTORY_WITHDRAW)
+            .actorUuid(UUID.randomUUID())
+            .actorName("Player")
+            .worldId("w")
+            .position(0, 64, 0)
+            .targetId("minecraft:diamond")
+            .amount(1)
+            .build();
 
         RollbackPlan plan = RollbackPlan.build(List.of(noNbt), filter,
             RollbackResult.Mode.ROLLBACK, null);
 
         assertThat(plan.plannedSteps()).isZero();
-        assertThat(plan.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+        // Distinct from MALFORMED_PAYLOAD: the payload was never captured because
+        // storage.persistNbt was off at write time. Reporting it as corruption sent
+        // an operator hunting for damage when the fix was one config key.
+        assertThat(plan.skippedCount(RollbackResult.SkipReason.MISSING_ITEM_IDENTITY))
+            .as("actual skip reasons: %s", plan.skippedEntries().stream()
+                .map(x -> String.valueOf(x.reason())).toList())
+            .isEqualTo(1);
         assertThat(plan.skippedEntries()).singleElement()
             .satisfies(s -> assertThat(s.reason())
-                .isEqualTo(RollbackResult.SkipReason.MALFORMED_PAYLOAD));
+                .isEqualTo(RollbackResult.SkipReason.MISSING_ITEM_IDENTITY));
 
         // A payload parked in blockEntityNbt is NOT item identity. This is the
         // exact shape a misaligned Action constructor call produces, and moving
@@ -584,8 +600,15 @@ class RollbackPlanTest {
             RollbackResult.Mode.ROLLBACK, null);
 
         assertThat(wrongSlot.plannedSteps()).isZero();
-        assertThat(wrongSlot.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
-        assertThat(wrongSlot.invalid()).extracting(Action::id).containsExactly(43L);
+        // The row's itemNbt is null - the payload sits in blockEntityNbt instead - so
+        // the reason is the missing-identity one. The property this test protects is
+        // that a neighbouring NBT column never satisfies item identity, and that holds
+        // whichever of the two names the rejection carries.
+        assertThat(wrongSlot.skippedCount(RollbackResult.SkipReason.MISSING_ITEM_IDENTITY)).isEqualTo(1);
+        // The property under test is that this row was rejected, not which of the two
+        // payload reasons it carries. `invalid()` only collects MALFORMED_PAYLOAD, so
+        // assert against the skip list, which is the authoritative record.
+        assertThat(wrongSlot.skippedEntries()).extracting(x -> x.action().id()).containsExactly(43L);
     }
 
     @Test
@@ -600,7 +623,7 @@ class RollbackPlanTest {
             RollbackResult.Mode.ROLLBACK, null);
 
         assertThat(plan.plannedSteps()).isZero();
-        assertThat(plan.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+        assertThat(plan.skippedCount(RollbackResult.SkipReason.MISSING_ACTOR)).isEqualTo(1);
     }
 
     @Test

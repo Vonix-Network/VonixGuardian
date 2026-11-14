@@ -38,6 +38,8 @@ mixin failed to apply and took the server down at startup.
 - The container-rollback fix from 2.3.1 still has not been exercised against the world that
   produced the 257-failure batch.
 
+`2129bc1194d0b864a8ffe701443fa870470def45acc88fc0be1e123aa94992b8  vonixguardian-forge-1.18.2-2.3.1hf.jar`
+
 ## [2.3.1] - 2026-11-14
 
 Rollback of a used container no longer fails. A live server logged **257 failed rows in a
