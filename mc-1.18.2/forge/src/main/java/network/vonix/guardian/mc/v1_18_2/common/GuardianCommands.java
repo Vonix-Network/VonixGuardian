@@ -987,14 +987,6 @@ public final class GuardianCommands {
         // reconcile, which is the invariant this whole surface exists to protect.
         java.util.Map<String, Integer> reasons = skipReasons(result);
         java.util.List<String> lines = MutationOutcomeFormatter.lines(verb, result, filter, reasons);
-        // Optional companion: ship the same lines to a client that can render them
-        // properly. Vanilla clients are skipped, so this never affects them.
-        if (actor != null) {
-            var recipient = server.getPlayerList().getPlayer(actor);
-            if (recipient != null) {
-                network.vonix.guardian.mc.v1_18_2.forge.GuardianChannel.send(recipient, result, lines);
-            }
-        }
         for (String line : lines) {
             if (result.status() == RollbackResult.Status.FAILED) {
                 sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(), line));
