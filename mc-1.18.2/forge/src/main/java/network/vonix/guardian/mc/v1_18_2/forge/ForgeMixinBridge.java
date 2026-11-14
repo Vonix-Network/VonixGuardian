@@ -170,32 +170,81 @@ public final class ForgeMixinBridge {
      * @param previous state that was there
      * @param next     state being written
      */
-    public static void onUnattributedBlockChange(String worldId, int x, int y, int z,
+    public static void onUnattributedBlockChange(String worldId,
+                                                 net.minecraft.server.level.ServerLevel level,
+                                                 int x, int y, int z,
                                                  BlockState previous, BlockState next) {
         try {
             EventSubmitter s = sub();
             if (s == null) return;
             boolean wasAir = previous.isAir();
             boolean isAir = next.isAir();
+            // Fidelity matters more here than anywhere else in the log. This layer sees
+            // changes that no other hook understood, so there is no second row to fall
+            // back on: if the state is dropped, a rollback restores the right block in
+            // the wrong orientation — stairs facing the wrong way, a chest with no
+            // contents, half a door. Capture the property string and block-entity NBT
+            // the same way the attributed break/place paths do.
+            boolean captureNbt = persistNbt();
             if (wasAir && !isAir) {
                 // Something appeared where there was nothing: a place.
+                String props = NbtCapture.blockStateProps(next);
+                byte[] nbt = captureNbt ? NbtCapture.blockEntity(
+                    blockEntityCheck(next, level, x, y, z)) : null;
                 s.submitBlockPlace(null, Sentinel.UNKNOWN, worldId, x, y, z,
-                    blockId(next), Sentinel.UNKNOWN);
+                    blockId(next), Sentinel.UNKNOWN, props, nbt);
             } else if (!wasAir && isAir) {
                 // Something vanished: a break. Record the block that was destroyed so
-                // a rollback can put it back.
+                // a rollback can put it back, with its properties and contents.
+                String props = NbtCapture.blockStateProps(previous);
+                byte[] nbt = captureNbt ? NbtCapture.blockEntity(
+                    blockEntityCheck(previous, level, x, y, z)) : null;
                 s.submitBlockBreak(null, Sentinel.UNKNOWN, worldId, x, y, z,
-                    blockId(previous), Sentinel.UNKNOWN);
+                    blockId(previous), Sentinel.UNKNOWN, props, nbt);
             }
             // A non-air to non-air change (stone to cobble, log to planks) is a
             // replacement. It is recorded as a break of the old block; the place of the
             // new one is implied and would otherwise double every shape-change row.
             else {
+                String props = NbtCapture.blockStateProps(previous);
+                byte[] nbt = captureNbt ? NbtCapture.blockEntity(
+                    blockEntityCheck(previous, level, x, y, z)) : null;
                 s.submitBlockBreak(null, Sentinel.UNKNOWN, worldId, x, y, z,
-                    blockId(previous), Sentinel.UNKNOWN);
+                    blockId(previous), Sentinel.UNKNOWN, props, nbt);
             }
         } catch (Throwable t) {
             warn("onUnattributedBlockChange", t);
+        }
+    }
+
+    /**
+     * Non-creating block-entity read for the write hook.
+     *
+     * <p>Called BEFORE the write lands, so the entity still belongs to the outgoing
+     * state. {@code CHECK} deliberately does not create one: an empty entity invented
+     * here would be captured as "this chest had contents" and a rollback would restore
+     * an empty chest over a full one.</p>
+     *
+     * @param expected the state the position currently holds
+     * @param worldId  dimension key
+     * @param x        block x
+     * @param y        block y
+     * @param z        block z
+     * @return the block entity, or {@code null} when the block has none
+     */
+    private static net.minecraft.world.level.block.entity.BlockEntity blockEntityCheck(
+            BlockState expected, net.minecraft.server.level.ServerLevel level,
+            int x, int y, int z) {
+        try {
+            if (level == null) return null;
+            if (!(expected.getBlock() instanceof net.minecraft.world.level.block.EntityBlock)) {
+                return null;
+            }
+            return level.getChunkAt(new BlockPos(x, y, z)).getBlockEntity(
+                new BlockPos(x, y, z),
+                net.minecraft.world.level.chunk.LevelChunk.EntityCreationType.CHECK);
+        } catch (Throwable t) {
+            return null;
         }
     }
 

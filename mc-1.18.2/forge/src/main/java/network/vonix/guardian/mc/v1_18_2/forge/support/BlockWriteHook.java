@@ -105,6 +105,6 @@ public final class BlockWriteHook {
         // themselves. Hand it to the bridge, which owns the emit path and can decide
         // whether the configured coverage wants it.
         ForgeMixinBridge.onUnattributedBlockChange(
-            worldId, pos.getX(), pos.getY(), pos.getZ(), previous, next);
+            worldId, level, pos.getX(), pos.getY(), pos.getZ(), previous, next);
     }
 }

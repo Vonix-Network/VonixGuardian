@@ -148,6 +148,27 @@ Stated explicitly, because these will still surprise an operator:
 | `/vg help` does not list four registered literals | `inspector`, `page`, `stats`, and `version` are registered in the command tree but absent from `CommandSpec`, so the rendered list omits them. The `re` and `ro` aliases are likewise unlisted. Conversely `CommandSpec`'s `status` summary still says "DB health" although the row is now `reachable`. |
 | Command replies are not translatable | The 15 bundles hold 32 keys covering the query parser and a status vocabulary that the renderer no longer uses (`status.section.*` is dead; the report is built from `row(...)` pairs). Every reply in `GuardianCommands`, `LookupText`, and `MutationOutcomeFormatter` is a hardcoded English literal, so `language=de` changes 24 parser strings and nothing else. |
 
+### Coverage: changes made by other mods are now visible
+
+- **The mod hooked game events, and an event only fires for paths vanilla chose to
+  instrument.** A dragon's breath, a modded explosion, a custom machine, a ritual, or a
+  teleport that swapped terrain wrote blocks without raising anything we listened for, so
+  none of it reached the log — and a rollback cannot undo what was never recorded. On a
+  modded server that is most of the interesting grief.
+- **`BlockWriteMixin` now hooks `LevelChunk.setBlockState`**, the single point every block
+  write in the game passes through whoever initiates it. A change made by a mod that has
+  never heard of VonixGuardian is recorded like any other. This is the approach Ledger
+  takes, and the reason it attributes a ridden dragon's blast without a dragon-specific
+  hook.
+- **Duplicate suppression is the load-bearing part.** A player break raises
+  `BlockEvent.BreakEvent` *and* calls `setBlockState`, so a naive hook would log every
+  break twice — once attributed, once as unknown. `RecentBlockWrites` keeps a bounded,
+  2-second record of positions the attributed layer just wrote and the fallback stays
+  silent for those.
+- **Unattributed changes record `UNKNOWN` as the actor**, not a guess. The write hook
+  genuinely cannot tell who caused a change; naming a suspect would be worse than
+  admitting it does not know.
+
 ### Verification
 
 What was and was not proven for this entry:
