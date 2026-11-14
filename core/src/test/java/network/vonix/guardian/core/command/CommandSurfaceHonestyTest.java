@@ -144,11 +144,9 @@ class CommandSurfaceHonestyTest {
                 true, List.of(1L, 2L), List.of(), 2, 0, filter);
         String line = MutationOutcomeFormatter.summaryLine("Rollback", preview);
         assertThat(line)
-            .as("a preview must say the world was not changed")
+            .as("a preview must say the world was not changed, deny drawing, and name both exits: %s", line)
             .contains("The world was not changed")
-            .as("and must not imply blocks were drawn")
             .contains("no blocks were drawn")
-            .as("the operator needs the way forward")
             .contains("/vg apply")
             .contains("/vg cancel");
     }
