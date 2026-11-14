@@ -451,17 +451,6 @@ public final class GuardianCommands {
             return runWithFilter(src, g, filter, page, perPage);
         }
 
-        /** Run a lookup at a specific block position (used by the inspector). */
-        public static void atPos(Guardian g, int x, int y, int z, String worldId, CommandSourceStack src) {
-            // Position-anchored inspector lookup. `p:x,y,z` pins the search
-            // center to the clicked block regardless of caller position,
-            // `r:2` widens the window to a 5x5x5 around the clicked block, and
-            // `r:#world_<key>` scopes the query to the block's world so
-            // cross-world coord collisions don't leak in.
-            String f = "p:" + x + "," + y + "," + z + " r:2 t:30d r:#world_" + worldId;
-            runWithFilter(src, g, f, 1, lookupDefaultPageSize(g));
-        }
-
         /** Back-compat overload — kept for existing callers (inspector). */
         public static int runWithFilter(CommandSourceStack src, Guardian g, String raw) {
             return runWithFilter(src, g, raw, 1, lookupDefaultPageSize(g));

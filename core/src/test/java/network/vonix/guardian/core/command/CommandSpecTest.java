@@ -2,12 +2,15 @@ package network.vonix.guardian.core.command;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class CommandSpecTest {
 
@@ -107,6 +110,33 @@ class CommandSpecTest {
         assertThat(CommandSpec.PERMISSION_PREFIX).isEqualTo("vonixguardian.command.");
     }
 
+    /**
+     * Every alias the spec advertises must be a literal some loader actually
+     * registers. Two aliases ({@code n} for near, {@code ?} for help) were
+     * advertised for years and registered in zero cells, so {@code /vg help}
+     * offered commands that did not exist. Deleting them is only half the fix;
+     * this keeps a future alias from being declared without a tree behind it.
+     */
+    @Test
+    void everyDeclaredAliasIsRegisteredByTheForgeCell() throws Exception {
+        Path root = repoRoot();
+        assumeTrue(root != null, "repo root not resolvable");
+        Path cell = root.resolve("mc-1.18.2/forge/src/main/java/network/vonix/guardian"
+            + "/mc/v1_18_2/common/GuardianCommands.java");
+        assumeTrue(Files.exists(cell), "1.18.2 forge cell not present");
+        String text = Files.readString(cell);
+        for (SubcommandSpec spec : CommandSpec.all()) {
+            String alias = spec.alias();
+            if (alias == null) {
+                continue;
+            }
+            assertThat(text)
+                .as("CommandSpec advertises alias %s for %s, but no cell registers it",
+                    alias, spec.name())
+                .contains("Commands.literal(\"" + alias + "\")");
+        }
+    }
+
     @Test
     void subcommandSpecRejectsBlankFields() {
         assertThatThrownBy(() ->
@@ -129,5 +159,16 @@ class CommandSpecTest {
             .filter(s -> s.name().equals(name))
             .findFirst()
             .orElseThrow();
+    }
+
+    private static Path repoRoot() {
+        Path here = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        for (Path p = here; p != null; p = p.getParent()) {
+            if (Files.exists(p.resolve("settings.gradle"))
+                    && Files.exists(p.resolve("mc-1.18.2/forge"))) {
+                return p;
+            }
+        }
+        return null;
     }
 }
