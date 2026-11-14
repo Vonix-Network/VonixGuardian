@@ -305,7 +305,7 @@ class ActionTypeProducerCoverageTest {
                 new GuardianConfig.Database("sqlite",
                         dataDir.resolve("producer-coverage.db").toAbsolutePath().toString(),
                         null, null, null),
-                new GuardianConfig.Queue(50_000, 5_000L, 1_000),
+                new GuardianConfig.Queue(50_000, 25L, 1_000),
                 new GuardianConfig.LogFile(false, "logs/vonixguardian", false, 30, false),
                 open, d.permissions(), d.lookup(), d.privacy(), d.purge(),
                 new GuardianConfig.Storage(false), d.rollback(), d.theme(), d.language());
