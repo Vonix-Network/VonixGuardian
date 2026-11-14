@@ -198,7 +198,22 @@ public record GuardianConfig(
      *                          server it writes one line per prepared statement. Added 2.3.0.
      */
     public record Database(String type, String file, String jdbcUrl, String user, String password,
-                           MigrationTarget migrationTarget, Hikari hikari, boolean logSql) {
+                           MigrationTarget migrationTarget, Hikari hikari, boolean logSql,
+                           Boolean updateSchema) {
+
+        /**
+         * Whether boot may migrate the catalog. Absent means allow.
+         *
+         * <p>Deliberately boxed: Gson maps a missing JSON key to {@code false} for a
+         * primitive, which would silently pin the schema on every existing install
+         * and refuse to boot after an upgrade. {@code null} means "key absent" and
+         * resolves to the pre-2.3.0 behaviour, which was always to migrate.</p>
+         *
+         * @return {@code true} unless the operator explicitly set {@code false}
+         */
+        public boolean updateSchemaEnabled() {
+            return updateSchema == null || updateSchema;
+        }
 
         /**
          * Backward-compat constructor for callers/tests written before {@code migrationTarget} existed.
@@ -208,7 +223,7 @@ public record GuardianConfig(
          */
         @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password) {
-            this(type, file, jdbcUrl, user, password, null, Hikari.defaults(), false);
+            this(type, file, jdbcUrl, user, password, null, Hikari.defaults(), false, null);
         }
 
         /**
@@ -219,7 +234,7 @@ public record GuardianConfig(
         @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password,
                         MigrationTarget migrationTarget) {
-            this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults(), false);
+            this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults(), false, null);
         }
 
         /**
@@ -237,7 +252,7 @@ public record GuardianConfig(
         @Deprecated(since = "2.3.0", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password,
                         MigrationTarget migrationTarget, Hikari hikari) {
-            this(type, file, jdbcUrl, user, password, migrationTarget, hikari, false);
+            this(type, file, jdbcUrl, user, password, migrationTarget, hikari, false, null);
         }
 
         /**
@@ -250,7 +265,19 @@ public record GuardianConfig(
          * @return a new {@code Database} differing only in {@code logSql}
          */
         public Database withLogSql(boolean newLogSql) {
-            return new Database(type, file, jdbcUrl, user, password, migrationTarget, hikari, newLogSql);
+            return new Database(type, file, jdbcUrl, user, password, migrationTarget, hikari,
+                newLogSql, updateSchema);
+        }
+
+        /**
+         * Return a copy of this {@code Database} with {@code updateSchema} replaced.
+         *
+         * @param newUpdateSchema whether boot may migrate the catalog
+         * @return a new {@code Database} differing only in {@code updateSchema}
+         */
+        public Database withUpdateSchema(Boolean newUpdateSchema) {
+            return new Database(type, file, jdbcUrl, user, password, migrationTarget, hikari,
+                logSql, newUpdateSchema);
         }
     }
 

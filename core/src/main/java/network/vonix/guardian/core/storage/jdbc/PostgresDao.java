@@ -19,7 +19,6 @@ import java.util.concurrent.Semaphore;
  * audit backends.
  */
 public final class PostgresDao extends AbstractJdbcDao {
-
     private final HikariDataSource ds;
 
     public PostgresDao(GuardianConfig.Database cfg) {
@@ -27,7 +26,7 @@ public final class PostgresDao extends AbstractJdbcDao {
     }
 
     public PostgresDao(GuardianConfig.Database cfg, Semaphore lookupSemaphore, int maxResultRows) {
-        super(lookupSemaphore, maxResultRows);
+        super(cfg, lookupSemaphore, maxResultRows);
         HikariConfig hc = new HikariConfig();
         hc.setJdbcUrl(cfg.jdbcUrl());
         if (cfg.user() != null) hc.setUsername(cfg.user());
@@ -87,13 +86,7 @@ public final class PostgresDao extends AbstractJdbcDao {
     @Override
     public boolean isHealthy() {
         if (ds.isClosed()) return false;
-        try (Connection c = ds.getConnection();
-             var st = c.createStatement();
-             var rs = st.executeQuery("SELECT 1")) {
-            return rs.next();
-        } catch (SQLException ex) {
-            return false;
-        }
+        return probeStorageHealth();
     }
 
     @Override

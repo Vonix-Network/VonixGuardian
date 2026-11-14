@@ -5,6 +5,7 @@ import network.vonix.guardian.core.action.ActionType;
 import network.vonix.guardian.core.query.QueryFilter;
 import network.vonix.guardian.core.storage.GuardianDao;
 import network.vonix.guardian.core.storage.QueryCompiler;
+import network.vonix.guardian.core.config.GuardianConfig;
 import network.vonix.guardian.core.storage.Schema;
 import network.vonix.guardian.core.storage.dbmigrate.RawJdbcAccess;
 import network.vonix.guardian.core.storage.migration.MigrationRunner;
@@ -118,6 +119,9 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     private final ConcurrentHashMap<String, Integer> worldIdByKey = new ConcurrentHashMap<>();
     private static final int WORLD_ID_CACHE_CAP = 4096;
 
+    /** Config this DAO was built from; may be {@code null} when a test builds one. */
+    private final GuardianConfig.Database cfg;
+
     /** Optional read-side rate limit. May be {@code null} (no limit). */
     private final Semaphore lookupSemaphore;
 
@@ -146,8 +150,47 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
      *                        {@code 0} disables the cap
      */
     protected AbstractJdbcDao(Semaphore lookupSemaphore, int maxResultRows) {
+        this(null, lookupSemaphore, maxResultRows);
+    }
+
+    /**
+     * @param cfg             config this DAO was built from; used for schema policy.
+     *                        May be {@code null} in tests that construct a DAO purely
+     *                        to exercise SQL, in which case schema updates are allowed.
+     * @param lookupSemaphore optional read-side rate limit; may be {@code null}
+     * @param maxResultRows   absolute cap on {@code limit} passed to {@link #query}
+     */
+    protected AbstractJdbcDao(GuardianConfig.Database cfg, Semaphore lookupSemaphore, int maxResultRows) {
+        this.cfg = cfg;
         this.lookupSemaphore = lookupSemaphore;
         this.maxResultRows = Math.max(0, maxResultRows);
+    }
+
+    /**
+     * Whether boot may migrate the catalog.
+     *
+     * <p>Defaults to {@code true} when no config was supplied, so a test DAO behaves
+     * as every release before 2.3.0 did. The shipped default for
+     * {@code database.updateSchema} is also {@code true} — this knob exists for
+     * operators who pin a schema and want the boot to stop rather than migrate.</p>
+     *
+     * @return {@code false} only when the operator explicitly disallowed it
+     */
+    protected boolean updateSchemaEnabled() {
+        return cfg == null || cfg.updateSchemaEnabled();
+    }
+
+    /**
+     * Whether to log the SQL each batch runs.
+     *
+     * <p>Defaults to {@code false} — a per-statement line on a busy server floods
+     * the log. {@code database.logSql} exists for diagnosing a slow or failing
+     * backend, and is not meant to be left on.</p>
+     *
+     * @return {@code true} only when the operator enabled it
+     */
+    protected boolean logSqlEnabled() {
+        return cfg != null && cfg.logSql();
     }
 
     /**
@@ -189,6 +232,51 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     /** Dialect identifier. */
     protected abstract Schema.Dialect dialect();
 
+    /**
+     * Real storage health: the connection answers, the schema is at the version
+     * this jar expects, and the database accepts a write.
+     *
+     * <p>{@code SELECT 1} proves only that a socket is open. It reports healthy
+     * on a read-only file, a locked table, a full disk and a schema that predates
+     * this jar — the four failures that actually stop audit writes. This probes
+     * each of them cheaply enough to call from {@code /vg status}.</p>
+     *
+     * @return {@code true} only when reads, schema and a rollback-safe write all work
+     */
+    protected boolean probeStorageHealth() {
+        try {
+            Connection c = borrow();
+            try {
+                try (var st = c.createStatement(); var rs = st.executeQuery("SELECT 1")) {
+                    if (!rs.next()) return false;
+                }
+                // Schema drift: an older catalog would fail inserts at runtime.
+                if (!Schema.isCurrentVersion(c)) return false;
+                // Writability without leaving anything behind: start a transaction,
+                // touch a table, roll it back. A read-only file or a full disk fails
+                // here and nowhere earlier.
+                boolean auto = c.getAutoCommit();
+                try {
+                    c.setAutoCommit(false);
+                    try (var st = c.createStatement()) {
+                        st.executeUpdate("UPDATE vg_schema_version SET applied_at = applied_at WHERE 1 = 0");
+                    }
+                    c.rollback();
+                    return true;
+                } catch (SQLException writeFailure) {
+                    try { c.rollback(); } catch (SQLException ignored) { /* best effort */ }
+                    return false;
+                } finally {
+                    try { c.setAutoCommit(auto); } catch (SQLException ignored) { /* best effort */ }
+                }
+            } finally {
+                release(c);
+            }
+        } catch (SQLException | RuntimeException ex) {
+            return false;
+        }
+    }
+
     /** Health check — implementations probe the underlying pool/connection. */
     @Override
     public abstract boolean isHealthy();
@@ -197,6 +285,13 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
     public void init() throws SQLException {
         Connection c = borrow();
         try {
+            // database.updateSchema=false pins the catalog: verify it instead of
+            // migrating it. An operator who pinned a schema version needs the boot
+            // to stop, not to silently move the schema underneath their backup tooling.
+            if (!updateSchemaEnabled()) {
+                Schema.applySchema(c, dialect(), false);
+                return;
+            }
             // Fresh installs: create tables at CURRENT_VERSION and stamp v{CURRENT_VERSION}.
             Schema.createTables(c, dialect());
             // Existing installs stamped at an older version: walk any pending
@@ -471,6 +566,12 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
             for (int v : r) {
                 if (v >= 0) total += v;
                 else total += 1; // SUCCESS_NO_INFO
+            }
+            if (logSqlEnabled()) {
+                // One line per prepared statement per batch, as documented. Off by
+                // default: on a busy server this is the difference between a usable
+                // log and an unreadable one.
+                LOG.info("SQL insert: {} rows via {} params — {}", total, r.length, INSERT_ACTION_SQL);
             }
             return total;
         }

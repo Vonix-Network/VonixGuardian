@@ -378,6 +378,12 @@ public final class RollbackPlan {
         ActionType type = a.type();
 
         if (!RollbackEngine.isRollbackable(type)) {
+            if (type == ActionType.CLICK) {
+                // A click is recorded evidence of an interaction, not a state
+                // change. The block it affected is its own row. Saying so beats
+                // folding it into the generic audit-only bucket with chat.
+                return RollbackResult.SkipReason.INTERACTION_ONLY;
+            }
             return RollbackEngine.isAuditOnly(type)
                 ? RollbackResult.SkipReason.AUDIT_ONLY
                 : RollbackResult.SkipReason.UNTRACKED_STATE;

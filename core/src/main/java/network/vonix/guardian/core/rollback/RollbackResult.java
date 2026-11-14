@@ -92,6 +92,11 @@ public record RollbackResult(
     public enum SkipReason {
         /** No world state was ever recorded for this row type. */
         AUDIT_ONLY,
+        /**
+         * A block or entity interaction. The click itself changes nothing that
+         * can be inverted — the effect it caused is recorded as its own row.
+         */
+        INTERACTION_ONLY,
         /** A world change whose prior state is not tracked, so it cannot be inverted. */
         UNTRACKED_STATE,
         /** An older row at a position a newer planned row already restores. */
@@ -271,6 +276,7 @@ public record RollbackResult(
         }
         List<String> parts = new ArrayList<>(SkipReason.values().length + 1);
         appendReason(parts, SkipReason.AUDIT_ONLY, "chat/session (nothing to undo)");
+        appendReason(parts, SkipReason.INTERACTION_ONLY, "clicks recorded, nothing to undo");
         appendReason(parts, SkipReason.UNTRACKED_STATE, "state not tracked, cannot invert");
         appendReason(parts, SkipReason.SUPERSEDED_POSITION, "superseded by a newer edit");
         appendReason(parts, SkipReason.UNSUPPORTED_ENTITY, "entity restore unsupported");

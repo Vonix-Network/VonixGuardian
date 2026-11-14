@@ -419,6 +419,21 @@ public final class Schema {
      * version table, because a pinned boot must not issue DDL. Returns {@code 0} when
      * the table is absent or holds no rows.
      */
+    /**
+     * True when the catalog is stamped at exactly {@link #CURRENT_VERSION}.
+     *
+     * <p>Used by the storage health probe: a jar pointed at an older or newer
+     * catalog will fail inserts at runtime, so {@code /vg status} must not report
+     * OK for it.</p>
+     *
+     * @param c live connection; not closed here
+     * @return {@code true} when the stamped version equals the current one
+     * @throws SQLException on a real database error
+     */
+    public static boolean isCurrentVersion(Connection c) throws SQLException {
+        return readStampedVersion(c) == CURRENT_VERSION;
+    }
+
     static int readStampedVersion(Connection c) throws SQLException {
         if (!tableExists(c, "vg_schema_version")) {
             return 0;

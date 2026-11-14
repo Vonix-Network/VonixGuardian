@@ -194,7 +194,8 @@ public final class ConfigLoader {
             var db = work.database();
             var newDb = new GuardianConfig.Database(
                 db.type(), db.file(), db.jdbcUrl(), db.user(), db.password(),
-                db.migrationTarget(), GuardianConfig.Hikari.defaults()
+                db.migrationTarget(), GuardianConfig.Hikari.defaults(), db.logSql(),
+                db.updateSchema()
             );
             work = new GuardianConfig(
                 newDb, work.queue(), work.logFile(), work.actions(),

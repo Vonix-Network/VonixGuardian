@@ -15,7 +15,6 @@ import java.util.concurrent.locks.ReentrantLock;
  * simpler and faster than juggling a pool.
  */
 public final class SqliteDao extends AbstractJdbcDao {
-
     private final String jdbcUrl;
     private final ReentrantLock lock = new ReentrantLock();
     private volatile Connection connection;
@@ -25,7 +24,7 @@ public final class SqliteDao extends AbstractJdbcDao {
     }
 
     public SqliteDao(GuardianConfig.Database cfg, Semaphore lookupSemaphore, int maxResultRows) {
-        super(lookupSemaphore, maxResultRows);
+        super(cfg, lookupSemaphore, maxResultRows);
         String url = cfg != null ? cfg.jdbcUrl() : null;
         if (url == null || url.isBlank()) {
             String file = (cfg != null && cfg.file() != null && !cfg.file().isBlank())
@@ -79,16 +78,7 @@ public final class SqliteDao extends AbstractJdbcDao {
 
     @Override
     public boolean isHealthy() {
-        try {
-            Connection c = borrow();
-            try (var st = c.createStatement(); var rs = st.executeQuery("SELECT 1")) {
-                return rs.next();
-            } finally {
-                release(c);
-            }
-        } catch (SQLException ex) {
-            return false;
-        }
+        return probeStorageHealth();
     }
 
     @Override
