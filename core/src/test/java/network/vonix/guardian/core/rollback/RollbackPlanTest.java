@@ -412,10 +412,10 @@ class RollbackPlanTest {
 
         RollbackResult r = engine.rollback(filter, false);
 
-        assertThat(r.skippedCount()).isEqualTo(7);
+        assertThat(r.skippedCount()).isEqualTo(6);
         assertThat(r.skippedCount(RollbackResult.SkipReason.AUDIT_ONLY)).isEqualTo(2);
         assertThat(r.skippedCount(RollbackResult.SkipReason.UNTRACKED_STATE)).isEqualTo(2);
-        assertThat(r.skippedCount(RollbackResult.SkipReason.SUPERSEDED_POSITION)).isEqualTo(2);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.SUPERSEDED_POSITION)).isEqualTo(1);
         assertThat(r.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
         assertThat(r.skipsFullyClassified()).isTrue();
         assertThat(r.unclassifiedSkippedCount()).isZero();
@@ -425,9 +425,9 @@ class RollbackPlanTest {
         assertThat(detail)
             .contains("2 chat/session (nothing to undo)")
             .contains("2 state not tracked, cannot invert")
-            .contains("2 superseded by a newer edit")
+            .contains("1 superseded by a newer edit")
             .contains("1 stored payload unreadable");
-        assertThat(r.skippedCount()).isEqualTo(7);
+        assertThat(r.skippedCount()).isEqualTo(6);
     }
 
     @Test
