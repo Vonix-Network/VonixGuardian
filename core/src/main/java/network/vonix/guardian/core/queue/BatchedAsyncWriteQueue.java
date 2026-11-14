@@ -71,6 +71,8 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     private final Runnable pollObservationProbe;
     /** Package-private deterministic seam used only by poll-timeout regression tests. */
     private final Runnable prePollObservationProbe;
+    /** Package-private deterministic seam used only by paused-loop regression tests. */
+    private final Runnable pausedObservationProbe;
     private final Object admissionLock = new Object();
     /**
      * Serializes queue/state publication with idle snapshots. The worker marks
@@ -243,6 +245,16 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                            Runnable terminationListener, Runnable admissionProbe,
                            Runnable idleObservationProbe, Runnable pollObservationProbe,
                            Runnable prePollObservationProbe) {
+        this(maxSize, flushIntervalMs, batchSize, sink, tf, quarantineStore,
+                terminationListener, admissionProbe, idleObservationProbe, pollObservationProbe,
+                prePollObservationProbe, null);
+    }
+
+    BatchedAsyncWriteQueue(int maxSize, long flushIntervalMs, int batchSize,
+                           BatchSink sink, ThreadFactory tf, QuarantineStore quarantineStore,
+                           Runnable terminationListener, Runnable admissionProbe,
+                           Runnable idleObservationProbe, Runnable pollObservationProbe,
+                           Runnable prePollObservationProbe, Runnable pausedObservationProbe) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize must be > 0");
         }
@@ -262,6 +274,7 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         this.idleObservationProbe = idleObservationProbe;
         this.pollObservationProbe = pollObservationProbe;
         this.prePollObservationProbe = prePollObservationProbe;
+        this.pausedObservationProbe = pausedObservationProbe;
         if (quarantineStore != null) {
             long firstRetry = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
             for (QuarantineStore.Entry entry : quarantineStore.entries()) {
@@ -801,6 +814,9 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                 if (paused && !shutdown) {
                     if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
                         workerIdle.set(true);
+                    }
+                    if (pausedObservationProbe != null) {
+                        pausedObservationProbe.run();
                     }
                     // pollMs is derived from the flush window, which does not advance
                     // while paused. On the first paused iteration it equals the flush
