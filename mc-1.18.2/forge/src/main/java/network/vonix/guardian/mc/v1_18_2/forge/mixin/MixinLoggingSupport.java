@@ -216,6 +216,7 @@ public final class MixinLoggingSupport {
     public static void emitInteraction(Entity entity, net.minecraft.world.entity.player.Player player, String tag) {
         try {
             if (entity == null || player == null || entity.level == null) return;
+            if (entity.level.isClientSide) return;
             String type = entityId(entity);
             if (type == null) return;
             Guardian g = VonixGuardianForge.guardian();
