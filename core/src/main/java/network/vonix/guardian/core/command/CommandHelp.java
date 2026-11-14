@@ -40,6 +40,8 @@ public final class CommandHelp {
         lines.add("               a:<action>  i:<id>  e:<id>");
         lines.add("Flags: #preview and #count do not change the world or delete rows. Also #verbose #silent #optimize.");
         lines.add("#preview draws nothing: it counts the plan and keeps it for /vg apply or /vg cancel.");
+        lines.add("a:click rows are interactions (right-click, cake, anvil, item frame, taming)."
+            + " They are recorded and never rolled back.");
         lines.addAll(permissionLines());
         return List.copyOf(lines);
     }

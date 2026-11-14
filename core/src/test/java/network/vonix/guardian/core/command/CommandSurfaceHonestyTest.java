@@ -121,6 +121,21 @@ class CommandSurfaceHonestyTest {
     }
 
     @Test
+    void helpStatesTheClickRowsAreAuditOnlyRatherThanLeavingTheTokenUnexplained() {
+        // LANE 4 wired ActionType.CLICK to real producers (right-click block in
+        // ForgeEvents plus the interaction mixins), so the token is no longer a
+        // lie. It is still non-rollbackable, and a help page that lists a: against
+        // rollback without saying so invites an operator to plan a rollback that
+        // silently skips those rows.
+        assertThat(String.join("\n", CommandHelp.full()))
+            .contains("a:click")
+            .contains("never rolled back");
+        assertThat(network.vonix.guardian.core.query.ActionTokens.ALL)
+            .as("the token must still be offered by tab completion")
+            .contains("click");
+    }
+
+    @Test
     void previewResultLineNamesTheWorldAndTheTwoWaysOut() {
         QueryFilter filter = QueryFilter.builder().sinceMillis(1L).build();
         network.vonix.guardian.core.rollback.RollbackResult preview =
