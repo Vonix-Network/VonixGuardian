@@ -59,6 +59,15 @@ public final class MixinLoggingSupport {
     /** Actor name for natural decay/conversion rows, matching the ForgeEvents {@code #natural:fade} idiom. */
     public static final String ACTOR_DECAY = "#natural:decay";
 
+    /**
+     * Cap on pending snapshots per site and thread.
+     *
+     * <p>Only reached when a tick throws between its {@code HEAD} and
+     * {@code RETURN}, leaving a snapshot undrained. Four is enough for every site
+     * (none pushes more than two), so a healthy server never evicts anything.</p>
+     */
+    private static final int MAX_PENDING_WATCHES = 4;
+
     /** Snapshot stack for {@code BambooBlock#randomTick}. */
     public static final ThreadLocal<ArrayDeque<Watch>> BAMBOO_WATCHES =
             ThreadLocal.withInitial(() -> new ArrayDeque<>());
@@ -248,7 +257,15 @@ public final class MixinLoggingSupport {
     public static void pushWatch(ThreadLocal<ArrayDeque<Watch>> stack, Level level, BlockPos pos, boolean fade) {
         if (stack == null || level == null || pos == null) return;
         try {
-            stack.get().push(new Watch(pos.immutable(), level.getBlockState(pos), fade));
+            ArrayDeque<Watch> q = stack.get();
+            // A tick that throws between HEAD and RETURN never reaches its drain,
+            // so its snapshot would sit at the bottom of the stack forever. The cap
+            // keeps that bounded: past it we drop the oldest entries, which can only
+            // cost a missed row for a tick that already failed.
+            while (q.size() >= MAX_PENDING_WATCHES) {
+                q.pollLast();
+            }
+            q.push(new Watch(pos.immutable(), level.getBlockState(pos), fade));
         } catch (Throwable ignored) {
             // A failed snapshot leaves no half-pushed entry: the matching pop in
             // drainWatches finds the stack empty and emits nothing.
