@@ -44,8 +44,9 @@ class BatchedAsyncWriteQueuePauseSpinTest {
 
     @Test
     void pausedWorkerDoesNotWakeEveryMillisecond() throws Exception {
-        // 200ms flush interval: under the old paused loop, pollMs fell to its 1ms
-        // floor after the first 200ms and stayed there.
+        // 200ms flush interval. Under the old paused loop pollMs equalled 200 on the
+        // first iteration, then collapsed to its 1ms floor and stayed there, because
+        // the flush window it is derived from never advances while paused.
         ThreadFactory tracking = r -> {
             Thread t = new Thread(r, "vg-pause-spin-measured");
             t.setDaemon(true);
@@ -60,8 +61,11 @@ class BatchedAsyncWriteQueuePauseSpinTest {
             Thread worker = findWorker("vg-pause-spin-measured");
             assertThat(worker).as("queue worker thread must exist").isNotNull();
 
+            // One full interval of lead-in so the old loop has certainly passed the
+            // point where pollMs collapsed, then measure the next interval.
+            Thread.sleep(200L);
             long cpuBefore = cpuNanos(worker);
-            Thread.sleep(600L);   // three flush windows of wall time
+            Thread.sleep(400L);   // two flush windows of measured wall time
             long cpuAfter = cpuNanos(worker);
 
             if (cpuBefore < 0L || cpuAfter < 0L) {
@@ -72,14 +76,14 @@ class BatchedAsyncWriteQueuePauseSpinTest {
             }
 
             long busyMillis = TimeUnit.NANOSECONDS.toMillis(cpuAfter - cpuBefore);
-            // Old loop: 1ms wakeups for 600ms (~600 wakeups) burned a large share of
-            // the wall clock as CPU on this thread. New loop: one 100ms sleep cycle
-            // (~6 wakeups). The bound is deliberately loose so a loaded CI host cannot
-            // flake it, while still failing a millisecond spin.
+            // Old loop: 1ms wakeups for 400ms (~400 wakeups) burned a large share of the
+            // wall clock as CPU on this thread. New loop: two 200ms sleeps (~2 wakeups).
+            // The bound is loose so a loaded CI host cannot flake it while still failing
+            // a millisecond spin.
             assertThat(busyMillis)
                     .as("a paused worker must sleep, not wake every millisecond "
-                            + "(worker CPU over 600ms wall = %dms)", busyMillis)
-                    .isLessThan(200L);
+                            + "(worker CPU over 400ms wall = %dms)", busyMillis)
+                    .isLessThan(150L);
         } finally {
             q.close();
         }

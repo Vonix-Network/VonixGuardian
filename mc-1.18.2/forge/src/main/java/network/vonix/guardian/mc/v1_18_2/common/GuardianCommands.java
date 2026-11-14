@@ -359,6 +359,45 @@ public final class GuardianCommands {
     }
 
     /**
+     * Push {@code lookup.maxResultRows} onto the live DAO and describe the cap
+     * that is actually in force.
+     *
+     * <p>The cap is bound into the JDBC DAO when the pool opens, so a reload
+     * that only swaps the config record leaves the enforcement point on the
+     * boot value. The DAO exposes {@code applyLookupLimits} for this; its return
+     * value is authoritative, and a backend that cannot change at runtime
+     * returns something other than what was asked for — which is the fact the
+     * operator needs, not the number they typed.</p>
+     *
+     * @return one sentence naming the live cap, or the reason it could not be read
+     */
+    private static String applyLookupCap(Guardian g) {
+        final int requested;
+        try {
+            requested = g.config().lookup().maxResultRows();
+        } catch (Throwable t) {
+            return "(unknown — " + OperatorText.detail(t) + ")";
+        }
+        final int inForce;
+        try {
+            inForce = g.dao().applyLookupLimits(requested);
+        } catch (Throwable t) {
+            // The reload already succeeded for every other key; say the cap did
+            // not move rather than implying it did.
+            LOG.warn(Guardian.MARKER, "/vg reload could not apply lookup.maxResultRows", t);
+            return "UNCHANGED at the boot value (" + requested + " requested; "
+                    + OperatorText.detail(t) + ") — restart to apply";
+        }
+        if (inForce != requested) {
+            return inForce + " rows per query — " + requested
+                    + " requested but not accepted by this backend; restart to apply";
+        }
+        return inForce <= 0
+                ? "unbounded (0 = no cap)"
+                : inForce + " rows per query";
+    }
+
+    /**
      * Returns a copy of {@code qf} with a default radius of {@code 10} centered
      * on the caller, if the caller did not supply a numeric radius and did not
      * supply an explicit world selector ({@code r:#world_*}/{@code #nether}/
@@ -565,11 +604,14 @@ public final class GuardianCommands {
                     if (filter.countOnly()) {
                         var plan = g.rollbackEngine().plan(filter, RollbackResult.Mode.ROLLBACK, actor, options);
                         RollbackResult counted = new RollbackResult(actor, RollbackResult.Mode.ROLLBACK, true,
-                                plan.actionIds(), plan.skippedIds(), plan.plannedSteps(), 0, filter);
+                                plan.actionIds(), plan.skippedIds(), plan.plannedSteps(), 0, filter,
+                                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true,
+                                plan.skippedByReason());
                         server.execute(() -> {
                             if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                             sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
-                                    MutationOutcomeFormatter.countLine("Rollback", counted)));
+                                    MutationOutcomeFormatter.countLine("Rollback", counted,
+                                            skipReasons(counted))));
                         });
                         return;
                     }
@@ -630,11 +672,14 @@ public final class GuardianCommands {
                     if (filter.countOnly()) {
                         var plan = g.rollbackEngine().plan(filter, RollbackResult.Mode.RESTORE, actor, options);
                         RollbackResult counted = new RollbackResult(actor, RollbackResult.Mode.RESTORE, true,
-                                plan.actionIds(), plan.skippedIds(), plan.plannedSteps(), 0, filter);
+                                plan.actionIds(), plan.skippedIds(), plan.plannedSteps(), 0, filter,
+                                RollbackResult.Status.SUCCESS, 0L, 0, 0, 0, true,
+                                plan.skippedByReason());
                         server.execute(() -> {
                             if (!CommandChatGuard.isCurrent(actor, chatGen)) return;
                             sendToPlayerOrSrc(server, src, actor, ChatRenderer.success(g.theme(),
-                                    MutationOutcomeFormatter.countLine("Restore", counted)));
+                                    MutationOutcomeFormatter.countLine("Restore", counted,
+                                            skipReasons(counted))));
                         });
                         return;
                     }
@@ -779,7 +824,20 @@ public final class GuardianCommands {
                     : network.vonix.guardian.core.rollback.UndoStack.CONSOLE_KEY;
             var peeked = g.undoStack().peek(key);
             if (peeked.isEmpty()) {
-                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] Nothing to undo."));
+                // The history is an in-memory LIFO capped at 20 entries per
+                // operator, so "nothing to undo" has three different causes and
+                // the operator has to be told which one it could be. Saying only
+                // "Nothing to undo." after a restart read as "the rollback never
+                // happened", and the natural next guess — running the rollback
+                // again — doubles the damage.
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] Nothing to undo. Undo history is kept in memory only"
+                                + " (last " + network.vonix.guardian.core.rollback.UndoStack.MAX_PER_ACTOR
+                                + " operations per operator) and is cleared by a server restart."));
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] If the rollback you want to reverse was before the restart,"
+                                + " /vg batch lists its action ids and /vg restore with the same filter"
+                                + " puts those blocks back."));
                 return 0;
             }
             RollbackResult prev = peeked.get();
@@ -846,7 +904,9 @@ public final class GuardianCommands {
             final long chatGen = CommandChatGuard.next(actor);
             var pending = PENDING_PREVIEWS.snapshot(previewKey(actor));
             if (pending.isEmpty()) {
-                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] No pending rollback preview."));
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] No pending rollback preview. Nothing was applied."
+                                + " Run /vg rollback … #preview first."));
                 return 0;
             }
             network.vonix.guardian.core.rollback.RollbackPreviewStore.Snapshot expectedSnapshot = pending.get();
@@ -908,10 +968,12 @@ public final class GuardianCommands {
             CommandSourceStack src = ctx.getSource();
             UUID actor = actorUuid(src);
             if (!PENDING_PREVIEWS.cancel(previewKey(actor))) {
-                send(src, ChatRenderer.muted(g.theme(), "[VonixGuardian] No pending rollback preview."));
+                send(src, ChatRenderer.muted(g.theme(),
+                        "[VonixGuardian] No pending rollback preview. The world was not changed."));
                 return 0;
             }
-            send(src, ChatRenderer.success(g.theme(), "[VonixGuardian] Rollback preview cancelled."));
+            send(src, ChatRenderer.success(g.theme(),
+                    "[VonixGuardian] Rollback preview cancelled. The world was not changed."));
             return 1;
         }
     }
@@ -919,7 +981,12 @@ public final class GuardianCommands {
 
     private static void sendMutationResult(MinecraftServer server, CommandSourceStack src, UUID actor,
                                            Guardian g, String verb, RollbackResult result, QueryFilter filter) {
-        java.util.List<String> lines = MutationOutcomeFormatter.lines(verb, result, filter);
+        // RollbackResult carries a per-reason skip histogram. Passing it through is
+        // the difference between "skipped=309" and "skipped=309 (183 superseded,
+        // 126 chat/session)". Without it the operator has a number they cannot
+        // reconcile, which is the invariant this whole surface exists to protect.
+        java.util.Map<String, Integer> reasons = skipReasons(result);
+        java.util.List<String> lines = MutationOutcomeFormatter.lines(verb, result, filter, reasons);
         for (String line : lines) {
             if (result.status() == RollbackResult.Status.FAILED) {
                 sendToPlayerOrSrc(server, src, actor, ChatRenderer.error(g.theme(), line));
@@ -929,6 +996,43 @@ public final class GuardianCommands {
                 sendToPlayerOrSrc(server, src, actor, ChatRenderer.warning(g.theme(), line));
             }
         }
+    }
+
+    /**
+     * The engine's skip histogram as display labels. {@code RollbackResult}
+     * already words each reason for an operator; reuse that wording rather than
+     * printing enum names, and keep the ordering stable so two runs compare.
+     *
+     * @return label to count, largest first; empty when nothing was skipped
+     */
+    private static java.util.Map<String, Integer> skipReasons(RollbackResult result) {
+        java.util.Map<RollbackResult.SkipReason, Integer> histogram = result.skippedByReason();
+        if (histogram == null || histogram.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<String, Integer> labelled = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<RollbackResult.SkipReason, Integer> e : histogram.entrySet()) {
+            labelled.put(reasonLabel(e.getKey()), e.getValue());
+        }
+        int unclassified = result.unclassifiedSkippedCount();
+        if (unclassified > 0) {
+            labelled.put("reason not recorded", unclassified);
+        }
+        return MutationOutcomeFormatter.sortByCount(labelled);
+    }
+
+    /** Operator wording for one skip reason; mirrors RollbackResult.skipReasonDetail. */
+    private static String reasonLabel(RollbackResult.SkipReason reason) {
+        if (reason == null) {
+            return "reason not recorded";
+        }
+        return switch (reason) {
+            case AUDIT_ONLY -> "chat/session, nothing to undo";
+            case UNTRACKED_STATE -> "state not tracked";
+            case SUPERSEDED_POSITION -> "superseded by a newer edit";
+            case UNSUPPORTED_ENTITY -> "entity restore unsupported";
+            case MALFORMED_PAYLOAD -> "stored payload unreadable";
+        };
     }
 
     private static QueryFilter idFilter(QueryFilter base, List<Long> ids) {
@@ -1040,6 +1144,12 @@ public final class GuardianCommands {
             submitAsync(src, g, () -> {
                 try {
                     Guardian.ReloadResult r = g.reloadConfig(g.configPath());
+                    // lookup.maxResultRows is bound into the JDBC DAO at open time
+                    // and no query re-reads the config. Pushing the new value onto
+                    // the live DAO has to happen off the server thread (it is a
+                    // DAO call), and the value it returns is the cap actually in
+                    // force — the only number an operator can act on.
+                    final String cap = applyLookupCap(g);
                     if (server == null) return;
                     server.execute(() -> {
                         String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
@@ -1049,6 +1159,15 @@ public final class GuardianCommands {
                                 "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
                         send(src, ChatRenderer.warning(g.theme(),
                                 "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
+                        // lookup.maxResultRows is a cap bound into the DAO at open
+                        // time, not a value any query re-reads. Reporting it in the
+                        // core hot-swap list told the operator the cap had moved
+                        // when the enforcement point still held the boot value.
+                        // Push the cap onto the live DAO here and report the value
+                        // actually in force, which is the only number the operator
+                        // can act on.
+                        send(src, ChatRenderer.primary(g.theme(),
+                                "[VonixGuardian] Lookup row cap: " + cap));
                         if (r.errors().isEmpty()) {
                             send(src, ChatRenderer.muted(g.theme(),
                                     "[VonixGuardian] Errors: 0 (none)"));
