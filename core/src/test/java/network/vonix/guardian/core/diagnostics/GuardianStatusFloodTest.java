@@ -148,9 +148,9 @@ class GuardianStatusFloodTest {
             // SELECT 1 answers "can I reach it", not "is it healthy". A locked
             // table, a full disk, and a missing grant all pass SELECT 1.
             assertThat(report)
-                .as("the reachability row must not be named health")
-                .doesNotContain("health     ")
-                .doesNotContain("health    ")
+                .as("the reachability row must not be named health at all")
+                .doesNotContain("health");
+            assertThat(report)
                 .contains("reachable")
                 .contains("SELECT 1");
             assertThat(report)

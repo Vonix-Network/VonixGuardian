@@ -180,7 +180,7 @@ public final class GuardianStatus {
         }
         final int found;
         try {
-            found = raw.withRawConnection(GuardianStatus::readStampedVersion);
+            found = raw.<Integer>withRawConnection(GuardianStatus::readStampedVersion);
         } catch (Throwable t) {
             return "UNREADABLE — " + errorName(t);
         }
