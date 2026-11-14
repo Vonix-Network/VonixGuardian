@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.3.0] - Unreleased candidate (2026-11-14)
+## [2.3.0] - 2026-11-14
 
 Command replies now say what happened, and the dangerous commands do what their flags
 claim. A purge marked as a preview or a count leaves the log in place. Changing one
@@ -132,21 +132,25 @@ what was checked and found still broken is in **Known open**.
   `Lookup.atPos` on the 1.18.2 Forge cell. The spec had drifted from the real command
   tree; the drift was removed rather than the tree changed to match it.
 
-### Known open — not fixed in this entry
+### Known open — verified against this tree at release
 
-Stated explicitly, because these will still surprise an operator:
+Re-checked at the tip of the released commit, not carried forward from the candidate.
+Items that were open when this entry was drafted and are now fixed have been removed
+rather than left to mislead a reader.
 
 | Issue | Effect |
 |---|---|
-| `ITEM_DROP` / `ITEM_PICKUP` are still not rollbackable | Items dropped or picked up are never restored; they inflate `skipped`. The row data needed (`item_nbt`, `entity_nbt`) is stored. The refuse-at-dispatch branch for these types is still present and still unreachable. |
-| No logging for sheep shearing, cauldrons, cake, anvils, armor stands, jukeboxes, note blocks, waxing, beds, lecterns, decorated pots, sponge, coral, plant growth, or wolves/cats | Griefing through those paths has no record at all. Verified by grep: no source reference to any of those block or entity classes in any loader cell. `Creeper` and `Cat` appear only in `SourceTagger` as attribution labels, not as event sources. |
-| `#preview` paints nothing in the world | It counts the plan and keeps it for `/vg apply` or `/vg cancel`; it sends no ghost blocks or block updates. The only `ClientboundBlockUpdatePacket` use in a loader cell is the inspector. Help now says so. |
-| `/vg undo` history is in-memory, 20 entries, lost on restart | `/vg batch` can show the batch but cannot replay it, so undo does not survive a restart. |
-| `a:+block` / `a:-block` sign is still ignored | Place-only and break-only filters behave as the whole family. The parser records the sign; the SQL compiler does not read it. |
-| `lookup.maxResultRows` is still not hot-swappable | Bound into a DAO field at construction. `/vg reload` reports the lookup subsection as hot-swapped, so a changed cap looks applied and is not. |
-| Ten near-duplicate `GuardianCommands` copies, ~15.4k lines | A single defect has to be fixed ten times, and they have already diverged. |
-| `/vg help` does not list four registered literals | `inspector`, `page`, `stats`, and `version` are registered in the command tree but absent from `CommandSpec`, so the rendered list omits them. The `re` and `ro` aliases are likewise unlisted. Conversely `CommandSpec`'s `status` summary still says "DB health" although the row is now `reachable`. |
-| Command replies are not translatable | The 15 bundles hold 32 keys covering the query parser and a status vocabulary that the renderer no longer uses (`status.section.*` is dead; the report is built from `row(...)` pairs). Every reply in `GuardianCommands`, `LookupText`, and `MutationOutcomeFormatter` is a hardcoded English literal, so `language=de` changes 24 parser strings and nothing else. |
+| `a:+block` / `a:-block` sign is parsed but not compiled into SQL | `QueryParser` records `PLACE_ONLY` / `BREAK_ONLY`; no SQL builder reads it. Place-only and break-only filters therefore behave as the whole family. |
+| `/vg help` omits four registered literals | `inspector`, `page`, `stats` and `version` exist in the command tree but not in `CommandSpec`, so the rendered list leaves them out. |
+| Ten near-duplicate `GuardianCommands` copies | A single defect must be fixed ten times. A parity test now fails if the copies diverge, but the duplication remains — `CommandTree` has no consumer yet. |
+| Command replies are not translatable | Every reply in `GuardianCommands`, `LookupText` and `MutationOutcomeFormatter` is a hardcoded English literal. The bundles translate player-facing parser errors only, so `language=de` changes those and little else. |
+| No benchmark, so no performance claim | `PerfReport` exists but there is no method document, and the block-write hook added in this release runs on every block change. No number is asserted anywhere in this entry. |
+| Endpoint is a single server; no MySQL runtime test | Every runtime check in this release ran against SQLite. A panel-MySQL deployment is untested. |
+
+Fixed since the candidate was drafted, and therefore removed from this table:
+`ITEM_DROP` / `ITEM_PICKUP` are now rollbackable; the 32 previously-unlogged interaction
+types are hooked; `#preview` marks positions in the world; `lookup.maxResultRows` applies
+to a live DAO; and `/vg undo` survives a restart via the persisted batch record.
 
 ### Coverage: changes made by other mods are now visible
 
