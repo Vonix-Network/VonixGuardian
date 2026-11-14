@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -303,12 +304,449 @@ class RollbackPlanTest {
         );
     }
 
+    /**
+     * Item-flow row with the v1.3.1 NBT fidelity columns populated, which is how
+     * the producers write ITEM_DROP / ITEM_PICKUP when {@code storage.persistNbt}
+     * is on. {@code itemNbt == null} models a row written while it was off.
+     */
+    private static Action itemAction(long id, long ts, ActionType type,
+                                     String world, int x, int y, int z,
+                                     String itemId, int amount, byte[] itemNbt,
+                                     boolean rolledBack) {
+        return new Action(
+            id, ts, type,
+            UUID.randomUUID(), "Player",
+            world, x, y, z,
+            itemId, null, amount, rolledBack, null,
+            null, null, null,
+            null, null, null, itemNbt, null
+        );
+    }
+
+    // =====================================================================
+    // LANE 1 — item drop / pickup are reversible
+    // =====================================================================
+
+    @Test
+    void itemDropIsAdmittedToThePlanAndRolledBackByRemovingTheItemEntity() throws Exception {
+        Action drop = itemAction(11L, 100L, ActionType.ITEM_DROP,
+            "minecraft:overworld", 4, 65, 7, "minecraft:netherite_sword", 1, null, false);
+
+        RollbackPlan plan = RollbackPlan.build(List.of(drop), filter,
+            RollbackResult.Mode.ROLLBACK, null);
+        assertThat(plan.plannedSteps()).isEqualTo(1);
+        assertThat(plan.skipped()).isEmpty();
+
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(drop));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(5L);
+
+        RollbackResult r = engine.execute(plan, false);
+
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(r.affectedIds()).containsExactly(11L);
+        assertThat(mutator.calls).containsExactly(
+            "removeEntity|minecraft:overworld|4|65|7|minecraft:item");
+    }
+
+    @Test
+    void itemPickupRollbackGivesTheStackBackWithItsOriginalNbt() throws Exception {
+        byte[] itemNbt = "NAMED_SWORD".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Action pickup = itemAction(12L, 200L, ActionType.ITEM_PICKUP,
+            "w", 1, 64, 2, "minecraft:netherite_sword", 1, itemNbt, false);
+
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(pickup));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(6L);
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(r.affectedIds()).containsExactly(12L);
+        assertThat(mutator.calls).containsExactly(
+            "giveOrDropNbt|w|1|64|2|minecraft:netherite_sword|1|11");
+    }
+
+    @Test
+    void restoreOfItemDropReplacesTheStackAndRestoreOfPickupTakesItBack() throws Exception {
+        Action drop = itemAction(13L, 300L, ActionType.ITEM_DROP,
+            "w", 2, 64, 2, "minecraft:diamond", 3, null, true);
+        Action pickup = itemAction(14L, 301L, ActionType.ITEM_PICKUP,
+            "w", 2, 64, 2, "minecraft:emerald", 2, null, true);
+
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(drop, pickup));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(7L);
+
+        RollbackResult r = engine.restore(filter, false);
+
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(mutator.calls).containsExactlyInAnyOrder(
+            "giveOrDrop|w|2|64|2|minecraft:diamond|3|null",
+            "removePlayer|" + pickup.actorUuid() + "|minecraft:emerald|2");
+    }
+
+    @Test
+    void itemDropAndPickupAreRollbackableAtTheTypeLevel() {
+        assertThat(RollbackEngine.isRollbackable(ActionType.ITEM_DROP)).isTrue();
+        assertThat(RollbackEngine.isRollbackable(ActionType.ITEM_PICKUP)).isTrue();
+    }
+
+    // =====================================================================
+    // LANE 1 — skipped is not one number
+    // =====================================================================
+
+    @Test
+    void skippedRowsAreSplitByReasonAndTotalsReconcile() throws Exception {
+        Action chat = action(1L, 500L, ActionType.CHAT, "w", 0, 0, 0, "hello", null, 0, false);
+        Action sign = action(2L, 499L, ActionType.SIGN, "w", 0, 0, 0, "text", null, 0, false);
+        Action dispense = action(3L, 498L, ActionType.DISPENSE, "w", 5, 64, 5, "minecraft:arrow", null, 1, false);
+        Action piston = action(4L, 497L, ActionType.PISTON_EXTEND, "w", 6, 64, 5, "minecraft:stone", null, 1, false);
+        Action newest = action(5L, 496L, ActionType.BLOCK_PLACE, "w", 7, 64, 5, "minecraft:stone", null, 1, false);
+        Action older = action(6L, 495L, ActionType.BLOCK_BREAK, "w", 7, 64, 5, "minecraft:dirt", null, 1, false);
+        Action badBlast = action(7L, 494L, ActionType.EXPLOSION, "w", 8, 64, 5, "not-a-coordinate-list", null, 1, false);
+
+        // One reversible row, so the run has both an applied and a skipped side.
+        Action remover = action(8L, 493L, ActionType.BLOCK_PLACE, "w", 9, 64, 5, "minecraft:stone", null, 1, false);
+
+        when(dao.query(any(), anyInt(), anyInt()))
+            .thenReturn(List.of(chat, sign, dispense, piston, newest, older, badBlast, remover));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(31L);
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        assertThat(r.skippedCount()).isEqualTo(7);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.AUDIT_ONLY)).isEqualTo(2);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.UNTRACKED_STATE)).isEqualTo(2);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.SUPERSEDED_POSITION)).isEqualTo(2);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+        assertThat(r.skipsFullyClassified()).isTrue();
+        assertThat(r.unclassifiedSkippedCount()).isZero();
+
+        // The operator-facing split names every bucket, in a stable order.
+        String detail = r.skipReasonDetail();
+        assertThat(detail)
+            .contains("2 chat/session (nothing to undo)")
+            .contains("2 state not tracked, cannot invert")
+            .contains("2 superseded by a newer edit")
+            .contains("1 stored payload unreadable");
+        assertThat(r.skippedCount()).isEqualTo(7);
+    }
+
+    @Test
+    void aFullySkippedRequestStillRecordsAnAuditBatchAndClosesIt() throws Exception {
+        Action chat = action(1L, 500L, ActionType.CHAT, "w", 0, 0, 0, "hello", null, 0, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(chat));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(32L);
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        // The operator asked for something and matched a row. The audit row must
+        // exist, and it must not be left OPEN for crash recovery to find.
+        assertThat(mutator.calls).isEmpty();
+        assertThat(r.plannedSteps()).isZero();
+        assertThat(r.skippedCount(RollbackResult.SkipReason.AUDIT_ONLY)).isEqualTo(1);
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(r.batchClosed()).isTrue();
+        verify(dao).openRollbackBatch(any(), anyInt(), anyString(), any());
+        verify(dao).closeRollbackBatch(32L);
+    }
+
+    @Test
+    void scannedRowsAlwaysEqualPlannedPlusSkipped() throws Exception {
+        List<Action> rows = new ArrayList<>();
+        long id = 100;
+        for (int i = 0; i < 30; i++) {
+            rows.add(action(id, 1_000L + i, ActionType.BLOCK_PLACE,
+                "w", i, 64, 0, "minecraft:stone", null, 1, false));
+        }
+        for (int i = 0; i < 12; i++) {
+            rows.add(action(id + 100 + i, 2_000L + i, ActionType.CHAT,
+                "w", 0, 0, 0, "msg" + i, null, 0, false));
+        }
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(rows);
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(8L);
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        assertThat(rows.size())
+            .as("no row may vanish between the DAO result and the result counts")
+            .isEqualTo(r.plannedSteps() + r.skippedCount());
+        assertThat(r.skippedCount(RollbackResult.SkipReason.AUDIT_ONLY)).isEqualTo(12);
+    }
+
+    @Test
+    void perReasonCountsSurviveAMixedAppliedAndSkippedRun() throws Exception {
+        Action place = action(21L, 900L, ActionType.BLOCK_PLACE,
+            "w", 3, 64, 3, "minecraft:stone", null, 1, false);
+        Action chat = action(22L, 899L, ActionType.CHAT, "w", 0, 0, 0, "hi", null, 0, false);
+        Action piston = action(23L, 898L, ActionType.PISTON_RETRACT,
+            "w", 4, 64, 3, "minecraft:piston_head", null, 1, false);
+
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place, chat, piston));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(9L);
+
+        RollbackResult r = engine.rollback(filter, false);
+
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(r.affectedIds()).containsExactly(21L);
+        assertThat(r.skippedIds()).containsExactlyInAnyOrder(22L, 23L);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.AUDIT_ONLY)).isEqualTo(1);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.UNTRACKED_STATE)).isEqualTo(1);
+    }
+
+    // =====================================================================
+    // LANE 1 — plan validates before mutate
+    // =====================================================================
+
+    @Test
+    void unparsableExplosionPayloadIsRejectedAtPlanTimeNotMidRun() throws Exception {
+        Action badBlast = action(31L, 700L, ActionType.EXPLOSION,
+            "w", 0, 64, 0, "garbage-without-equals", null, 1, false);
+
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(badBlast));
+
+        RollbackPlan plan = engine.plan(filter, RollbackResult.Mode.ROLLBACK, null);
+
+        // Known before the world is touched: nothing is planned, nothing runs.
+        assertThat(plan.plannedSteps()).isZero();
+        assertThat(plan.invalid()).extracting(Action::id).containsExactly(31L);
+        assertThat(plan.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+
+        // Executing that plan cannot discover the defect because it never runs.
+        RollbackResult r = engine.execute(plan, false);
+        assertThat(mutator.calls).isEmpty();
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.SUCCESS);
+        assertThat(r.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+        assertThat(r.plannedSteps()).isZero();
+    }
+
+    @Test
+    void inventoryRowWithoutItemPayloadIsRejectedAtPlanTime() throws Exception {
+        Action noNbt = new Action(
+            41L, 600L, ActionType.INVENTORY_WITHDRAW,
+            UUID.randomUUID(), "Player",
+            "w", 0, 64, 0, "minecraft:diamond", null, 1, false, null);
+
+        RollbackPlan plan = RollbackPlan.build(List.of(noNbt), filter,
+            RollbackResult.Mode.ROLLBACK, null);
+
+        assertThat(plan.plannedSteps()).isZero();
+        assertThat(plan.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+    }
+
+    @Test
+    void inventoryRowWithoutActorIsRejectedAtPlanTime() throws Exception {
+        Action noActor = new Action(
+            42L, 600L, ActionType.INVENTORY_DEPOSIT,
+            null, "Player",
+            "w", 0, 64, 0, "minecraft:diamond", null, 1, false, null,
+            null, null, null, null, null, null, new byte[]{1}, null, null, null);
+
+        RollbackPlan plan = RollbackPlan.build(List.of(noActor), filter,
+            RollbackResult.Mode.ROLLBACK, null);
+
+        assertThat(plan.plannedSteps()).isZero();
+        assertThat(plan.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+    }
+
+    @Test
+    void restoreOfAnEntityKillIsSkippedAtPlanTimeNotAtDispatch() throws Exception {
+        Action kill = action(51L, 500L, ActionType.ENTITY_KILL,
+            "w", 1, 64, 1, "minecraft:zombie", null, 1, true);
+
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(kill));
+
+        RollbackResult r = engine.restore(filter, false);
+
+        assertThat(mutator.calls).isEmpty();
+        assertThat(r.skippedCount(RollbackResult.SkipReason.UNSUPPORTED_ENTITY)).isEqualTo(1);
+        // Plan-time resolution means the count was never a dispatch surprise.
+        assertThat(r.skippedIds()).containsExactly(51L);
+    }
+
+    // =====================================================================
+    // LANE 1 — concurrent rollbacks are mutually excluded
+    // =====================================================================
+
+    @Test
+    void secondRollbackWaitsForTheActiveOneInsteadOfPlanningTheSamePreState() throws Exception {
+        Action place = action(61L, 400L, ActionType.BLOCK_PLACE,
+            "w", 9, 64, 9, "minecraft:stone", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(11L, 12L);
+
+        java.util.concurrent.CountDownLatch firstInside = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseFirst = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean firstApplied = new java.util.concurrent.atomic.AtomicBoolean();
+
+        Executor gatedMainThread = task -> new Thread(() -> {
+            firstInside.countDown();
+            try {
+                releaseFirst.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            task.run();
+            firstApplied.set(true);
+        }, "gated-main").start();
+
+        RollbackEngine serial = new RollbackEngine(dao, mutator, gatedMainThread, Runnable::run);
+        java.util.concurrent.CompletableFuture<RollbackResult> first =
+            serial.rollbackAsync(filter, false).toCompletableFuture();
+        assertThat(firstInside.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        java.util.concurrent.atomic.AtomicBoolean secondReachedPlanning =
+            new java.util.concurrent.atomic.AtomicBoolean();
+        Thread second = new Thread(() -> {
+            try {
+                serial.rollback(filter, false);
+                secondReachedPlanning.set(true);
+            } catch (Exception ignored) {
+                // Asserted below through the wait counter.
+            }
+        }, "second-rollback");
+        second.start();
+
+        // The second rollback must block on the exclusion permit, not plan and
+        // apply against the same pre-state while the first is still running.
+        assertThat(awaitTrue(() -> serial.exclusionWaitCount() == 1, 5_000L))
+            .as("second rollback must record a wait on the exclusion permit")
+            .isTrue();
+        assertThat(serial.rollbackInProgress()).isTrue();
+        assertThat(secondReachedPlanning).isFalse();
+        assertThat(firstApplied).isFalse();
+
+        releaseFirst.countDown();
+        second.join(5_000L);
+        first.join(5_000L);
+
+        assertThat(secondReachedPlanning).isTrue();
+        assertThat(serial.rollbackInProgress()).isFalse();
+        assertThat(serial.exclusionWaitCount()).isEqualTo(1);
+    }
+
+    /** Poll a condition with a deadline; avoids sleeps that make a race look deterministic. */
+    private static boolean awaitTrue(java.util.function.BooleanSupplier condition, long timeoutMillis) {
+        long deadline = System.nanoTime() + timeoutMillis * 1_000_000L;
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            try {
+                Thread.sleep(10L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return condition.getAsBoolean();
+    }
+
+    @Test
+    void previewDoesNotBlockOnARunningRollback() throws Exception {
+        Action place = action(71L, 400L, ActionType.BLOCK_PLACE,
+            "w", 10, 64, 10, "minecraft:stone", null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(place));
+
+        java.util.concurrent.CountDownLatch inside = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        Executor gated = task -> new Thread(() -> {
+            inside.countDown();
+            try {
+                release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            task.run();
+        }, "gated").start();
+
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(13L);
+        RollbackEngine serial = new RollbackEngine(dao, mutator, gated, Runnable::run);
+        serial.rollbackAsync(filter, false);
+        assertThat(inside.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        // A preview must still answer while the real rollback is in flight.
+        RollbackResult preview = serial.rollback(filter, true);
+        assertThat(preview.preview()).isTrue();
+        assertThat(serial.exclusionWaitCount()).isZero();
+
+        release.countDown();
+    }
+
+    // =====================================================================
+    // LANE 1 — a partially applied explosion is REPAIR_REQUIRED
+    // =====================================================================
+
+    @Test
+    void partlyAppliedExplosionIsRepairRequiredNotFailed() throws Exception {
+        String affected = "0:64:0=minecraft:stone,1:64:0=minecraft:dirt,2:64:0=minecraft:sand";
+        Action blast = action(81L, 900L, ActionType.EXPLOSION, "w", 0, 64, 0, affected, null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(blast));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(21L);
+        when(dao.markRepairRequired(any())).thenReturn(1);
+
+        // First block restores, second throws. One block DID change.
+        RecordingMutator partial = new RecordingMutator() {
+            private int seq;
+            @Override
+            public boolean trySetBlock(String worldId, int x, int y, int z,
+                                       String targetId, String targetMeta) {
+                if (seq++ == 1) {
+                    throw new IllegalStateException("chunk unloaded mid-restore");
+                }
+                return super.trySetBlock(worldId, x, y, z, targetId, targetMeta);
+            }
+        };
+        RollbackEngine repairing = new RollbackEngine(dao, partial, Runnable::run);
+
+        RollbackResult r = repairing.rollback(filter, false);
+
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.REPAIR_REQUIRED);
+        assertThat(r.repairRequiredCount()).isEqualTo(1);
+        assertThat(r.failedCount()).isZero();
+        assertThat(r.batchClosed()).isFalse();
+        verify(dao).markRepairRequired(argThat(rows -> rows.size() == 1
+            && rows.get(0).actionId() == 81L
+            && rows.get(0).reason().contains("1 of 3")));
+    }
+
+    @Test
+    void explosionThatAppliesNothingStaysFailedAndWritesNoRepairRow() throws Exception {
+        String affected = "0:64:0=minecraft:stone,1:64:0=minecraft:dirt";
+        Action blast = action(82L, 900L, ActionType.EXPLOSION, "w", 0, 64, 0, affected, null, 1, false);
+        when(dao.query(any(), anyInt(), anyInt())).thenReturn(List.of(blast));
+        when(dao.openRollbackBatch(any(), anyInt(), anyString(), any())).thenReturn(22L);
+
+        WorldMutator refuses = new RecordingMutator() {
+            @Override
+            public boolean trySetBlock(String worldId, int x, int y, int z,
+                                       String targetId, String targetMeta) {
+                return false;
+            }
+        };
+        RollbackEngine failing = new RollbackEngine(dao, refuses, Runnable::run);
+
+        RollbackResult r = failing.rollback(filter, false);
+
+        // Nothing changed, so this is an honest FAILED — no repair row needed.
+        assertThat(r.status()).isEqualTo(RollbackResult.Status.FAILED);
+        assertThat(r.repairRequiredCount()).isZero();
+        verify(dao, never()).markRepairRequired(any());
+    }
+
     private static final class RecordingMutator implements WorldMutator {
         final List<String> calls = Collections.synchronizedList(new ArrayList<>());
 
         @Override
         public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta) {
-            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);            return true;
+            calls.add("setBlock|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId + "|" + targetMeta);
+            return true;
+        }
+
+        @Override
+        public boolean trySetBlock(String worldId, int x, int y, int z, String targetId, String targetMeta,
+                                   String blockState, byte[] blockEntityNbt) {
+            calls.add("setBlockNbt|" + worldId + "|" + x + "|" + y + "|" + z + "|" + targetId
+                + "|" + targetMeta + "|" + blockState);
+            return true;
         }
 
         @Override
@@ -319,17 +757,41 @@ class RollbackPlanTest {
 
         @Override
         public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount, String targetMeta) {
-            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);            return true;
+            calls.add("giveOrDrop|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount + "|" + targetMeta);
+            return true;
+        }
+
+        @Override
+        public boolean tryGiveOrDrop(String worldId, int x, int y, int z, String itemId, int amount,
+                                     String targetMeta, byte[] itemNbt) {
+            calls.add("giveOrDropNbt|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId
+                + "|" + amount + "|" + (itemNbt == null ? 0 : itemNbt.length));
+            return true;
         }
 
         @Override
         public boolean tryRemoveFromContainer(String worldId, int x, int y, int z, String itemId, int amount) {
-            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);            return true;
+            calls.add("removeFromContainer|" + worldId + "|" + x + "|" + y + "|" + z + "|" + itemId + "|" + amount);
+            return true;
+        }
+
+        @Override
+        public boolean tryRemoveFromPlayerInventory(UUID playerUuid, String itemId, int amount,
+                                                    String targetMeta, byte[] itemNbt, Integer inventorySlot) {
+            calls.add("removePlayer|" + playerUuid + "|" + itemId + "|" + amount);
+            return true;
         }
 
         @Override
         public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
-            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);            return true;
+            calls.add("respawnEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType + "|" + targetMeta);
+            return true;
+        }
+
+        @Override
+        public boolean tryRemoveEntity(String worldId, int x, int y, int z, String entityType) {
+            calls.add("removeEntity|" + worldId + "|" + x + "|" + y + "|" + z + "|" + entityType);
+            return true;
         }
     }
 }
