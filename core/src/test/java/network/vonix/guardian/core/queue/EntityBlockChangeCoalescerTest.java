@@ -41,7 +41,10 @@ class EntityBlockChangeCoalescerTest {
         assertThat(c.shouldLog("dragon", "world", 1, 64, 1)).isTrue();
         clock.set(TimeUnit.MILLISECONDS.toNanos(999L));
         assertThat(c.shouldLog("dragon", "world", 1, 64, 1)).isFalse();
-        // In-window hits refresh last-seen; expiry is measured from that refresh.
+        // Expiry is measured from the last event that was RECORDED, not from the
+        // last suppressed hit. See EntityBlockChangeCoalescerWindowTest for the
+        // regression that pins the difference; the assertions below hold either way
+        // because 1999 - 0 >= 1000 as well as 1999 - 999 = 1000.
         clock.set(TimeUnit.MILLISECONDS.toNanos(999L) + TimeUnit.MILLISECONDS.toNanos(1_000L));
         assertThat(c.shouldLog("dragon", "world", 1, 64, 1)).isTrue();
 

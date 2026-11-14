@@ -20,6 +20,18 @@ import java.util.concurrent.atomic.AtomicLong;
  * arrives within {@link #windowMs} ms, it's skipped. Different actors on the
  * same coord are logged. Different coords by the same actor are logged.
  *
+ * <p><strong>Suppression is bounded.</strong> The window is measured from the event
+ * that was actually <em>recorded</em>, not from the most recent suppressed one. The
+ * old refresh-on-hit behaviour meant an entity that kept touching one coordinate
+ * (a mob standing on the block it keeps trying to destroy, which is the normal case
+ * for this event) suppressed that coordinate for as long as it stayed active. An
+ * audit tool that hides a change because something kept asking is not throttling a
+ * flood, it is dropping real events: a block destroyed, rebuilt, then destroyed
+ * again produced exactly one row, so a rollback rebuilt a state that never existed.
+ * Under the current rule a sustained hit stream yields at most one row per
+ * {@link #windowMs} per coordinate, which still collapses a 100k/sec prospective
+ * flood to a few rows per second per tracked block.
+ *
  * <p>The map is bounded ({@link #maxEntries} default 8192) with best-effort
  * eviction: when full, we scan a small tail slice and evict the oldest hits.
  * This is not a strict LRU (would need a doubly-linked list) but is O(1) on
@@ -106,17 +118,28 @@ public final class EntityBlockChangeCoalescer {
         if (slot != null) {
             long prev = slot.get();
             if (now - prev < windowNs) {
-                // Within window; refresh timestamp so a sustained hit doesn't
-                // let a later event slip through simply because the old
-                // timestamp aged out.
-                slot.compareAndSet(prev, now);
+                // Inside the window: suppress, and do NOT move the timestamp.
+                // The window is measured from the last event that was actually
+                // recorded, so suppression is bounded by windowMs no matter how
+                // long the same actor keeps touching the same block. Refreshing
+                // on every hit (the previous behaviour) made a continuously
+                // active actor suppress its own coordinate indefinitely: a block
+                // destroyed, rebuilt, then destroyed again by the same entity
+                // never produced a second audit row, so a rollback restored a
+                // state that never existed. Throttle, not mute.
                 hits.incrementAndGet();
                 return false;
             }
-            // Old entry; update in-place and let this event through.
-            slot.set(now);
-            misses.incrementAndGet();
-            return true;
+            // Window expired. Claim the slot with a CAS rather than a plain set:
+            // two producers reading the same stale timestamp would otherwise both
+            // decide to emit and write duplicate rows for one coalesced change.
+            if (slot.compareAndSet(prev, now)) {
+                misses.incrementAndGet();
+                return true;
+            }
+            // Another producer already reopened this window; this event is inside it.
+            hits.incrementAndGet();
+            return false;
         }
 
         // Hard cap before insert. Under high-cardinality bursts (many fresh
