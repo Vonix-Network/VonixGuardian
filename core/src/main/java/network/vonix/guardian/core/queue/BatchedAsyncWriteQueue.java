@@ -756,8 +756,17 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             while (!shutdown || !queue.isEmpty()) {
                 try {
                 if (!shutdown && processDueRecovery()) {
-                    lastFlushNs = System.nanoTime();
-                    continue;
+                    // Recovery must not starve the live batch. Advancing
+                    // lastFlushNs here (as the original code did unconditionally)
+                    // pushed the flush deadline forward on every due recovery
+                    // item, so a sustained quarantine backlog kept the worker in
+                    // this branch and the collected live batch never reached the
+                    // sink until the backlog drained. With rows still pending,
+                    // fall through to the normal poll/flush path instead.
+                    if (batch.isEmpty() && queue.isEmpty()) {
+                        lastFlushNs = System.nanoTime();
+                        continue;
+                    }
                 }
                 // Time-budgeted poll: never wait longer than the remaining slice of the
                 // current flush window. Guarantees any submitted action lands in the sink
@@ -820,10 +829,15 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                     if (head != null) {
                         workerIdle.set(false);
                         head.appendTo(batch);
-                        int remaining = Math.max(0, batchSize - batch.size());
-                        if (remaining > 0) {
-                            List<QueuedWrite> extra = new ArrayList<>(remaining);
-                            queue.drainTo(extra, remaining);
+                        // One drainTo (single lock). budget counts queue SLOTS, and a
+                        // replacement pair is one slot but two actions, so a pair-heavy
+                        // batch holds at most batchSize slots (<= 2x batchSize actions).
+                        // Deliberately no put-back: ArrayBlockingQueue can only append, so
+                        // returning a slot that did not fit would reorder audit rows.
+                        int budget = Math.max(0, batchSize - batch.size());
+                        if (budget > 0) {
+                            List<QueuedWrite> extra = new ArrayList<>(budget);
+                            queue.drainTo(extra, budget);
                             for (QueuedWrite write : extra) {
                                 write.appendTo(batch);
                             }
@@ -926,17 +940,62 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             }
         }
         if (!queue.isEmpty()) {
-            List<Action> tail = drainQueuedActions();
-            if (!tail.isEmpty()) {
-                localBatchHeld.set(tail.size());
-                try {
-                    flushWithRetry(tail);
-                } finally {
-                    localBatchHeld.set(0);
-                }
-            }
+            flushDrainedTail(drainQueuedWrites());
         }
         workerIdle.set(true);
+    }
+
+    /**
+     * Flush a ring-buffer tail in bounded slices instead of one sink call.
+     *
+     * <p>The tail can hold up to {@code maxSize} actions (50&#8239;000 at the shipped
+     * default). Handing all of them to a single {@link BatchSink#flush} defeated
+     * {@code batchSize}, opened one oversized JDBC transaction, and &mdash; with the
+     * idempotent outbox sink &mdash; encoded the entire tail into one outbox payload.
+     * Slicing keeps every sink call within the same bound the running worker uses,
+     * and each slice keeps its own retry, poison-isolation and quarantine path.</p>
+     *
+     * <p>Slices are cut on {@link QueuedWrite} boundaries, never on action indices,
+     * so a two-row inventory replacement can never be split across two sink calls
+     * (which would risk half-applying a replacement).</p>
+     */
+    private void flushDrainedTail(List<QueuedWrite> drained) {
+        if (drained.isEmpty()) {
+            return;
+        }
+        int remainingActions = 0;
+        for (QueuedWrite write : drained) {
+            remainingActions += write.size();
+        }
+        localBatchHeld.set(remainingActions);
+        try {
+            int from = 0;
+            while (from < drained.size()) {
+                // Budget in ACTIONS here. The running worker budgets in queue slots
+                // (bounded at batchSize slots, so <= 2x batchSize actions when every
+                // slot is a pair); the tail has no such excuse because it is already
+                // fully materialised, so cut strictly at batchSize actions. Cuts land
+                // on QueuedWrite boundaries so a replacement pair is never split
+                // across two sink calls. A lone slot larger than the whole budget is
+                // still taken, which cannot loop because `from` always advances.
+                List<Action> slice = new ArrayList<>(batchSize);
+                int to = from;
+                while (to < drained.size()) {
+                    QueuedWrite write = drained.get(to);
+                    if (!slice.isEmpty() && slice.size() + write.size() > batchSize) {
+                        break;
+                    }
+                    write.appendTo(slice);
+                    to++;
+                }
+                from = to;
+                remainingActions -= slice.size();
+                localBatchHeld.set(Math.max(0, remainingActions));
+                flushWithRetry(slice);
+            }
+        } finally {
+            localBatchHeld.set(0);
+        }
     }
 
     private void flushWithRetry(List<Action> batch) {
@@ -1124,9 +1183,18 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
         return sequence < 0L ? List.of() : List.of(sequence);
     }
 
-    private List<Action> drainQueuedActions() {
+    /**
+     * Non-draining view of the ring buffer, kept as whole slots so a caller can
+     * slice on {@link QueuedWrite} boundaries instead of action indices.
+     */
+    private List<QueuedWrite> drainQueuedWrites() {
         List<QueuedWrite> raw = new ArrayList<>(queue.size());
         queue.drainTo(raw);
+        return raw;
+    }
+
+    private List<Action> drainQueuedActions() {
+        List<QueuedWrite> raw = drainQueuedWrites();
         List<Action> out = new ArrayList<>();
         for (QueuedWrite write : raw) {
             write.appendTo(out);
@@ -1433,6 +1501,11 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
             if (second != null) {
                 out.add(second);
             }
+        }
+
+        /** Number of actions this slot carries: 1 for a single, 2 for a replacement pair. */
+        int size() {
+            return second == null ? 1 : 2;
         }
     }
 
