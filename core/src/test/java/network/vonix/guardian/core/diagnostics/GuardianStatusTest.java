@@ -15,6 +15,15 @@ import java.util.concurrent.ThreadFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Boot-level coverage of the {@code /vg status} report.
+ *
+ * <p>The report was reorganised from thirteen sections into five, and related
+ * counters were folded onto shared rows, because the previous shape ran past a
+ * screen of chat on a healthy server. The assertions here therefore name the
+ * <em>row labels</em> rather than the old section headings: a section heading is
+ * presentation, a row label is the promise that the number is still reported.
+ */
 class GuardianStatusTest {
 
     private static final Executor SYNC = Runnable::run;
@@ -84,26 +93,37 @@ class GuardianStatusTest {
 
             String report = String.join("\n", GuardianStatus.render(g));
 
+            // Recovery detail: the operator must be able to see and name the batch.
             assertThat(report).contains("batch " + batchId);
             assertThat(report).contains("mode=RESTORE");
             assertThat(report).contains("affected=2");
             assertThat(report).contains("repair action 9");
             assertThat(report).contains("inspect with /vg lookup before re-running");
+
+            // Auto-purge at 0 seconds is unbounded; that must be stated.
             assertThat(report).contains("0 = unbounded");
+
+            // Boot does not replay open batches. This is the behaviour that makes
+            // the "open batches" row a warning rather than housekeeping.
             g.rollbackEngine().recoverIncompleteBatches();
             assertThat(g.dao().findOpenRollbackBatches(20))
                     .extracting(GuardianDao.OpenRollbackBatch::id)
                     .contains(batchId);
 
+            // Leading sentence, then every subsystem that used to have its own
+            // section is still represented by a row.
             assertThat(report).contains("Status:").contains("storage").contains("waiting");
-            assertThat(report).contains("§ Coalescer");
+            assertThat(report).contains("coalescer");
             assertThat(report).contains("sinkDrops");
-            assertThat(report).contains("quarantined", "recovered", "qOverflow", "retention limit not reached");
-            assertThat(report).contains("qWriteFail", "not durably retained");
-            assertThat(report).contains("maintenance normal");
-            assertThat(report).contains("active");
-            assertThat(report).contains("suppressed");
-            assertThat(report).contains("capDrops");
+            assertThat(report).contains("quarantined", "recovered", "qOverflow", "qWriteFail");
+            assertThat(report).contains("maintenance");
+            assertThat(report).contains("suppressed=");
+            assertThat(report).contains("evictions=");
+            assertThat(report).contains("capDrops=");
+            // The coalescer is configured with a 60s window and 4 tracked entries in
+            // this fixture, so its row must not claim to be off.
+            assertThat(report).contains("window 60000ms");
+            assertThat(report).contains("/4");
         } finally {
             g.close();
         }

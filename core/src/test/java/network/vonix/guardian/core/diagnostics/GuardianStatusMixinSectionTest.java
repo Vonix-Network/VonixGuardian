@@ -19,15 +19,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Covers:
  * <ol>
- *   <li>{@code mixinHotEvents=true} → section reports "enabled  yes".</li>
- *   <li>{@code mixinHotEvents=false} → section reports "enabled  no (kill-switch engaged)".</li>
- *   <li>All 8 mixin-sourced ActionType rows (BURN, SPREAD, IGNITE, FADE, FORM,
- *       LEAVES_DECAY, DISPENSE, ENTITY_CHANGE_BLOCK) always render, even when the
- *       rate is 0/s.</li>
- *   <li>An {@code allocRate} line is always rendered.</li>
- *   <li>The Guardian.submit() fast-path drops actions with {@code "#fire"},
- *       {@code "#natural"}, or {@code "#dispenser"} sourceTags when the flag is off
- *       (spot-check via the gated counter, exposed in the queue section).</li>
+ *   <li>{@code mixinHotEvents=true} → row reports {@code on, alloc}.</li>
+ *   <li>{@code mixinHotEvents=false} → row reports {@code OFF (kill-switch engaged)}.</li>
+ *   <li>All 8 mixin-sourced ActionType names (BURN, SPREAD, IGNITE, FADE, FORM,
+ *       LEAVES_DECAY, DISPENSE, ENTITY_CHANGE_BLOCK) remain discoverable, whether
+ *       as an active rate or in the idle group.</li>
+ *   <li>The {@code Guardian.submit()} fast-path drops actions with
+ *       {@code "#fire"}, {@code "#natural"}, or {@code "#dispenser"} sourceTags when
+ *       the flag is off (spot-check via the gated counter, exposed in the
+ *       writer section).</li>
  * </ol>
  */
 class GuardianStatusMixinSectionTest {
@@ -84,14 +84,16 @@ class GuardianStatusMixinSectionTest {
         Guardian g = Guardian.boot(cfgWith(tmp, true), tmp, NOOP_MUTATOR, ZERO_OP, SYNC, DAEMONS);
         try {
             String report = String.join("\n", GuardianStatus.render(g));
-            assertThat(report).contains("§ Mixin hot events");
-            assertThat(report).contains("enabled    yes");
-            assertThat(report).contains("allocRate");
+            // The section heading became a row label when the report was compressed
+            // from 62 lines. The gate state and all eight source types are still
+            // asserted, because those are the facts an operator relies on.
+            assertThat(report).contains("mixin events");
+            assertThat(report).contains("on, alloc");
             for (String type : List.of(
                     "BURN", "SPREAD", "IGNITE", "FADE", "FORM",
                     "LEAVES_DECAY", "DISPENSE", "ENTITY_CHANGE_BLOCK")) {
                 assertThat(report)
-                    .as("mixin section must include a row for %s", type)
+                    .as("mixin report must include a rate or an idle mention for %s", type)
                     .contains(type);
             }
         } finally {
@@ -104,8 +106,9 @@ class GuardianStatusMixinSectionTest {
         Guardian g = Guardian.boot(cfgWith(tmp, false), tmp, NOOP_MUTATOR, ZERO_OP, SYNC, DAEMONS);
         try {
             String report = String.join("\n", GuardianStatus.render(g));
-            assertThat(report).contains("§ Mixin hot events");
-            assertThat(report).contains("no (kill-switch engaged)");
+            assertThat(report).contains("mixin events");
+            assertThat(report).contains("OFF (kill-switch engaged");
+            assertThat(report).doesNotContain("on, alloc");
         } finally {
             g.close();
         }
