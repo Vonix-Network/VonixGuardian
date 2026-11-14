@@ -102,4 +102,61 @@ class ThemeRegistryTest {
                 "#000000", "#000000", "#000000"))
             .isInstanceOf(NullPointerException.class);
     }
+
+    @Test
+    void resolveReportsWhetherTheConfiguredNameWasHonoured() {
+        // A recognised name: the theme it names, and honoured=true.
+        ThemeRegistry.Resolution aqua = ThemeRegistry.resolve("aqua");
+        assertThat(aqua.theme()).isSameAs(ThemeRegistry.AQUA);
+        assertThat(aqua.honoured()).isTrue();
+        assertThat(aqua.requested()).isEqualTo("aqua");
+
+        // Mixed case is still the same theme, and still honoured.
+        assertThat(ThemeRegistry.resolve("Gold").honoured()).isTrue();
+        assertThat(ThemeRegistry.resolve("Gold").theme()).isSameAs(ThemeRegistry.GOLD);
+    }
+
+    @Test
+    void resolveMarksATypoedNameAsNotHonoured() {
+        // The renderer must still produce a usable theme — it can never hand out
+        // null — but the caller has to be able to tell that the setting was
+        // ignored, or a typo looks like a theme that simply has no effect.
+        ThemeRegistry.Resolution typo = ThemeRegistry.resolve("arequa");
+        assertThat(typo.honoured()).isFalse();
+        assertThat(typo.theme()).isSameAs(ThemeRegistry.AQUA);
+        assertThat(typo.requested()).isEqualTo("arequa");
+        assertThat(typo.requestedOrPlaceholder()).isEqualTo("arequa");
+    }
+
+    @Test
+    void resolveTreatsAbsentAndBlankNamesAsNotHonoured() {
+        for (String blank : java.util.Arrays.asList(null, "", "   ")) {
+            ThemeRegistry.Resolution r = ThemeRegistry.resolve(blank);
+            assertThat(r.honoured()).as("resolve(%s) honoured", blank).isFalse();
+            assertThat(r.theme()).as("resolve(%s) theme", blank).isSameAs(ThemeRegistry.AQUA);
+            assertThat(r.requestedOrPlaceholder())
+                .as("resolve(%s) placeholder", blank)
+                .isEqualTo("(not set)");
+        }
+    }
+
+    @Test
+    void orDefaultSubstitutesTheDefaultForAMissingTheme() {
+        // A null theme is how an unconfigured renderer path shows up. The fallback
+        // has to exist and has to be the documented default, not an arbitrary one.
+        assertThat(ThemeRegistry.orDefault(null)).isSameAs(ThemeRegistry.AQUA);
+        assertThat(ThemeRegistry.orDefault(ThemeRegistry.RED)).isSameAs(ThemeRegistry.RED);
+    }
+
+    @Test
+    void everyRegisteredThemeResolvesToItself() {
+        // If resolve() and get() ever disagree, a status report would name a theme
+        // that is not the one being rendered with.
+        for (Theme theme : ThemeRegistry.all()) {
+            ThemeRegistry.Resolution r = ThemeRegistry.resolve(theme.name());
+            assertThat(r.honoured()).as("%s honoured", theme.name()).isTrue();
+            assertThat(r.theme()).as("%s theme", theme.name()).isSameAs(theme);
+            assertThat(r.theme()).isSameAs(ThemeRegistry.get(theme.name()));
+        }
+    }
 }

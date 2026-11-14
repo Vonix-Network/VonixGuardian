@@ -3,10 +3,15 @@ package network.vonix.guardian.core.diagnostics;
 import network.vonix.guardian.core.Guardian;
 import network.vonix.guardian.core.api.GuardianAPI;
 import network.vonix.guardian.core.config.GuardianConfig;
+import network.vonix.guardian.core.event.EventGate;
 import network.vonix.guardian.core.event.EventHook;
 import network.vonix.guardian.core.storage.GuardianDao;
 import network.vonix.guardian.core.storage.Schema;
+import network.vonix.guardian.core.storage.dbmigrate.RawJdbcAccess;
+import network.vonix.guardian.core.theme.ThemeRegistry;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,21 +24,47 @@ import java.util.Map;
  * diagnostic ({@code /co status}) plus one pause control ({@code /co consumer}).
  * VonixGuardian matches that shape: no {@code /vg debug} subcommand tree, no
  * always-on log spam. Everything an operator needs to see is here, produced
- * on-demand, in a structured multi-line report.
+ * on-demand, in a structured report.</p>
  *
- * <p><b>Sections</b>, each self-titled:
+ * <p><b>One screen, nothing hidden.</b> The report used to run to 62 lines on a
+ * healthy server: eight rows of {@code 0.00/s}, one row per counter per line,
+ * and a {@code [VonixGuardian]} prefix on every line. That pushed the lines
+ * that mattered off the chat screen. The fix is compression, not amputation
+ * &mdash; counters that answer one question share a row, and the per-type
+ * breakdown and per-batch detail are still printed when they exist. A report
+ * an operator cannot read is not a diagnostic; a report that hides a failure is
+ * worse.</p>
+ *
+ * <p><b>Sections:</b>
  * <ol>
- *   <li>Version</li>
- *   <li>Storage: backend + schema version + connection health</li>
- *   <li>Queue: consumer state, depth, submitted, gated, dropped, per-type histogram</li>
- *   <li>Coalescer state (if enabled)</li>
- *   <li>Hook chain (list registered hooks in order)</li>
- *   <li>Per-world overrides (count + world list, if any)</li>
- *   <li>Blacklist file rule count (if loaded)</li>
- *   <li>Auto-purge state (if enabled)</li>
- *   <li>Permissions: LP detected, default op-level, per-node overrides</li>
- *   <li>Public API version</li>
+ *   <li>Identity &mdash; version, API, applied theme</li>
+ *   <li>Storage &mdash; backend, stamped schema version, reachability</li>
+ *   <li>Writer &mdash; consumer, maintenance, depth, counters, durability, mixin gate, coalescer</li>
+ *   <li>Recovery &mdash; open rollback batches, rows needing repair, and what to do about them</li>
+ *   <li>Configuration &mdash; hook chain, auto-purge, permissions, per-world overrides</li>
  * </ol>
+ *
+ * <p><b>Honesty rules this class obeys:</b>
+ * <ul>
+ *   <li>No row claims more than it checked. {@code /vg status} never writes, so
+ *       the row is {@code reachable} (a trivial query answered) and there is no
+ *       {@code health} row implying lock, disk-space, and permission testing
+ *       that the probe never performs.</li>
+ *   <li>{@code schema} reads {@code vg_schema_version} and compares it with the
+ *       version this jar creates, so drift is named rather than assumed. Drift
+ *       is the one storage fault a read-only probe can actually prove.</li>
+ *   <li>{@code theme} says so when the configured name is not a registered
+ *       theme. A typo used to resolve to the default silently, so the setting
+ *       looked like it simply did nothing.</li>
+ *   <li>A {@code null} or blank value renders as {@code (not set)}, never as
+ *       the word {@code null}.</li>
+ *   <li>Every label is padded to {@link #LABEL_WIDTH} by {@link #row}, so the
+ *       value column is one column. Hand-padded labels at six different widths
+ *       were the mechanical reason this report could not be scanned.</li>
+ *   <li>Warnings ({@code RETENTION LIMIT REACHED}, {@code durable quarantine
+ *       disabled}, schema drift) appear only when true. A caveat printed on
+ *       every healthy server trains the operator to skip the row.</li>
+ * </ul>
  *
  * <p>Output is a {@code List<String>} of lines; cells wrap each with their
  * platform's chat renderer. No colors baked in (theming happens cell-side).
@@ -43,6 +74,18 @@ import java.util.Map;
  * @since 1.1.7
  */
 public final class GuardianStatus {
+
+    /** Width every label is padded to, so all values start in the same column. */
+    static final int LABEL_WIDTH = 15;
+
+    /** Marker for a row whose value genuinely does not exist. Never "null". */
+    static final String NOT_SET = "(not set)";
+
+    /** How many list entries are named inline before the remainder is summed. */
+    static final int INLINE_LIST_LIMIT = 3;
+
+    /** Histogram entries named inline before the tail is summed. */
+    private static final int HISTOGRAM_TOP = 4;
 
     private GuardianStatus() {}
 
@@ -54,8 +97,8 @@ public final class GuardianStatus {
 
     /**
      * Render the full status report. Never throws; every subsystem is wrapped
-     * in a try/catch so a broken accessor produces a single {@code (err)} line
-     * rather than aborting the whole report.
+     * so a broken accessor produces one labelled row rather than aborting the
+     * whole report.
      *
      * @param g the live Guardian instance
      * @return ordered list of report lines (no trailing newlines)
@@ -72,195 +115,403 @@ public final class GuardianStatus {
             + safe(() -> g.queue().depth() + " of " + g.config().queue().maxSize())
             + " waiting.");
 
-        // ---- 1. Header + version ----
-        section(out, "VonixGuardian");
-        line(out, "  version    " + GuardianAPI.PLUGIN_VERSION);
+        renderIdentity(out, g);
+        renderStorage(out, g);
+        renderWriter(out, g);
+        renderRecovery(out, g);
+        renderConfiguration(out, g);
 
-        // ---- 2. Storage ----
+        return out;
+    }
+
+    // ---- 1. identity ----
+
+    private static void renderIdentity(List<String> out, Guardian g) {
+        // Title, not the product name: cells prefix the first section with
+        // "[VonixGuardian] ", and a section called "VonixGuardian" would render
+        // as "[VonixGuardian] VonixGuardian".
+        section(out, "Version");
+        row(out, "plugin", GuardianAPI.PLUGIN_VERSION);
+        row(out, "api", "v" + GuardianAPI.API_VERSION);
+        row(out, "theme", themeState(g));
+    }
+
+    /**
+     * Theme row. A configured name that is not registered resolves to the
+     * default &mdash; correct for a renderer that must never hand out null, but
+     * it used to make a typo in {@code config.json} indistinguishable from a
+     * working setting. Say which name was ignored.
+     */
+    static String themeState(Guardian g) {
+        try {
+            ThemeRegistry.Resolution r = ThemeRegistry.resolve(g.config().theme());
+            if (r.honoured()) {
+                return r.theme().name();
+            }
+            return r.theme().name() + " (requested \"" + r.requestedOrPlaceholder()
+                    + "\" is not a theme; the default is in use)";
+        } catch (Throwable t) {
+            return errorName(t);
+        }
+    }
+
+    // ---- 2. storage ----
+
+    private static void renderStorage(List<String> out, Guardian g) {
         section(out, "Storage");
-        line(out, "  backend    " + safe(() -> g.config().database().type()));
-        line(out, "  schema     v" + Schema.CURRENT_VERSION);
-        line(out, "  health     " + safe(() -> g.dao().isHealthy() ? "OK" : "UNHEALTHY"));
+        row(out, "backend", safe(() -> String.valueOf(g.config().database().type())));
+        row(out, "schema", schemaState(g));
+        // The row used to be called "health" and was SELECT 1. It cannot see a
+        // locked table, a full disk, or a permission failure, so it must not be
+        // labelled health.
+        row(out, "reachable", safe(() -> g.dao().isHealthy()
+                ? "yes (SELECT 1 answered)"
+                : "NO — a trivial query did not answer; writes are at risk"));
+    }
 
-        // ---- 3. Queue ----
-        section(out, "Writer queue");
-        line(out, "  consumer   " + safe(() -> g.queue().isPaused() ? "PAUSED" : "running"));
-        line(out, "  maintenance " + (g.isMaintenanceWriteBlocked() ? "WRITE-BLOCKED" : "normal"));
-        line(out, "  depth      " + safe(() -> Integer.toString(g.queue().depth()))
-                + " / " + safe(() -> Integer.toString(g.config().queue().maxSize())));
-        line(out, "  submitted  " + g.submitted());
-        line(out, "  gated      " + g.gated());
-        line(out, "  dropped    " + safe(() -> Long.toString(g.queue().dropped())));
-        line(out, "  sinkDrops  " + safe(() -> Long.toString(g.queue().permanentlyDropped())));
-        line(out, "  quarantined " + safe(() -> Long.toString(g.queue().quarantined())));
-        line(out, "  recovered   " + safe(() -> Long.toString(g.queue().recoveredFromQuarantine())));
-        line(out, "  qOverflow   " + safe(() -> Long.toString(g.queue().quarantineOverflow()))
-                + " (" + safe(() -> g.queue().quarantineRetentionLimitReached()
-                        ? "RETENTION LIMIT REACHED; failed rows are not durably retained"
-                        : "retention limit not reached") + ")");
-        line(out, "  qWriteFail  " + safe(() -> Long.toString(g.queue().quarantineWriteFailures()))
-                + " (" + safe(() -> g.queue().quarantineEnabled()
-                        ? "quarantine write failures are not durably retained"
-                        : "durable quarantine disabled") + ")");
+    /**
+     * Schema row: reads the stamped version and compares it with the version
+     * this jar creates, so drift is reported instead of assumed. This is the
+     * one storage fault a read-only status command can actually detect.
+     */
+    static String schemaState(Guardian g) {
+        if (!(g.dao() instanceof RawJdbcAccess raw)) {
+            return "v" + Schema.CURRENT_VERSION + " expected (this backend has no version probe)";
+        }
+        final int found;
+        try {
+            found = raw.withRawConnection(GuardianStatus::readStampedVersion);
+        } catch (Throwable t) {
+            return "UNREADABLE — " + errorName(t);
+        }
+        return schemaState(found, Schema.CURRENT_VERSION);
+    }
+
+    /**
+     * The schema row's text for a stamped version. Split out so every branch
+     * &mdash; current, behind, ahead, unstamped &mdash; can be proven without
+     * hand-editing a live database's version table.
+     *
+     * @param stamped  the version read from {@code vg_schema_version}; {@code <= 0} when unstamped
+     * @param expected {@link Schema#CURRENT_VERSION} for this jar
+     * @return one row naming the version and any drift
+     */
+    static String schemaState(int stamped, int expected) {
+        if (stamped <= 0) {
+            return "unstamped (this jar expects v" + expected + ")";
+        }
+        if (stamped == expected) {
+            return "v" + stamped + " (current)";
+        }
+        if (stamped < expected) {
+            return "v" + stamped + " BEHIND v" + expected + " — restart to apply migrations";
+        }
+        return "v" + stamped + " AHEAD of this jar (v" + expected
+                + ") — written by a newer build";
+    }
+
+    private static int readStampedVersion(Connection c) throws SQLException {
+        try (var st = c.createStatement();
+             var rs = st.executeQuery("SELECT COALESCE(MAX(version), 0) FROM vg_schema_version")) {
+            return rs.next() ? rs.getInt(1) : 0;
+        }
+    }
+
+    // ---- 3. writer ----
+
+    private static void renderWriter(List<String> out, Guardian g) {
+        section(out, "Writer");
+        row(out, "consumer", safe(() -> g.queue().isPaused() ? "PAUSED" : "running"));
+        row(out, "maintenance", safe(() -> g.isMaintenanceWriteBlocked()
+                ? "WRITE-BLOCKED" : "normal"));
+        row(out, "depth", safe(() -> g.queue().depth() + " of " + g.config().queue().maxSize()));
+        row(out, "counters", "submitted=" + g.submitted()
+                + " gated=" + g.gated()
+                + " dropped=" + safe(() -> Long.toString(g.queue().dropped())));
+        row(out, "durability", durabilitySummary(g));
+        row(out, "mixin events", mixinState(g));
+        row(out, "coalescer", coalescerState(g));
+        // Only when rows actually arrived; an empty histogram is a row that says
+        // "nothing has been logged since boot", which the counters row already
+        // implies.
         Map<String, Long> submittedByType = safeMap(() -> g.queue().submittedByTypeSnapshot());
         if (!submittedByType.isEmpty()) {
-            line(out, "  by-type    " + formatHistogram(submittedByType));
+            row(out, "logged types", formatHistogram(submittedByType));
         }
         Map<String, Long> droppedByType = safeMap(() -> g.queue().droppedByTypeSnapshot());
         if (!droppedByType.isEmpty()) {
-            line(out, "  drops      " + formatHistogram(droppedByType));
+            row(out, "dropped types", formatHistogram(droppedByType));
         }
+    }
 
-        // Open rollback batches are read-only here. Boot does not replay them.
-        section(out, "Rollback recovery");
+    /**
+     * One row for every sink counter. Zeros are kept: a zero here means "nothing
+     * was lost", which is the answer to the question this report exists to
+     * answer. The retention warnings appear only when they are true, instead of
+     * as a parenthetical on every healthy server.
+     */
+    static String durabilitySummary(Guardian g) {
+        long sinkDrops;
+        long quarantined;
+        long recovered;
+        long qOverflow;
+        long qWriteFail;
+        boolean retentionLimitReached;
+        boolean quarantineEnabled;
         try {
-            List<GuardianDao.OpenRollbackBatch> open = g.dao().findOpenRollbackBatches(20);
-            if (open == null || open.isEmpty()) {
-                line(out, "  open batches (none)");
-            } else {
-                line(out, "  open batches " + open.size()
-                        + " — inspect with /vg lookup before re-running rollback or restore");
-                line(out, "  /vg batch close <id> marks one finished and does not change the world");
-                for (GuardianDao.OpenRollbackBatch batch : open) {
-                    line(out, "  batch " + batch.id()
-                            + " mode=" + batchMode(batch.mode())
-                            + " affected=" + batch.affected());
-                }
-            }
-            List<GuardianDao.RepairRequired> repairs = g.dao().findRepairRequired();
-            if (repairs == null || repairs.isEmpty()) {
-                line(out, "  repair required (none)");
-            } else {
-                int shown = Math.min(10, repairs.size());
-                line(out, "  repair required " + repairs.size());
-                for (int i = 0; i < shown; i++) {
-                    GuardianDao.RepairRequired row = repairs.get(i);
-                    line(out, "  repair action " + row.actionId()
-                            + " batch=" + row.batchId()
-                            + " reason=" + row.reason());
-                }
-            }
+            sinkDrops = g.queue().permanentlyDropped();
+            quarantined = g.queue().quarantined();
+            recovered = g.queue().recoveredFromQuarantine();
+            qOverflow = g.queue().quarantineOverflow();
+            qWriteFail = g.queue().quarantineWriteFailures();
+            retentionLimitReached = g.queue().quarantineRetentionLimitReached();
+            quarantineEnabled = g.queue().quarantineEnabled();
         } catch (Throwable t) {
-            line(out, "  (err: " + t.getClass().getSimpleName() + ")");
+            return errorName(t);
         }
+        return durabilityLine(sinkDrops, quarantined, recovered, qOverflow, qWriteFail,
+                retentionLimitReached, quarantineEnabled);
+    }
 
-        // ---- 4. Coalescer ----
+    /**
+     * The durability row's text, isolated from the queue so the warning
+     * conditions can be proven without inducing a real sink failure.
+     *
+     * @param sinkDrops             rows lost for good (the sink refused them)
+     * @param quarantined           rows parked in quarantine
+     * @param recovered             rows taken back out of quarantine
+     * @param qOverflow             rows dropped because quarantine was full
+     * @param qWriteFail            rows dropped because quarantine could not be written
+     * @param retentionLimitReached quarantine hit its retention cap
+     * @param quarantineEnabled     whether durable quarantine is on at all
+     * @return one row of {@code name=value} counters plus any warning that is true
+     */
+    static String durabilityLine(long sinkDrops, long quarantined, long recovered,
+                                 long qOverflow, long qWriteFail,
+                                 boolean retentionLimitReached, boolean quarantineEnabled) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("sinkDrops=").append(sinkDrops)
+          .append(" quarantined=").append(quarantined)
+          .append(" recovered=").append(recovered)
+          .append(" qOverflow=").append(qOverflow)
+          .append(" qWriteFail=").append(qWriteFail);
+        if (retentionLimitReached) {
+            sb.append(" — RETENTION LIMIT REACHED; failed rows are not durably retained");
+        }
+        if (!quarantineEnabled) {
+            sb.append(" — durable quarantine disabled");
+        } else if (qWriteFail > 0L) {
+            sb.append(" — quarantine write failures are not durably retained");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Gate state, allocation rate, and the per-type rate of each hot-tick
+     * mixin source.
+     *
+     * <p>Every one of the eight types is still named, so an operator can see
+     * that a source is idle rather than nonexistent. What changed is the
+     * shape: eight {@code 0.00/s} lines became one row naming the idle group,
+     * which is where most of the old report's length came from. Types that are
+     * actually producing are called out individually.</p>
+     */
+    static String mixinState(Guardian g) {
         try {
-            long coalWin = g.config().actions().entityBlockChangeCoalesceWindowMs();
-            if (coalWin > 0) {
-                section(out, "Coalescer");
-                line(out, "  window     " + coalWin + "ms");
-                line(out, "  maxTracked " + g.config().actions().entityBlockChangeMaxTracked());
-                var coal = g.entityBlockCoalescer();
-                line(out, "  active     " + (coal != null ? coal.size() : 0));
-                if (coal != null) {
-                    line(out, "  suppressed " + coal.hits());
-                    line(out, "  passed     " + coal.misses());
-                    line(out, "  evictions  " + coal.evictions());
-                    line(out, "  capDrops   " + coal.capDrops());
-                }
+            if (!g.config().actions().mixinHotEvents()) {
+                return "OFF (kill-switch engaged; no mixin-sourced rows are recorded)";
             }
-        } catch (Throwable ignored) { }
-
-        // ---- 4b. Mixin hot events (v1.3.0 W4) ----
-        // Shows the operator kill-switch state (actions.mixinHotEvents) and the
-        // per-type submit rate for the eight hot-tick mixin-sourced ActionTypes.
-        // Rates come from the sliding-window meter in BatchedAsyncWriteQueue.
-        try {
-            section(out, "Mixin hot events");
-            boolean mixinOn = g.config().actions().mixinHotEvents();
-            line(out, "  enabled    " + (mixinOn ? "yes" : "no (kill-switch engaged)"));
-            line(out, "  allocRate  " + String.format(java.util.Locale.ROOT, "%.2f/s",
-                    g.queue().allocationRatePerSecond()));
+            StringBuilder sb = new StringBuilder();
+            sb.append("on, alloc ").append(rate(g.queue().allocationRatePerSecond()));
             Map<String, Double> rates = safeRateMap(() -> g.queue().submitRateByType());
             String[] mixinTypes = {
                 "BURN", "SPREAD", "IGNITE", "FADE", "FORM",
                 "LEAVES_DECAY", "DISPENSE", "ENTITY_CHANGE_BLOCK"
             };
+            List<String> active = new ArrayList<>(mixinTypes.length);
+            List<String> idle = new ArrayList<>(mixinTypes.length);
             for (String t : mixinTypes) {
                 double r = rates.getOrDefault(t, 0.0);
-                line(out, "  " + padRight(t, 20) + " "
-                        + String.format(java.util.Locale.ROOT, "%.2f/s", r));
+                if (r > 0.0) {
+                    active.add(t + " " + rate(r));
+                } else {
+                    idle.add(t);
+                }
             }
-        } catch (Throwable t) {
-            line(out, "  (err: " + t.getClass().getSimpleName() + ")");
-        }
-
-        // ---- 5. Hook chain ----
-        section(out, "Event hooks");
-        try {
-            List<EventHook> hooks = g.gate().hooks();
-            if (hooks.isEmpty()) {
-                line(out, "  (none registered)");
+            if (active.isEmpty()) {
+                sb.append("; all eight types idle (").append(String.join(", ", idle)).append(')');
             } else {
-                for (int i = 0; i < hooks.size(); i++) {
-                    line(out, "  #" + (i + 1) + "         " + hooks.get(i).getClass().getSimpleName());
+                sb.append("; active ").append(String.join(", ", active));
+                if (!idle.isEmpty()) {
+                    sb.append("; idle ").append(String.join(", ", idle));
                 }
             }
-            // v1.3.1 X6 (P3-5): surface the internal-hook count so operators can spot
-            // misbehaving plugin registrations against the mixin-hot-event chain.
-            int internalCount = g.gate().internalHooks().size();
-            String capNote = internalCount > network.vonix.guardian.core.event.EventGate.INTERNAL_HOOKS_SOFT_CAP
-                ? " (over soft cap " + network.vonix.guardian.core.event.EventGate.INTERNAL_HOOKS_SOFT_CAP + ")"
-                : "";
-            line(out, "  internal   " + internalCount + capNote);
+            return sb.toString();
         } catch (Throwable t) {
-            line(out, "  (err: " + t.getClass().getSimpleName() + ")");
+            return errorName(t);
+        }
+    }
+
+    static String coalescerState(Guardian g) {
+        try {
+            long window = g.config().actions().entityBlockChangeCoalesceWindowMs();
+            if (window <= 0) {
+                return "off (window 0)";
+            }
+            var coal = g.entityBlockCoalescer();
+            if (coal == null) {
+                return "window " + window + "ms, not running";
+            }
+            return "window " + window
+                    + "ms, tracked=" + coal.size()
+                    + "/" + g.config().actions().entityBlockChangeMaxTracked()
+                    + " suppressed=" + coal.hits()
+                    + " passed=" + coal.misses()
+                    + " evictions=" + coal.evictions()
+                    + " capDrops=" + coal.capDrops();
+        } catch (Throwable t) {
+            return errorName(t);
+        }
+    }
+
+    private static String rate(double perSecond) {
+        return String.format(java.util.Locale.ROOT, "%.2f/s", perSecond);
+    }
+
+    // ---- 4. recovery ----
+
+    private static void renderRecovery(List<String> out, Guardian g) {
+        section(out, "Recovery");
+        List<GuardianDao.OpenRollbackBatch> open = null;
+        List<GuardianDao.RepairRequired> repairs = null;
+        try {
+            open = g.dao().findOpenRollbackBatches(20);
+        } catch (Throwable t) {
+            row(out, "open batches", errorName(t));
+        }
+        try {
+            repairs = g.dao().findRepairRequired();
+        } catch (Throwable t) {
+            row(out, "repair required", errorName(t));
         }
 
-        // ---- 6. Per-world overrides ----
-        try {
-            var store = g.perWorldStore();
-            if (store != null) {
-                section(out, "Per-world overrides");
-                var worlds = store.overriddenWorlds();
-                line(out, "  count      " + worlds.size());
-                if (!worlds.isEmpty()) {
-                    line(out, "  worlds     " + worlds);
-                }
+        // Only claim "none" when the query actually answered. A failed query that
+        // also prints "none" tells the operator two contradictory things.
+        if (open != null) {
+            if (open.isEmpty()) {
+                row(out, "open batches", "none");
+            } else {
+                row(out, "open batches", describeBatches(open));
+                // Boot does not replay these; the operator decides.
+                line(out, "    inspect with /vg lookup before re-running rollback or restore;"
+                        + " /vg batch close <id> marks one finished and does not change the world");
             }
-        } catch (Throwable ignored) { }
+        }
 
-        // ---- 7. Blacklist file ----
-        try {
+        if (repairs != null) {
+            row(out, "repair required",
+                    repairs.isEmpty() ? "none" : describeRepairs(repairs));
+        }
+    }
+
+    private static String describeBatches(List<GuardianDao.OpenRollbackBatch> open) {
+        int shown = Math.min(INLINE_LIST_LIMIT, open.size());
+        List<String> names = new ArrayList<>(shown + 1);
+        for (int i = 0; i < shown; i++) {
+            GuardianDao.OpenRollbackBatch b = open.get(i);
+            names.add("batch " + b.id() + " mode=" + batchMode(b.mode())
+                    + " affected=" + b.affected());
+        }
+        if (open.size() > shown) {
+            names.add("+" + (open.size() - shown) + " more");
+        }
+        return String.join(", ", names);
+    }
+
+    private static String describeRepairs(List<GuardianDao.RepairRequired> repairs) {
+        int shown = Math.min(INLINE_LIST_LIMIT, repairs.size());
+        List<String> names = new ArrayList<>(shown + 1);
+        for (int i = 0; i < shown; i++) {
+            GuardianDao.RepairRequired r = repairs.get(i);
+            names.add("repair action " + r.actionId()
+                    + " batch=" + r.batchId()
+                    + " reason=" + blankTo(r.reason(), NOT_SET));
+        }
+        if (repairs.size() > shown) {
+            names.add("+" + (repairs.size() - shown) + " more");
+        }
+        return String.join(", ", names);
+    }
+
+    // ---- 5. configuration ----
+
+    private static void renderConfiguration(List<String> out, Guardian g) {
+        section(out, "Configuration");
+        row(out, "hooks", safe(() -> hookSummary(g)));
+        row(out, "auto-purge", safe(() -> autoPurgeState(g)));
+        row(out, "permissions", safe(() -> permissionSummary(g)));
+        row(out, "worlds", safe(() -> worldSummary(g)));
+        row(out, "nbt capture", safe(() -> g.config().storage().persistNbt()
+                ? "on"
+                : "OFF (rollback refuses rows without a full payload)"));
+        row(out, "blacklist", safe(() -> {
             var bl = g.blacklistHook();
-            if (bl != null) {
-                section(out, "Blacklist file");
-                line(out, "  rules      " + bl.matcher().size());
+            return bl == null ? "file not loaded" : bl.matcher().size() + " rules loaded";
+        }));
+    }
+
+    static String hookSummary(Guardian g) {
+        List<EventHook> hooks = g.gate().hooks();
+        int internal = g.gate().internalHooks().size();
+        String list;
+        if (hooks.isEmpty()) {
+            list = "none registered";
+        } else {
+            List<String> names = new ArrayList<>(hooks.size());
+            for (EventHook hook : hooks) {
+                names.add(hook.getClass().getSimpleName());
             }
-        } catch (Throwable ignored) { }
+            list = hooks.size() + " (" + String.join(", ", names) + ")";
+        }
+        String over = internal > EventGate.INTERNAL_HOOKS_SOFT_CAP
+                ? " — OVER soft cap " + EventGate.INTERNAL_HOOKS_SOFT_CAP
+                : "";
+        return list + ", " + internal + " internal" + over;
+    }
 
-        // ---- 8. Auto-purge ----
-        try {
-            var ap = g.autoPurgeScheduler();
-            if (ap != null && ap.isEnabled()) {
-                section(out, "Auto-purge");
-                line(out, "  enabled    yes (keep " + ap.retentionSeconds() + "s)");
-                line(out, "  purged     " + ap.getRowsPurgedSinceRestart() + " rows this restart");
-            } else if (g.config().purge() != null && g.config().purge().autoPurgeSeconds() == 0L) {
-                section(out, "Auto-purge");
-                line(out, "  enabled    no (0 = unbounded; daemon does not run)");
-                line(out, "  suggested  " + GuardianConfig.SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS
-                        + "s (90 days, not applied)");
-            }
-        } catch (Throwable ignored) { }
+    static String autoPurgeState(Guardian g) {
+        var ap = g.autoPurgeScheduler();
+        if (ap != null && ap.isEnabled()) {
+            return "on, keep " + ap.retentionSeconds() + "s, "
+                    + ap.getRowsPurgedSinceRestart() + " rows this restart";
+        }
+        GuardianConfig cfg = g.config();
+        if (cfg.purge() != null && cfg.purge().autoPurgeSeconds() == 0L) {
+            return "off (0 = unbounded; daemon does not run; suggested "
+                    + GuardianConfig.SUGGESTED_BUSY_SERVER_AUTO_PURGE_SECONDS
+                    + "s for a busy server, not applied)";
+        }
+        return "not configured";
+    }
 
-        // ---- 9. Permissions ----
-        section(out, "Permissions");
-        line(out, "  default-op " + safe(() -> Integer.toString(g.config().permissions().defaultOpLevel())));
-        try {
-            var perms = g.config().permissions();
-            var overrides = perms.perNodeOpLevelsOrEmpty();
-            if (overrides != null && !overrides.isEmpty()) {
-                line(out, "  overrides  " + overrides.size() + " per-node");
-            }
-        } catch (Throwable ignored) { }
+    static String permissionSummary(Guardian g) {
+        var perms = g.config().permissions();
+        var overrides = perms.perNodeOpLevelsOrEmpty();
+        return "default-op " + perms.defaultOpLevel()
+                + ", " + (overrides == null ? 0 : overrides.size()) + " per-node overrides"
+                + ", LuckPerms " + (perms.useLuckPerms() ? "on" : "off");
+    }
 
-        // ---- 10. Public API ----
-        section(out, "Public API");
-        line(out, "  version    v" + GuardianAPI.API_VERSION);
-
-        return out;
+    static String worldSummary(Guardian g) {
+        var store = g.perWorldStore();
+        if (store == null) {
+            return "no per-world store";
+        }
+        var worlds = store.overriddenWorlds();
+        if (worlds == null || worlds.isEmpty()) {
+            return "no overrides";
+        }
+        return worlds.size() + " overridden (" + worlds + ")";
     }
 
     // ---- helpers ----
@@ -273,6 +524,30 @@ public final class GuardianStatus {
         out.add(s);
     }
 
+    /**
+     * One key/value row. The label is padded to {@link #LABEL_WIDTH} and always
+     * followed by one space, so every value in the report starts in the same
+     * column &mdash; including when a label is exactly {@link #LABEL_WIDTH}
+     * characters long and {@code padRight} adds nothing. A {@code null} or blank
+     * value renders as {@link #NOT_SET} and never as the word "null".
+     */
+    static void row(List<String> out, String label, String value) {
+        out.add("  " + padRight(blankTo(label, "?"), LABEL_WIDTH) + ' '
+                + blankTo(value, NOT_SET));
+    }
+
+    static String blankTo(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    static String errorName(Throwable t) {
+        if (t == null) {
+            return "error (unknown)";
+        }
+        String name = t.getClass().getSimpleName();
+        return "error (" + (name == null || name.isBlank() ? "unknown" : name) + ")";
+    }
+
     @FunctionalInterface
     private interface Supplier<T> {
         T get() throws Throwable;
@@ -280,10 +555,9 @@ public final class GuardianStatus {
 
     private static String safe(Supplier<String> s) {
         try {
-            String v = s.get();
-            return v == null ? "(null)" : v;
+            return blankTo(s.get(), NOT_SET);
         } catch (Throwable t) {
-            return "(err: " + t.getClass().getSimpleName() + ")";
+            return errorName(t);
         }
     }
 
@@ -305,7 +579,8 @@ public final class GuardianStatus {
         }
     }
 
-    private static String padRight(String s, int width) {
+    static String padRight(String s, int width) {
+        if (s == null) return "";
         if (s.length() >= width) return s;
         StringBuilder sb = new StringBuilder(width);
         sb.append(s);
@@ -313,25 +588,31 @@ public final class GuardianStatus {
         return sb.toString();
     }
 
-    /** Compact histogram: sorted desc by count, top 6 entries plus tail. */
-    private static String formatHistogram(Map<String, Long> map) {
+    /** Compact histogram: sorted desc by count, top entries plus a summed tail. */
+    static String formatHistogram(Map<String, Long> map) {
+        if (map == null || map.isEmpty()) {
+            return "";
+        }
         var sorted = new ArrayList<>(map.entrySet());
-        sorted.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+        sorted.sort((a, b) -> Long.compare(
+                b.getValue() == null ? 0L : b.getValue(),
+                a.getValue() == null ? 0L : a.getValue()));
         StringBuilder sb = new StringBuilder();
         int shown = 0;
         long tail = 0L;
         int tailCount = 0;
         for (var e : sorted) {
-            if (shown < 6) {
+            long value = e.getValue() == null ? 0L : e.getValue();
+            if (shown < HISTOGRAM_TOP) {
                 if (shown > 0) sb.append(", ");
-                sb.append(e.getKey()).append('=').append(e.getValue());
+                sb.append(blankTo(e.getKey(), "unknown")).append('=').append(value);
                 shown++;
             } else {
-                tail += e.getValue();
+                tail += value;
                 tailCount++;
             }
         }
-        if (tail > 0) {
+        if (tailCount > 0) {
             sb.append(", (+").append(tailCount).append(" others=").append(tail).append(')');
         }
         return sb.toString();

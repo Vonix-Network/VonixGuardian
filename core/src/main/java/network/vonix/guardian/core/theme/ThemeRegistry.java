@@ -68,6 +68,59 @@ public final class ThemeRegistry {
     }
 
     /**
+     * Outcome of looking a configured theme name up: the theme that will
+     * actually be used, the name that was asked for, and whether the two
+     * agreed.
+     *
+     * <p>{@link #get(String)} has always fallen back to {@link #AQUA} for an
+     * unknown name. That is the right behaviour for a renderer (it must never
+     * hand out {@code null}), but it meant a typo in {@code config.json}
+     * produced a default-looking server with no signal that the setting had
+     * been ignored. Callers that report configuration &mdash; {@code /vg
+     * status}, {@code /vg reload} &mdash; use this to say so out loud.</p>
+     *
+     * @param requested the name from configuration, verbatim; may be {@code null}
+     * @param theme     the theme that will be used; never {@code null}
+     * @param honoured  {@code true} only when {@code requested} named a registered theme
+     */
+    public record Resolution(String requested, Theme theme, boolean honoured) {
+
+        /** A human-readable name for what was asked for, never blank. */
+        public String requestedOrPlaceholder() {
+            return requested == null || requested.isBlank() ? "(not set)" : requested;
+        }
+    }
+
+    /**
+     * Resolve a configured theme name, reporting whether the name was actually
+     * recognised. Prefer this over {@link #get(String)} anywhere the answer is
+     * shown to an operator, so a silently-ignored setting cannot masquerade as
+     * a working one.
+     *
+     * @param name theme identifier from configuration; may be {@code null}
+     * @return the applied theme plus whether the request was honoured; never {@code null}
+     */
+    public static Resolution resolve(String name) {
+        Theme theme = get(name);
+        boolean honoured = name != null && !name.isBlank()
+                && THEMES.containsKey(name.toLowerCase(Locale.ROOT));
+        return new Resolution(name, theme, honoured);
+    }
+
+    /**
+     * Returns {@code theme} when it is non-null, otherwise the default
+     * {@link #AQUA}. A renderer that accepts a nullable theme has no way to
+     * distinguish "no theme chosen" from "a theme was forgotten"; routing
+     * through this makes the fallback explicit and testable.
+     *
+     * @param theme a possibly-null theme
+     * @return a non-null theme
+     */
+    public static Theme orDefault(Theme theme) {
+        return theme != null ? theme : AQUA;
+    }
+
+    /**
      * Returns the theme with the given name, or {@link #AQUA} if {@code name} is
      * null, blank, or unknown.
      *
