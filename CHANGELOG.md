@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1hf] - 2026-11-14
+
+**Hotfix for the 1.18.2 Forge cell only.** 2.3.1 did not boot there: the block-write
+mixin failed to apply and took the server down at startup.
+
+### Fixed
+
+- **`BlockWriteMixin` failed to apply on 1.18.2 Forge**
+  (`@Shadow field level was not located in the target class LevelChunk`). Two defects in one
+  declaration: the shadowed field is typed `Level`, not `ServerLevel`, so the descriptor could
+  never match; and this build's refmap carries almost no entries, so a *named* lookup cannot
+  resolve at all. The field is now shadowed as `f_62776_` with `remap = false`, and the inject
+  target is the SRG name `m_6978_` — the same convention the working mixins in this tree
+  already use.
+- **Verified by booting a real Forge 1.18.2 server**, not by compiling: `java 17.0.20.1`,
+  zero mixin errors, `Booting VonixGuardian v2.3.1`, `Done (19.162s)!`. A mixin that fails to
+  apply compiles perfectly, which is why 2.3.1 shipped broken — compile success is not
+  evidence for this class of defect.
+
+### Scope
+
+- **1.18.2 Forge only.** `BlockWriteMixin` exists in no other cell, so the other twelve jars
+  are byte-identical to 2.3.1 and do not need replacing.
+- Internal version string remains `2.3.1`; the filename carries the `hf` marker so the two
+  1.18.2 Forge artifacts are distinguishable.
+
+### Not verified
+
+- The container-rollback fix from 2.3.1 still has not been exercised against the world that
+  produced the 257-failure batch.
+
 ## [2.3.1] - 2026-11-14
 
 Rollback of a used container no longer fails. A live server logged **257 failed rows in a

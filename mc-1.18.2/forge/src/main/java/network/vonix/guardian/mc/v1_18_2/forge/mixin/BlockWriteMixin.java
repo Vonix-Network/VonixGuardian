@@ -44,9 +44,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(LevelChunk.class)
 public abstract class BlockWriteMixin {
 
-    @Shadow
+    /**
+     * {@code LevelChunk.level} is SRG {@code f_62776_} at runtime.
+     *
+     * <p>{@code remap = false} with the SRG name, matching
+     * {@code ServerGamePacketListenerAccessor}: this build's refmap carries almost no
+     * entries, so a named {@code level} lookup cannot resolve and the mixin fails to
+     * apply. That is not a warning — it aborts boot, which is exactly what happened on
+     * a live server the first time this shipped.</p>
+     *
+     * <p>The declared type must match the target exactly. The field is
+     * {@link Level}, not {@link ServerLevel}; casting at the use site keeps the
+     * shadow bindable.</p>
+     */
+    @Shadow(remap = false)
     @Final
-    private ServerLevel level;
+    private net.minecraft.world.level.Level f_62776_;
 
     /**
      * Capture the state being replaced before the write lands.
@@ -64,12 +77,14 @@ public abstract class BlockWriteMixin {
      *                 unchanged in every case
      */
     @Inject(
-        method = "setBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Z)Lnet/minecraft/world/level/block/state/BlockState;",
-        at = @At("HEAD"), require = 1)
+        method = "m_6978_(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Z)Lnet/minecraft/world/level/block/state/BlockState;",
+        at = @At("HEAD"), require = 1, remap = false)
     private void vg$observeBlockWrite(BlockPos pos, BlockState state, boolean isMoving,
                                       CallbackInfoReturnable<BlockState> cir) {
         try {
-            BlockWriteHook.observe(this.level, pos, state);
+            if (this.f_62776_ instanceof ServerLevel serverLevel) {
+                BlockWriteHook.observe(serverLevel, pos, state);
+            }
         } catch (Throwable ignored) {
             // An audit hook must never break the world write it is observing. A
             // throw here would surface inside whatever mod or vanilla path called
