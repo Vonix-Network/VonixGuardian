@@ -73,11 +73,42 @@ import java.util.List;
  *       pages. Existing v8 databases are upgraded in place by
  *       {@link network.vonix.guardian.core.storage.migration.V9TsIdIndex}.</li>
  * </ul>
+ *
+ * <h2>Pinned schemas ({@code database.updateSchema=false})</h2>
+ *
+ * <p>{@link #createTables(Connection, Dialect)} keeps the historical behaviour:
+ * create what is missing, then let
+ * {@link network.vonix.guardian.core.storage.migration.MigrationRunner} walk the
+ * chain forward. {@link #applySchema(Connection, Dialect, boolean)} adds the
+ * operator-facing pin: with {@code updateSchema=false} this class performs
+ * <b>no DDL and no migration</b> on a database that already holds data. It only
+ * reads {@code vg_schema_version} and the {@code vg_actions} column list, and
+ * throws {@link SchemaPinnedException} when the on-disk schema is not exactly
+ * {@link #CURRENT_VERSION}. The caller is expected to let that exception
+ * propagate: an operator who pinned a version asked to be told, not migrated.
+ *
+ * <p>An <em>empty</em> database is still built at {@code CURRENT_VERSION} under
+ * a pin — there is no older schema to protect, and a pinned operator asking for
+ * a fresh install wants the pinned shape.
  */
 public final class Schema {
 
     /** Current schema version. */
     public static final int CURRENT_VERSION = 9;
+
+    /**
+     * Columns {@code vg_actions} must carry for this jar's INSERT/SELECT/UPDATE
+     * paths — exactly the set {@link #actions(Dialect)} declares. A pinned
+     * database (see {@link #prepare(Connection, Dialect, boolean)}) is refused
+     * when any of them is missing, because every write path binds them by name
+     * and a missing column is a runtime SQLException on the first logged action
+     * rather than at boot.
+     */
+    private static final List<String> REQUIRED_ACTION_COLUMNS = List.of(
+        "id", "ts", "type", "user_id", "world_id", "x", "y", "z", "target", "meta",
+        "amount", "rolled_back", "source_tag", "sign_side", "sign_dye_color", "sign_waxed",
+        "old_block_state", "new_block_state", "block_entity_nbt", "item_nbt", "entity_nbt",
+        "inventory_slot", "pair_id");
 
     /** SQL dialect — primarily affects auto-increment and a couple of column types. */
     public enum Dialect {
@@ -269,6 +300,172 @@ public final class Schema {
         out.add(prefix + "vg_actions_pair   ON vg_actions(pair_id)");
         out.add(prefix + "vg_rollback_batches_ts ON vg_rollback_batches(ts)");
         return List.copyOf(out);
+    }
+
+    /**
+     * Apply the schema for boot, honouring {@code database.updateSchema}.
+     *
+     * <p>With {@code updateSchema=true} this is exactly {@link #createTables} — the
+     * historical behaviour: missing tables/indexes are created and the recorded
+     * version is left alone so the caller's migration chain can advance it.
+     *
+     * <p>With {@code updateSchema=false} this performs <b>no DDL</b> on a database that
+     * already holds Guardian data. It reads {@code vg_schema_version}, the
+     * {@code vg_actions} column list, and the presence of the tables later versions
+     * added; if anything is not exactly {@link #CURRENT_VERSION} it throws
+     * {@link SchemaPinnedException} and leaves the database untouched. A database with
+     * no Guardian tables at all is a fresh install — there is no older schema to
+     * protect — so it is created at {@link #CURRENT_VERSION}.
+     *
+     * <p><b>Contract for the caller:</b> let {@link SchemaPinnedException} propagate.
+     * Boot must fail; a pinned operator asked to be told about drift, not to be
+     * migrated. After a successful return the caller may still run the migration
+     * chain — on a pinned database it is a pure version read that returns immediately,
+     * because the only way to get here was {@code stamped == CURRENT_VERSION}.
+     *
+     * <p><b>Not covered:</b> index presence is not verified. A v9 stamp with a dropped
+     * index costs performance, not correctness, and is reported by the storage health
+     * check rather than refused here.
+     *
+     * @param c            open connection; must not be in a transaction
+     * @param dialect      backend dialect
+     * @param updateSchema the operator's {@code database.updateSchema} setting
+     * @throws SchemaPinnedException when {@code updateSchema=false} and the on-disk
+     *                               schema is not {@link #CURRENT_VERSION}
+     * @throws SQLException          on a real database error
+     */
+    public static void applySchema(Connection c, Dialect dialect, boolean updateSchema) throws SQLException {
+        if (updateSchema) {
+            createTables(c, dialect);
+            return;
+        }
+        if (!hasGuardianTables(c)) {
+            LOG.info("database.updateSchema=false on an empty database; creating v{}", CURRENT_VERSION);
+            createTables(c, dialect);
+            return;
+        }
+        List<String> problems = inspectPinnedSchema(c);
+        if (!problems.isEmpty()) {
+            int stamped = readStampedVersion(c);
+            throw new SchemaPinnedException(stamped, problems);
+        }
+        LOG.info("database.updateSchema=false; schema verified at v{} and left untouched", CURRENT_VERSION);
+    }
+
+    /** True when any Guardian table exists, i.e. this database is not a fresh install. */
+    static boolean hasGuardianTables(Connection c) throws SQLException {
+        return tableExists(c, "vg_actions")
+            || tableExists(c, "vg_users")
+            || tableExists(c, "vg_worlds")
+            || tableExists(c, "vg_schema_version");
+    }
+
+    /**
+     * Reasons the on-disk schema is not this jar's {@link #CURRENT_VERSION}, in plain
+     * words an operator can act on. Empty means the pin holds.
+     *
+     * <p>Read-only: issues metadata queries and one {@code SELECT MAX(version)}.
+     */
+    static List<String> inspectPinnedSchema(Connection c) throws SQLException {
+        List<String> problems = new ArrayList<>();
+        int stamped = readStampedVersion(c);
+        if (stamped <= 0) {
+            problems.add("vg_schema_version has no version row (unstamped)");
+        } else if (stamped < CURRENT_VERSION) {
+            problems.add("vg_schema_version is stamped v" + stamped + ", older than v" + CURRENT_VERSION);
+        } else if (stamped > CURRENT_VERSION) {
+            problems.add("vg_schema_version is stamped v" + stamped
+                + ", newer than this jar's v" + CURRENT_VERSION + " (written by a newer build)");
+        }
+        // A stamp can lie: a partially restored dump or an interrupted migration can
+        // leave v9 recorded next to a v7 fact table. Check the shape independently.
+        java.util.Set<String> lower = new java.util.HashSet<>();
+        for (String col : actionColumns(c)) {
+            if (col != null) {
+                lower.add(col.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        List<String> missingCols = new ArrayList<>();
+        for (String required : REQUIRED_ACTION_COLUMNS) {
+            if (!lower.contains(required)) {
+                missingCols.add(required);
+            }
+        }
+        if (!missingCols.isEmpty()) {
+            problems.add("vg_actions is missing columns " + missingCols);
+        }
+        List<String> missingTables = new ArrayList<>();
+        for (String table : List.of("vg_rollback_batches", "vg_rollback_batch_actions",
+                                    "vg_repair_required", "vg_sink_outbox")) {
+            if (!tableExists(c, table)) {
+                missingTables.add(table);
+            }
+        }
+        if (!missingTables.isEmpty()) {
+            problems.add("missing tables " + missingTables);
+        }
+        return problems;
+    }
+
+    /**
+     * Highest version recorded in {@code vg_schema_version}.
+     *
+     * <p>Read-only — unlike {@code MigrationRunner.readVersion} it does not create the
+     * version table, because a pinned boot must not issue DDL. Returns {@code 0} when
+     * the table is absent or holds no rows.
+     */
+    static int readStampedVersion(Connection c) throws SQLException {
+        if (!tableExists(c, "vg_schema_version")) {
+            return 0;
+        }
+        try (Statement st = c.createStatement();
+             java.sql.ResultSet rs = st.executeQuery("SELECT MAX(version) FROM vg_schema_version")) {
+            if (rs.next()) {
+                int v = rs.getInt(1);
+                return rs.wasNull() ? 0 : v;
+            }
+            return 0;
+        }
+    }
+
+    /**
+     * Thrown when {@code database.updateSchema=false} and the on-disk schema is not the
+     * version this jar was built for.
+     *
+     * <p>Extends {@link SQLException} so it travels the DAO's existing checked-exception
+     * path to boot without a signature change. The message is the operator's whole
+     * diagnosis: what is on disk, what this jar expects, what was and was not done, and
+     * the two ways out.
+     */
+    public static final class SchemaPinnedException extends SQLException {
+
+        private static final long serialVersionUID = 1L;
+
+        private final int stampedVersion;
+
+        SchemaPinnedException(int stampedVersion, List<String> problems) {
+            super(buildMessage(stampedVersion, problems));
+            this.stampedVersion = stampedVersion;
+        }
+
+        /** Version read from {@code vg_schema_version}; {@code <= 0} when unstamped. */
+        public int stampedVersion() {
+            return stampedVersion;
+        }
+
+        /** Version this jar expects. */
+        public int expectedVersion() {
+            return CURRENT_VERSION;
+        }
+
+        private static String buildMessage(int stamped, List<String> problems) {
+            return "database.updateSchema=false refused to start: the on-disk schema is not v"
+                + CURRENT_VERSION + " (" + (stamped <= 0 ? "unstamped" : "stamped v" + stamped)
+                + "): " + String.join("; ", problems)
+                + ". No migration was run and the database was not modified."
+                + " Set database.updateSchema=true to apply the pending migration(s),"
+                + " or point database.* at a v" + CURRENT_VERSION + " database.";
+        }
     }
 
     /**

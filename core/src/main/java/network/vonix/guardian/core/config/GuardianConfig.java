@@ -3,6 +3,8 @@ package network.vonix.guardian.core.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.DateTimeException;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -186,9 +188,17 @@ public record GuardianConfig(
      *                          keeps its active backend until the operator issues the migrate command.
      *                          May be {@code null}; if present the field is used only by
      *                          {@code /vg migrate-db}.
+     * @param hikari            connection-pool tuning for the pooled backends
+     * @param logSql            if {@code true}, every SQL statement the storage layer prepares is
+     *                          written to the {@code AbstractJdbcDao} logger at DEBUG. Statements
+     *                          are logged <b>with their {@code ?} placeholders</b>; bound parameter
+     *                          values are never logged, because a bind can carry a chat line, a sign
+     *                          body, or a container's item payload. Default {@code false}: this is a
+     *                          diagnostics switch, not a normal-operation log level, and on a busy
+     *                          server it writes one line per prepared statement. Added 2.3.0.
      */
     public record Database(String type, String file, String jdbcUrl, String user, String password,
-                           MigrationTarget migrationTarget, Hikari hikari) {
+                           MigrationTarget migrationTarget, Hikari hikari, boolean logSql) {
 
         /**
          * Backward-compat constructor for callers/tests written before {@code migrationTarget} existed.
@@ -198,7 +208,7 @@ public record GuardianConfig(
          */
         @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password) {
-            this(type, file, jdbcUrl, user, password, null, Hikari.defaults());
+            this(type, file, jdbcUrl, user, password, null, Hikari.defaults(), false);
         }
 
         /**
@@ -209,7 +219,38 @@ public record GuardianConfig(
         @Deprecated(since = "1.3.6", forRemoval = true)
         public Database(String type, String file, String jdbcUrl, String user, String password,
                         MigrationTarget migrationTarget) {
-            this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults());
+            this(type, file, jdbcUrl, user, password, migrationTarget, Hikari.defaults(), false);
+        }
+
+        /**
+         * Backward-compat constructor for callers written before 2.3.0 added {@code logSql}.
+         *
+         * <p>{@code logSql} is a new diagnostics flag whose documented default is {@code false}, so a
+         * caller that predates it gets exactly the shipped behaviour by omitting it. Unlike the
+         * sections that change <em>behaviour</em> when dropped (see {@code storage.persistNbt}), a
+         * dropped {@code logSql} loses nothing an operator configured.
+         *
+         * @deprecated Prefer the canonical 8-arg constructor. Retained so the three mirror
+         *     {@code Database} construction sites outside this lane keep compiling while
+         *     {@code logSql} rolls out; slated for removal with the other 1.3.6-era shims.
+         */
+        @Deprecated(since = "2.3.0", forRemoval = true)
+        public Database(String type, String file, String jdbcUrl, String user, String password,
+                        MigrationTarget migrationTarget, Hikari hikari) {
+            this(type, file, jdbcUrl, user, password, migrationTarget, hikari, false);
+        }
+
+        /**
+         * Return a copy of this {@code Database} with {@code logSql} replaced.
+         *
+         * <p>Exists so a caller can flip the diagnostics switch without re-spelling an eight-argument
+         * constructor — the maintenance hazard that produced the historic widening drift.
+         *
+         * @param newLogSql the new switch value
+         * @return a new {@code Database} differing only in {@code logSql}
+         */
+        public Database withLogSql(boolean newLogSql) {
+            return new Database(type, file, jdbcUrl, user, password, migrationTarget, hikari, newLogSql);
         }
     }
 

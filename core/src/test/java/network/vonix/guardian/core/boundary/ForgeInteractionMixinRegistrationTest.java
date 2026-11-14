@@ -61,13 +61,12 @@ class ForgeInteractionMixinRegistrationTest {
                     List.of("m_5707_(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/entity/player/Player;)V",
                             "m_6227_(Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;Lnet/minecraft/world/phys/BlockHitResult;)Lnet/minecraft/world/InteractionResult;")),
             new LaneMixin("LecternBookMixin",
-                    "net.minecraft.world.level.block.entity.LecternBlockEntity$1",
-                    "lectern book taken (container adapter)",
-                    List.of("m_8016_(I)Lnet/minecraft/world/item/ItemStack;",
-                            "m_7407_(II)Lnet/minecraft/world/item/ItemStack;")),
+                    "net.minecraft.world.level.block.entity.LecternBlockEntity",
+                    "lectern book taken (block-entity emitter)",
+                    List.of("m_59570_()V")),
             new LaneMixin("LecternMenuTakeMixin",
                     "net.minecraft.world.inventory.LecternMenu",
-                    "lectern book taken (player attribution)",
+                    "lectern book taken (capture + attribution)",
                     List.of("m_6366_(Lnet/minecraft/world/entity/player/Player;I)Z"))
     );
 

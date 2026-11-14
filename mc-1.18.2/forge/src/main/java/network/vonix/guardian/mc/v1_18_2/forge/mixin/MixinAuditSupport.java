@@ -73,56 +73,67 @@ public final class MixinAuditSupport {
     private record UseSnapshot(BlockState before) { }
 
     /**
-     * Player currently driving a {@code LecternMenu} "take book" click, per
-     * thread.
+     * Book-take capture, published at the menu click and consumed by the block
+     * entity when vanilla empties the lectern.
      *
-     * <p>The lectern's book lives in a private container adapter inside
-     * {@code LecternBlockEntity}, which knows the block position but never sees
-     * the player. The menu button handler is the opposite: it has the player but
-     * not the position. The adapter's removal runs synchronously inside the
-     * menu call, so the menu publishes the acting player here, the adapter
-     * consumes it, and the row carries real attribution instead of a sentinel.
-     * Hopper or mod-driven removals never go through the menu, so they fall back
-     * to the {@code #lectern} sentinel — which is the honest answer for them.</p>
+     * <p>Split across two mixins because neither class has the whole picture:
+     * {@code LecternMenu} has the acting player and the book container but no
+     * position, while {@code LecternBlockEntity} has the position but no player.
+     * The take is synchronous inside one button press, so a per-thread handoff is
+     * exact and needs no lookup.</p>
+     *
+     * @param actor player who pressed the take button (may be {@code null})
+     * @param book  the stack about to be removed (may be {@code null})
+     * @param pos   lectern position, or {@code null} when it could not be resolved
      */
-    private static final ThreadLocal<Player> LECTERN_TAKER =
-            new ThreadLocal<>();
+    public record LecternTake(Player actor, ItemStack book, BlockPos pos) { }
+
+    private static final ThreadLocal<LecternTake> LECTERN_TAKE = new ThreadLocal<>();
 
     private MixinAuditSupport() {
     }
 
     /**
-     * Publishes the player for the in-flight lectern take. Clears first so a
-     * previous call that threw before its RETURN cannot attribute this take to
-     * the wrong player.
+     * Arms the lectern take capture. Clears first so a previous take that threw
+     * before its RETURN cannot attribute this one to the wrong player.
      *
-     * @param player acting player; {@code null} clears without publishing
+     * @param actor player pressing the take button (may be {@code null})
+     * @param book  the stack about to leave the lectern (may be {@code null})
      */
-    public static void pushLecternTaker(Player player) {
+    public static void pushLecternTake(Player actor, ItemStack book) {
         try {
-            LECTERN_TAKER.remove();
-            if (player != null) {
-                LECTERN_TAKER.set(player);
+            LECTERN_TAKE.remove();
+            if (book == null || book.isEmpty()) {
+                return;
             }
+            LECTERN_TAKE.set(new LecternTake(actor, book.copy(), null));
         } catch (Throwable ignored) {
-            // no attribution rather than wrong attribution
+            // no capture rather than a wrong one
         }
     }
 
-    /** Drops the published lectern player. Safe to call when none was published. */
-    public static void clearLecternTaker() {
+    /**
+     * Reads the capture currently armed for {@code pos}, filling in the position
+     * the menu could not know.
+     *
+     * @param pos lectern position observed by the block entity
+     * @return the capture for this position, or {@code null} when none is armed
+     */
+    public static LecternTake peekLecternTake(BlockPos pos) {
         try {
-            LECTERN_TAKER.remove();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** @return the player driving the in-flight lectern take, or {@code null} */
-    public static Player lecternTaker() {
-        try {
-            return LECTERN_TAKER.get();
+            LecternTake take = LECTERN_TAKE.get();
+            if (take == null || pos == null) return null;
+            return new LecternTake(take.actor(), take.book(), pos);
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    /** Drops the armed lectern capture. Safe to call when none is armed. */
+    public static void clearLecternTake() {
+        try {
+            LECTERN_TAKE.remove();
+        } catch (Throwable ignored) {
         }
     }
 
