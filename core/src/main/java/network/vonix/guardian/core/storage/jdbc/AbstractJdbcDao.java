@@ -966,11 +966,10 @@ public abstract class AbstractJdbcDao implements GuardianDao, RawJdbcAccess {
                     ownersReclaimed = purgeOrphanOwners(c);
                 }
                 c.commit();
-                long total = deleted;
                 if (ownersReclaimed > 0) {
                     invalidateOwnerCaches();
                 }
-                return total;
+                return deleted;
             } catch (SQLException ex) {
                 try { c.rollback(); } catch (SQLException rollbackFailure) {
                     ex.addSuppressed(rollbackFailure);
