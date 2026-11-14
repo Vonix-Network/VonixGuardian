@@ -204,6 +204,13 @@ class ActionTypeProducerCoverageTest {
                 guardian.submitIgnite(ACTOR, ACTOR_NAME, WORLD, at(), 64, 0, "minecraft:fire", null));
         emitters.put(ActionType.FADE, () ->
                 guardian.submitFade(null, "#natural", WORLD, at(), 64, 0, "minecraft:ice", "#natural"));
+        // 2.3.0 additions: each has a producer on every loader cell.
+        emitters.put(ActionType.BLOCK_TRANSFORM, () ->
+                guardian.submitBlockTransform(ACTOR, ACTOR_NAME, WORLD, at(), 64, 0, "minecraft:oak_log", null));
+        emitters.put(ActionType.FARMLAND_TRAMPLE, () ->
+                guardian.submitFarmlandTrample(ACTOR, ACTOR_NAME, WORLD, at(), 64, 0, "minecraft:farmland", null));
+        emitters.put(ActionType.REDSTONE_TOGGLE, () ->
+                guardian.submitRedstoneToggle(ACTOR, ACTOR_NAME, WORLD, at(), 64, 0, "minecraft:lever", null));
         emitters.put(ActionType.FORM, () ->
                 guardian.submitForm(null, "#natural", WORLD, at(), 64, 0, "minecraft:snow", "#natural"));
         emitters.put(ActionType.SPREAD, () ->

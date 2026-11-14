@@ -85,7 +85,7 @@ class ActionTypeTest {
     @Test
     void idsAreUniqueContiguousAndExpanded() {
         ActionType[] values = ActionType.values();
-        assertThat(values).hasSize(40);
+        assertThat(values).hasSize(43);
         Set<Integer> ids = new HashSet<>();
         for (int i = 0; i < values.length; i++) {
             assertThat(values[i].id()).isEqualTo(i + 1);

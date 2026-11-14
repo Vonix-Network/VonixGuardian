@@ -1195,6 +1195,27 @@ public final class Guardian implements AutoCloseable, EventSubmitter {
     }
 
     @Override
+    public void submitBlockTransform(UUID actorUuid, String actorName, String worldId,
+                                     int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.BLOCK_TRANSFORM, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitFarmlandTrample(UUID actorUuid, String actorName, String worldId,
+                                      int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.FARMLAND_TRAMPLE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
+    public void submitRedstoneToggle(UUID actorUuid, String actorName, String worldId,
+                                     int x, int y, int z, String blockId, String sourceTag) {
+        submit(seed(ActionType.REDSTONE_TOGGLE, actorUuid, actorName, worldId)
+                .position(x, y, z).targetId(blockId).sourceTag(sourceTag).build());
+    }
+
+    @Override
     public void submitFade(UUID actorUuid, String actorName, String worldId,
                            int x, int y, int z, String blockId, String sourceTag) {
         submit(seed(ActionType.FADE, actorUuid, actorName, worldId)

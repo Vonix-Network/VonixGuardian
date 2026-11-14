@@ -145,9 +145,11 @@ class ActionTypeExpansionTest {
     }
 
     @Test
-    void interactCategoryHoldsOnlyClick() {
+    void interactCategoryHoldsClickAndRedstone() {
+        // 2.3.0 added REDSTONE_TOGGLE. Both are recorded evidence of an interaction
+        // rather than a restorable world state, so both belong in INTERACT.
         Set<ActionType> c = ActionType.family(ActionType.Category.INTERACT);
-        assertThat(c).containsExactly(ActionType.CLICK);
+        assertThat(c).containsExactlyInAnyOrder(ActionType.CLICK, ActionType.REDSTONE_TOGGLE);
     }
 
     @Test

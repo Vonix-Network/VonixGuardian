@@ -89,7 +89,35 @@ public enum ActionType {
      * via mixin. Rollback of this row clears the spread cell back to
      * {@code minecraft:air}.
      */
-    FLUID_FLOW              (40, "fluid",       Category.BLOCK,     Sign.PLACE);
+    FLUID_FLOW              (40, "fluid",       Category.BLOCK,     Sign.PLACE),
+
+    // --- 2.3.0: grief types the write hook sees but could not name ---
+    /**
+     * Farmland turned to dirt by a falling entity landing on it.
+     *
+     * <p>Recorded as a break of the farmland: rollback restores farmland, which also
+     * restores the trample-induced moisture loss. Captured by the block-write hook
+     * because vanilla raises no event for all trample paths.</p>
+     */
+    FARMLAND_TRAMPLE        (41, "trample",     Category.BLOCK,     Sign.BREAK),
+    /**
+     * A block re-coloured or re-shaped in place: dyeing, waxing, scraping, stripping,
+     * path-trampling to dirt path, hoeing, or any non-air to non-air replacement.
+     *
+     * <p>One type rather than a dozen: from a rollback standpoint they are identical —
+     * restore the previous state at the position. The {@code targetId} carries what
+     * was there, so the log still says "oak_log became stripped_oak_log".</p>
+     */
+    BLOCK_TRANSFORM         (42, "transform",   Category.BLOCK,     Sign.NEUTRAL),
+    /**
+     * Redstone component actuation: lever, button, repeater, comparator, daylight
+     * detector, pressure plate, tripwire.
+     *
+     * <p>Logged for attribution, not for rollback — flipping a lever back is almost
+     * never what an operator wants, and doing it can start a machine. Rollback treats
+     * this like a click: recorded evidence, nothing to undo.</p>
+     */
+    REDSTONE_TOGGLE         (43, "redstone",    Category.INTERACT,  Sign.NEUTRAL);
 
     /** Coarse family classification — drives gating + {@code a:&lt;family&gt;} expansion. */
     public enum Category { BLOCK, CONTAINER, ITEM, ENTITY, WORLD, MESSAGE, SESSION, INTERACT }

@@ -127,7 +127,9 @@ public final class InspectorLookup {
             case BLOCK_BREAK, BLOCK_PLACE, BURN, FADE, FORM, SPREAD, IGNITE,
                  BUCKET_EMPTY, BUCKET_FILL, LEAVES_DECAY, PISTON_EXTEND,
                  PISTON_RETRACT, FLUID_FLOW, DISPENSE, STRUCTURE_GROW,
-                 PORTAL_CREATE, CHUNK_POPULATE -> "block";
+                 PORTAL_CREATE, CHUNK_POPULATE,
+                 FARMLAND_TRAMPLE,
+                 BLOCK_TRANSFORM -> "block";
             case CONTAINER_DEPOSIT, CONTAINER_WITHDRAW, INVENTORY_DEPOSIT,
                  INVENTORY_WITHDRAW, HOPPER_PUSH, HOPPER_PULL,
                  ITEM_DROP, ITEM_PICKUP, ITEM_CRAFT -> "item";
@@ -137,7 +139,7 @@ public final class InspectorLookup {
             case COMMAND -> "command";
             case SIGN -> "sign";
             case SESSION_JOIN, SESSION_LEAVE, USERNAME_CHANGE -> "player";
-            case CLICK -> "target";
+            case CLICK, REDSTONE_TOGGLE -> "target";
             case HANGING_BREAK, HANGING_PLACE -> "hanging";
         };
     }
@@ -169,6 +171,9 @@ public final class InspectorLookup {
             case PORTAL_CREATE    -> "created portal";
             case CHUNK_POPULATE   -> "populated";
             case CLICK            -> "clicked";
+            case FARMLAND_TRAMPLE -> "trampled";
+            case BLOCK_TRANSFORM  -> "transformed";
+            case REDSTONE_TOGGLE  -> "toggled";
         };
     }
 

@@ -1710,8 +1710,20 @@ public final class RollbackEngine {
         // stays allocation-free for pre-v1.3.1 rows.
         boolean nbt = a.hasNbt();
         return switch (a.type()) {
+            // REDSTONE_TOGGLE is never dispatched (isRollbackable returns false), but
+            // the switch is exhaustive over ActionType, so it must be named. Returning
+            // false keeps the contract: this hook did not mutate anything.
+            case REDSTONE_TOGGLE -> false;
             case BLOCK_PLACE ->
                 mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
+            case FARMLAND_TRAMPLE, BLOCK_TRANSFORM -> {
+                if (nbt) {
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(),
+                        a.targetMeta(), a.oldBlockState(), a.blockEntityNbt());
+                }
+                yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetId(), a.targetMeta());
+            }
             case BLOCK_BREAK -> {
                 if (nbt) {
                     yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
@@ -1909,8 +1921,12 @@ public final class RollbackEngine {
                     yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
             }
-            case BLOCK_BREAK ->
-                mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
+            case REDSTONE_TOGGLE -> false;
+            // Restoring a break re-applies the destruction: clear the position the
+            // block was broken from. This case was dropped during the 2.3.0 type
+            // additions and the compiler caught it as a missing exhaustive branch -
+            // which is exactly why the switches are exhaustive.
+            case BLOCK_BREAK -> mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             case CONTAINER_DEPOSIT -> {
                 if (a.inventorySlot() != null) {
                     yield mutator.tryAddToContainer(a.worldId(), a.x(), a.y(), a.z(),
@@ -1985,7 +2001,17 @@ public final class RollbackEngine {
                 }
             }
             // Block was originally destroyed/changed-away — restoring means re-destroying.
-            case BURN, FADE, LEAVES_DECAY, BUCKET_FILL ->
+            // BLOCK_TRANSFORM is a non-air to non-air change, so "restoring" puts the
+            // previous state back rather than clearing to air.
+            case BLOCK_TRANSFORM -> {
+                if (nbt) {
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(),
+                        a.targetMeta(), a.oldBlockState(), a.blockEntityNbt());
+                }
+                yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(),
+                    a.targetId(), a.targetMeta());
+            }
+            case FARMLAND_TRAMPLE, BURN, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             // Block was originally created — restoring means re-placing it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {
@@ -2229,7 +2255,9 @@ public final class RollbackEngine {
                  HANGING_PLACE, HANGING_BREAK,
                  STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW,
                  INVENTORY_DEPOSIT, INVENTORY_WITHDRAW,
-                 ITEM_DROP, ITEM_PICKUP -> true;
+                 ITEM_DROP, ITEM_PICKUP,
+                 FARMLAND_TRAMPLE,
+                 BLOCK_TRANSFORM -> true;
             case CHAT, COMMAND, SIGN,
                  SESSION_JOIN, SESSION_LEAVE,
                  USERNAME_CHANGE,
@@ -2238,6 +2266,9 @@ public final class RollbackEngine {
                  ITEM_CRAFT,
                  ENTITY_SPAWN, ENTITY_INTERACT,
                  CHUNK_POPULATE, CLICK -> false;
+            // REDSTONE_TOGGLE is evidence, not state: flipping a lever back can start
+            // a machine the operator was trying to stop.
+            case REDSTONE_TOGGLE -> false;
         };
     }
 

@@ -188,6 +188,31 @@ public final class ForgeEvents {
         return VonixGuardianForge.guardian();
     }
 
+    /**
+     * Non-creating block-entity read for a break event.
+     *
+     * <p>{@code CHECK} is deliberate: an entity invented here would be captured as
+     * "this block had contents" and a rollback would then restore an empty container
+     * over a full one. Returns {@code null} when the block has no entity, which the
+     * NBT-variant setters treat as "nothing to capture".</p>
+     *
+     * @param ev  the break event supplying the world
+     * @param pos position being broken
+     * @return the block entity, or {@code null}
+     */
+    private static net.minecraft.world.level.block.entity.BlockEntity levelBlockEntity(
+            BlockEvent.BreakEvent ev, BlockPos pos) {
+        try {
+            if (!(ev.getWorld() instanceof net.minecraft.server.level.ServerLevel sl)) return null;
+            if (!(ev.getState().getBlock()
+                    instanceof net.minecraft.world.level.block.EntityBlock)) return null;
+            return sl.getChunkAt(pos).getBlockEntity(pos,
+                net.minecraft.world.level.chunk.LevelChunk.EntityCreationType.CHECK);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private static EventSubmitter sub() {
         Guardian g = g();
         return g == null ? null : g.submitter();
@@ -230,10 +255,15 @@ public final class ForgeEvents {
             BlockPos pos = ev.getPos();
             BlockState state = ev.getState();
             String blockId = blockId(state);
+            // Capture fidelity for the most common row type in the log. Without this
+            // a broken chest restores empty, stairs restore facing the wrong way, and
+            // a sign restores blank — the row exists but cannot rebuild what was lost.
+            String props = NbtCapture.blockStateProps(state);
+            byte[] beNbt = persistNbt() ? NbtCapture.blockEntity(levelBlockEntity(ev, pos)) : null;
             s.submitBlockBreak(p.getUUID(), p.getName().getString(),
                     WorldKey.of((Level) ev.getWorld()),
                     pos.getX(), pos.getY(), pos.getZ(),
-                    blockId, null);
+                    blockId, null, props, beNbt);
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockBreak failed", t);
         }
@@ -251,16 +281,21 @@ public final class ForgeEvents {
             String blockId = blockId(ev.getPlacedBlock());
             if (c.actions().blockBlacklist().contains(blockId)) return;
             String worldId = WorldKey.of((Level) ev.getWorld());
+            // State properties are captured for every place: a placed stair, slab or
+            // fence carries its orientation in the state, and a rollback of the later
+            // break needs it to put the same shape back. A freshly placed block has no
+            // block entity yet, so no NBT is captured here.
+            String props = NbtCapture.blockStateProps(ev.getPlacedBlock());
             if (actor instanceof Player p) {
                 s.submitBlockPlace(p.getUUID(), p.getName().getString(),
-                        worldId, pos.getX(), pos.getY(), pos.getZ(), blockId, null);
+                        worldId, pos.getX(), pos.getY(), pos.getZ(), blockId, null, props, null);
             } else if (actor != null) {
                 s.submitBlockPlace(null, EntitySentinel.of(actor),
                         worldId, pos.getX(), pos.getY(), pos.getZ(), blockId,
-                        SourceTagger.tag(actor));
+                        SourceTagger.tag(actor), props, null);
             } else {
                 s.submitBlockPlace(null, Sentinel.UNKNOWN,
-                        worldId, pos.getX(), pos.getY(), pos.getZ(), blockId, null);
+                        worldId, pos.getX(), pos.getY(), pos.getZ(), blockId, null, props, null);
             }
         } catch (Throwable t) {
             LOG.warn(Guardian.MARKER, "onBlockPlace failed", t);

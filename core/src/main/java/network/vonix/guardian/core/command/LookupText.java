@@ -212,6 +212,9 @@ public final class LookupText {
             case PORTAL_CREATE -> "opened a portal at";
             case CHUNK_POPULATE -> "generated";
             case CLICK -> "clicked";
+            case FARMLAND_TRAMPLE -> "trampled";
+            case BLOCK_TRANSFORM -> "changed";
+            case REDSTONE_TOGGLE -> "toggled";
         };
     }
 }

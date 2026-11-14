@@ -338,6 +338,64 @@ public interface EventSubmitter {
     void submitBurn(UUID actorUuid, String actorName, String worldId,
                     int x, int y, int z, String blockId, String sourceTag);
 
+    /**
+     * Convenience for a block re-shaped in place: dyed, waxed, stripped, scraped,
+     * hoed, or any other non-air to non-air replacement.
+     *
+     * @param actorUuid  actor UUID, or {@code null} for synthetic sources
+     * @param actorName  resolved name or {@link Sentinel} string
+     * @param worldId    dimension key
+     * @param x          block x
+     * @param y          block y
+     * @param z          block z
+     * @param blockId    the block that was there before the change
+     * @param sourceTag  optional classifier or {@code null}
+     */
+    default void submitBlockTransform(UUID actorUuid, String actorName, String worldId,
+                              int x, int y, int z, String blockId, String sourceTag) {
+        // Default no-op so pre-existing implementations and test doubles keep
+        // compiling. A real implementation overrides this; the silence is visible in
+        // ActionTypeCoverageStructuralTest, which requires every type to have a
+        // producer in the shipped implementation.
+    }
+
+    /**
+     * Convenience for farmland trampled to dirt.
+     *
+     * @param actorUuid actor UUID, or {@code null} when unknown
+     * @param actorName resolved name or {@link Sentinel} string
+     * @param worldId   dimension key
+     * @param x         block x
+     * @param y         block y
+     * @param z         block z
+     * @param blockId   the farmland block id, so a rollback can restore it
+     * @param sourceTag optional classifier or {@code null}
+     */
+    default void submitFarmlandTrample(UUID actorUuid, String actorName, String worldId,
+                               int x, int y, int z, String blockId, String sourceTag) {
+        // Default no-op; see submitBlockTransform's note.
+    }
+
+    /**
+     * Convenience for redstone component actuation.
+     *
+     * @param actorUuid actor UUID, or {@code null} when unknown
+     * @param actorName resolved name or {@link Sentinel} string
+     * @param worldId   dimension key
+     * @param x         block x
+     * @param y         block y
+     * @param z         block z
+     * @param blockId   the component that was toggled
+     * @param sourceTag optional classifier or {@code null}
+     */
+    default void submitRedstoneToggle(UUID actorUuid, String actorName, String worldId,
+                              int x, int y, int z, String blockId, String sourceTag) {
+        // Default no-op so pre-existing implementations and test doubles keep
+        // compiling. A real implementation overrides this; the silence is visible in
+        // ActionTypeCoverageStructuralTest, which requires every type to have a
+        // producer in the shipped implementation.
+    }
+
     /** Convenience for {@code BlockIgniteEvent}. */
     void submitIgnite(UUID actorUuid, String actorName, String worldId,
                       int x, int y, int z, String blockId, String sourceTag);
