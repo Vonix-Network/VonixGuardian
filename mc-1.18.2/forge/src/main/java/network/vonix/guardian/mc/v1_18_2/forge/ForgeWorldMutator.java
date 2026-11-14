@@ -32,6 +32,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -513,18 +515,50 @@ public final class ForgeWorldMutator implements WorldMutator {
             if (rl == null) return false;
             EntityType<?> type = Registry.ENTITY_TYPE.get(rl);
             if (type == null || !rl.equals(Registry.ENTITY_TYPE.getKey(type))) return false;
+
             BlockPos pos = new BlockPos(x, y, z);
-            AABB box = new AABB(x - 1.0, y - 1.0, z - 1.0, x + 2.0, y + 2.0, z + 2.0);
-            for (Entity e : level.getEntitiesOfClass(Entity.class, box,
-                    e -> e.getType() == type && e.blockPosition().equals(pos))) {
-                e.discard();
-                return true;
+            // Strict type match: the row's entity id is the identity boundary, so a
+            // superclass or tag match would remove an entity the operator never
+            // recorded. The box is inflated by the contract's drift bound and
+            // covers the exact block as well — an exact match is inside it.
+            AABB box = blockBox(pos, WorldMutator.REMOVE_ENTITY_MAX_DRIFT_BLOCKS);
+            List<Entity> found = level.getEntitiesOfClass(Entity.class, box, e -> e.getType() == type);
+
+            // A dropped item falls and slides and a knocked hanging entity settles
+            // on a neighbouring block, so an exact-position-only match silently
+            // fails exactly the rows that need removal most. The drift policy
+            // itself lives in the contract so every cell agrees on it.
+            List<WorldMutator.EntityCandidate> candidates = new ArrayList<>(found.size());
+            for (Entity e : found) {
+                BlockPos at = e.blockPosition();
+                candidates.add(new WorldMutator.EntityCandidate(at.getX(), at.getY(), at.getZ(),
+                        e.position().distanceToSqr(x + 0.5, y + 0.5, z + 0.5)));
             }
-            return false;
+            int selected = WorldMutator.selectNearestEntityCandidate(
+                    x, y, z, candidates, WorldMutator.REMOVE_ENTITY_MAX_DRIFT_BLOCKS);
+            if (selected < 0) return false;
+
+            Entity target = found.get(selected);
+            BlockPos at = target.blockPosition();
+            boolean exact = at.equals(pos);
+            target.discard();
+            if (!exact) {
+                LOG.debug(Guardian.MARKER,
+                    "removeEntity matched drifted {} at {} {},{},{} for recorded {},{},{}",
+                    entityType, worldId, at.getX(), at.getY(), at.getZ(), x, y, z);
+            }
+            return true;
         } catch (Throwable t) {
-            LOG.warn(Guardian.MARKER, "removeEntity failed at {} {},{},{}", worldId, x, y, z, t);
+            LOG.warn(Guardian.MARKER, "removeEntity failed at {} {},{},{},{}", worldId, x, y, z, entityType, t);
             return false;
         }
+    }
+
+    /** The block at {@code pos}, inflated by {@code drift} blocks on each axis. */
+    private static AABB blockBox(BlockPos pos, int drift) {
+        return new AABB(
+                pos.getX() - drift, pos.getY() - drift, pos.getZ() - drift,
+                pos.getX() + 1 + drift, pos.getY() + 1 + drift, pos.getZ() + 1 + drift);
     }
 
     /**
