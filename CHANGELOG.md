@@ -154,14 +154,33 @@ What was and was not proven for this entry:
 
 - **Source-verified.** Every behaviour above was read out of the implementation named in
   the item, at the tip of this branch. Nothing here is inferred from a commit message.
-- **Test suite: not run for this entry.** The core suite was last reported at 1,276 tests,
-  0 failures, 0 errors on the release candidate this change set descends from. That number
-  is not a claim about this tree and is not restated as one.
-- **Not runtime-verified.** No Minecraft server was started. Chat rendering, click
-  events, a live WorldEdit selection, boot with an open batch, and a real rollback
-  against a world remain untested. A server boot and a real rollback are still the gate
-  before release.
-- **Not compiled here.** No loader cell was compiled while preparing this entry.
+- **Test suite: 1,517 tests, 0 failures.** Run on the core module at the tip of this
+  branch. The number counts the tests this entry added; it is not a restatement of an
+  earlier figure.
+- **Runtime-verified on a live server, and it found four defects that no gate caught:**
+  - **A mixin helper in the mixin package crashed the server.** `MixinLoggingSupport`
+    sat in `forge.mixin` while thirteen mixins called it; Mixin forbids that reference and
+    threw `IllegalClassLoadError` on the server thread when sugar cane grew. `MixinAuditSupport`
+    and `AnvilPositions` had the same defect. All three moved to `forge.support`, and
+    `MixinPackagePurityTest` now fails the build if any non-mixin class sits in a declared
+    mixin package.
+  - **Ignite rollback was inverted.** The row recorded the block that *appeared* (fire) as
+    the rollback target, so undo tried to re-place fire over the ground it had already
+    burned. It now records the block the fire consumed.
+  - **Explosion rows demanded 96/96 blocks.** A handful of unplaceable positions is normal
+    in a blast, so every large explosion became `REPAIR_REQUIRED` and left its batch open —
+    a griefing rollback could never report success. Now: nothing restored stays a plain
+    failure, over 25% missing escalates, and anything between is logged and continues.
+  - **Ridden-mount explosions were attributed to nobody.** `Explosion.getSourceMob()`
+    returns null for a non-living source, so a player riding a dragon and burning a base
+    produced rows with no actor. Attribution now falls back to `getExploder()`, which
+    returns the source entity regardless of type, and the existing resolver credits the
+    controlling rider.
+- **Not verified.** A real MySQL-backed deployment is untested; every runtime check so far
+  ran against SQLite. Rollback of the two defect classes above was exercised from the log,
+  not from a clean world with a known-good target state.
+- **Not compiled for the other six cells.** Only `mc-1.18.2/forge` was built for this entry.
+
 
 ## [2.2.1] - 2026-10-20
 
