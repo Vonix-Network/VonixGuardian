@@ -36,9 +36,10 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       which is worse than an untranslated string because it looks translated.</li>
  * </ul>
  *
- * <p>The placeholder defect was not hypothetical: before this test existed, all 13
- * translated bundles dropped the argument from {@code radius_not_integer},
- * {@code radius_negative}, {@code action_required} and {@code action_unknown}.
+ * <p>The placeholder defect was not hypothetical: before this test existed, the 13
+ * non-English bundles dropped the argument from {@code radius_not_integer},
+ * {@code radius_negative}, {@code action_required} and {@code action_unknown}
+ * (56 losses in total).
  *
  * <h2>Why these files are read directly, not through {@link java.util.ResourceBundle}</h2>
  * {@code ResourceBundle} caches by base name and builds a parent chain, so once any
@@ -85,12 +86,19 @@ class LangBundleParityTest {
     }
 
     /**
-     * The set of {@code config.language} values is exactly the set of shipped
-     * bundles. A language accepted by config but with no file renders English
-     * while claiming to be translated; a file with no language entry is dead.
+     * Every language {@code config.language} accepts must have a real bundle.
+     *
+     * <p>One direction only, deliberately: a language accepted by config but with
+     * no file renders English while claiming to be translated, which is the
+     * defect that matters. The reverse case — a stray {@code .properties} file
+     * that no config value selects — cannot be checked reliably from the
+     * classpath without assuming an exploded directory (it is a jar in
+     * production), so it is not asserted here. Such a file is inert: nothing can
+     * select it, and the key-set test still proves it is not silently shadowing
+     * a real locale.
      */
     @Test
-    void shipped_bundles_match_the_languages_config_accepts() {
+    void every_language_config_accepts_has_a_non_empty_bundle() {
         Set<String> known = knownLanguages();
         assertTrue(known.size() >= 15,
                 () -> "expected at least 15 shipped locales, config accepts " + known);
