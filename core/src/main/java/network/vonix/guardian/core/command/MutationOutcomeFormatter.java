@@ -151,7 +151,13 @@ public final class MutationOutcomeFormatter {
             }
         }
         if (result.preview()) {
-            line.append(". The world was not changed");
+            // #preview used to be described as painting the plan into the world.
+            // It never did: no ghost blocks, no markers, no block-update packet —
+            // it plans, counts, and holds the exact action ids for /vg apply.
+            // Operators went looking for glass that was never drawn, so the line
+            // says what actually happened and names the two ways out.
+            line.append(". The world was not changed and no blocks were drawn in it."
+                + " /vg apply runs this plan, /vg cancel drops it");
         }
         line.append('.');
         return line.toString();

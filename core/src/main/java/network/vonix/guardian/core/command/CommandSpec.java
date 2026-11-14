@@ -10,8 +10,32 @@ import java.util.List;
  * depends on brigadier directly so 1.18.2 and 1.21.1 can use different
  * brigadier surfaces from the same data.</p>
  *
- * <p>Permission nodes follow {@code vonixguardian.command.<sub>} —
- * e.g. {@code vonixguardian.command.rollback}.</p>
+ * <p><b>Permission nodes.</b> The string in {@link SubcommandSpec#permissionNode()}
+ * is {@code vonixguardian.command.<sub>}, which is a <em>legacy alias</em>, not the
+ * node a server actually grants. The authoritative nodes live in
+ * {@link network.vonix.guardian.core.perms.PermissionNode} and follow two
+ * shapes for historical reasons:</p>
+ * <ul>
+ *   <li>{@code vonixguardian.<name>} — {@code lookup}, {@code inspect},
+ *       {@code near}, {@code rollback}, {@code restore}, {@code undo},
+ *       {@code purge}, {@code status}, {@code reload}, {@code consumer},
+ *       {@code base}, {@code help};</li>
+ *   <li>{@code vonixguardian.command.<name>} — {@code config},
+ *       {@code teleport}, {@code give} only.</li>
+ * </ul>
+ * <p>{@code PermissionNode.fromNodeOrCommandAlias} maps the legacy
+ * {@code vonixguardian.command.*} spelling onto the canonical enum value, but
+ * that map only feeds the op-level fallback and
+ * {@code PermissionResolver.has(UUID, String)}. The enum overload the command
+ * cells use checks LuckPerms for {@code node.node()} only, so a grant entered
+ * with the legacy spelling is <em>not</em> seen by the command gate. Grant the
+ * names {@link #authoritativeNode(String)} returns.</p>
+ *
+ * <p><b>Aliases.</b> {@link SubcommandSpec#alias()} is printed by
+ * {@code /vg help}, so every alias listed here must also be registered as a
+ * brigadier literal by every loader cell. An alias that is advertised and never
+ * registered is a lie in the help text; {@code n} and {@code ?} were removed for
+ * exactly that reason.</p>
  */
 public final class CommandSpec {
 
@@ -84,7 +108,7 @@ public final class CommandSpec {
             List.of()),
         sub(BATCH,    null, false, "List, show, or close an unfinished rollback. Closing does not change the world.",
             List.of()),
-        sub(STATUS,   null, false, "Show queue depth, DB health, and runtime stats.",
+        sub(STATUS,   null, false, "Show queue depth, storage reachability and schema, and runtime stats.",
             List.of()),
         sub(RELOAD,   null, false, "Reload the Guardian configuration file from disk.",
             List.of()),
@@ -127,11 +151,81 @@ public final class CommandSpec {
     /**
      * Returns the canonical permission node for the given subcommand name.
      *
+     * <p>This is the <em>legacy</em> spelling {@code vonixguardian.command.<sub>}.
+     * It is accepted by {@code PermissionResolver} through
+     * {@code PermissionNode.COMMAND_ALIASES}, so it is safe to grant, but it is
+     * not the node the enum gates on. Prefer {@link #authoritativeNode(String)}
+     * for anything an operator reads.</p>
+     *
      * @param subcommand subcommand literal (e.g. {@link #ROLLBACK})
      * @return {@code vonixguardian.command.<subcommand>}
      */
     public static String permissionNode(String subcommand) {
         return PERMISSION_PREFIX + subcommand;
+    }
+
+    /**
+     * Returns the permission node string the server actually evaluates for a
+     * subcommand — the {@link network.vonix.guardian.core.perms.PermissionNode}
+     * enum value, which is what LuckPerms grants and what
+     * {@code permissions.perNodeOpLevels} keys on.
+     *
+     * <p>The two spellings disagree for most subcommands: {@code lookup} is
+     * {@code vonixguardian.lookup}, not {@code vonixguardian.command.lookup}.
+     * Only {@code config}, {@code entitylog}, {@code teleport} and {@code give}
+     * genuinely use the {@code .command.} form, and {@code migrate-db} is
+     * {@code vonixguardian.migrate_db} (underscore). Help text has to print the
+     * real one, or the operator grants a node nothing checks.</p>
+     *
+     * @param subcommand subcommand literal (e.g. {@link #LOOKUP})
+     * @return the canonical node string, or the legacy alias when the subcommand
+     *         has no enum node (e.g. {@code entitylog}, which reuses
+     *         {@code vonixguardian.command.config})
+     */
+    public static String authoritativeNode(String subcommand) {
+        // Both tables live in core and have no Minecraft dependency.
+        String key = subcommand == null ? "" : subcommand;
+        String explicit = GATE_OVERRIDES.get(key);
+        String legacy = PERMISSION_PREFIX + key;
+        network.vonix.guardian.core.perms.PermissionNode node =
+                network.vonix.guardian.core.perms.PermissionNode.fromNodeOrCommandAlias(
+                        explicit != null ? explicit : legacy);
+        return node == null ? legacy : node.node();
+    }
+
+    /**
+     * Subcommands whose gate is not derivable from their own name.
+     *
+     * <p>{@code /vg apply} and {@code /vg cancel} act on whatever preview is
+     * pending, so {@code GuardianCommands.hasPreviewPermission} picks
+     * {@code rollback} or {@code restore} per preview — there is no
+     * {@code apply} node to grant. {@code /vg entitylog} edits the config file
+     * through {@code PermissionNode.CONFIG}. {@code /vg help} and the root
+     * literal ({@code ""}) are gated by {@code PermissionNode.BASE} only:
+     * {@code vonixguardian.help} exists in the enum and no cell checks it.</p>
+     */
+    private static final java.util.Map<String, String> GATE_OVERRIDES = java.util.Map.of(
+        "",          "vonixguardian.command.use",
+        HELP,        "vonixguardian.command.use",
+        APPLY,       "vonixguardian.command.rollback",
+        CANCEL,      "vonixguardian.command.rollback",
+        ENTITYLOG,   "vonixguardian.command.config"
+    );
+
+    /**
+     * Every permission node the {@code /vg} tree actually gates on, in command
+     * order and de-duplicated. {@code /vg help} prints this list; it is the
+     * answer to "what do I type in LuckPerms".
+     *
+     * @return immutable ordered list of canonical node strings
+     */
+    public static List<String> gatedNodes() {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        out.add(authoritativeNode(""));           // vonixguardian.base (root gate)
+        for (SubcommandSpec spec : ALL) {
+            out.add(authoritativeNode(spec.name()));
+        }
+        return List.copyOf(out);
     }
 
     private static SubcommandSpec sub(String name, String alias, boolean requiresArgs,
