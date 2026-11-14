@@ -10,7 +10,12 @@
     "PlayerInventoryMixin",
     "ServerGamePacketListenerAccessor",
     "SignChangeMixin",
-    "RavagerMixin"
+    "RavagerMixin",
+    "ArmorStandMixin",
+    "ItemFrameMixin",
+    "JukeboxBlockMixin",
+    "JukeboxRecordItemMixin",
+    "NoteBlockMixin"
   ],
   "server": [],
   "client": [],
