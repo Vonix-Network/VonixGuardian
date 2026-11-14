@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Command replies now say what happened, and the dangerous commands do what their flags
 claim. A purge marked as a preview or a count leaves the log in place. Changing one
-`actions` setting keeps the item and entity blacklists. Help lists every command.
-Rollback, lookup, and status are written so the outcome and the number that matters are
-visible on the first read.
+`actions` setting keeps the item and entity blacklists. Undo is described as what it is,
+a second change to the world. Rollback, lookup, and status are written so the outcome
+and the number that matters are visible on the first read.
 
-Every claim below was checked against this tree at `a668a66`, not copied from a commit
-message. Claims this entry could not verify are named in **Verification** and are not
-asserted.
+Every claim below was checked against this tree's source, not copied from a commit
+message. What could not be verified is named in **Verification** and is not asserted;
+what was checked and found still broken is in **Known open**.
 
 ### Breaking changes
 
@@ -153,7 +153,7 @@ Stated explicitly, because these will still surprise an operator:
 What was and was not proven for this entry:
 
 - **Source-verified.** Every behaviour above was read out of the implementation named in
-  the item, at `a668a66`. Nothing here is inferred from a commit message.
+  the item, at the tip of this branch. Nothing here is inferred from a commit message.
 - **Test suite: not run for this entry.** The core suite was last reported at 1,276 tests,
   0 failures, 0 errors on the release candidate this change set descends from. That number
   is not a claim about this tree and is not restated as one.
