@@ -730,13 +730,19 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
     public void setPaused(boolean p) {
         boolean wasPaused = this.paused;
         this.paused = p;
-        // When transitioning into paused state, wake the worker so it exits any
-        // in-flight poll() and observes the flag before draining more items.
-        // Without this an item submitted immediately after setPaused(true) can
-        // still race the worker's already-armed poll() and get pulled out of
-        // the ring buffer, breaking the `paused = pipeline frozen` contract
-        // pendingSnapshot() / queueLookup() rely on.
-        if (p && !wasPaused && !shutdown) {
+        // Wake the worker on BOTH transitions.
+        //
+        // Into paused: so it exits any in-flight poll() and observes the flag
+        // before draining more items. Without this an item submitted immediately
+        // after setPaused(true) can still race the worker's already-armed poll()
+        // and get pulled out of the ring buffer, breaking the `paused = pipeline
+        // frozen` contract pendingSnapshot() / queueLookup() rely on.
+        //
+        // Out of paused: the paused loop sleeps for the flush interval, so without
+        // a wake an unpause would only take effect on the next scheduled tick.
+        // /vg consumer pause/resume is an operator command; the resume must be
+        // immediate, not up to a flush interval later.
+        if (!shutdown && p != wasPaused) {
             worker.interrupt();
         }
     }
@@ -796,7 +802,24 @@ public final class BatchedAsyncWriteQueue implements AsyncWriteQueue, AutoClosea
                     if (batch.isEmpty() && queue.isEmpty() && sinkInFlight.get() == 0) {
                         workerIdle.set(true);
                     }
-                    try { Thread.sleep(pollMs); } catch (InterruptedException ignored) {}
+                    // pollMs is derived from the flush window, which does not advance
+                    // while paused. On the first paused iteration it equals the flush
+                    // interval, but once that interval has elapsed it goes negative and
+                    // pollMs collapses to its 1ms floor — about 1000 wakeups per second
+                    // for the rest of the pause. /vg consumer pause is a maintenance
+                    // command, so that spin runs for the length of an outage.
+                    //
+                    // Sleep the flush interval on every paused iteration instead, which
+                    // is exactly what the first iteration already did, so the pause-hot
+                    // path keeps the timing every caller was written against. Both
+                    // transitions of setPaused and drainAndFlush interrupt the worker,
+                    // so neither an unpause nor a shutdown waits for this to expire.
+                    long pauseSleepMs = Math.max(1L, flushIntervalMs);
+                    try {
+                        Thread.sleep(pauseSleepMs);
+                    } catch (InterruptedException ignored) {
+                        // setPaused / drainAndFlush wake signal; re-check state.
+                    }
                     if (shutdown) break;
                     continue;
                 }
