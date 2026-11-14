@@ -1505,7 +1505,24 @@ public final class RollbackEngine {
                         a.id(), a.pairId());
                     outcomes.add(WorldMutationResult.failed(a.id(), failure));
                 } else {
-                    outcomes.add(applyMutation(a, mode));
+                    try {
+                        outcomes.add(applyMutation(a, mode));
+                    } catch (RuntimeException thrown) {
+                        // A mutator that throws mid-batch leaves the world partly
+                        // changed. Everything still unapplied in this batch is a
+                        // repair gap, not a clean failure — otherwise a half-applied
+                        // explosion vanishes from vg_repair_required entirely.
+                        LOG.warn("RollbackEngine.{}: mutation threw at action id={}",
+                            mode, a.id(), thrown);
+                        outcomes.add(WorldMutationResult.repairRequired(a.id(), a.pairId(), thrown));
+                        for (int j = i + 1; j < batch.size(); j++) {
+                            if (done.add(j)) {
+                                outcomes.add(WorldMutationResult.repairRequired(
+                                    batch.get(j).id(), batch.get(j).pairId(), thrown));
+                            }
+                        }
+                        return outcomes;
+                    }
                 }
             }
         }

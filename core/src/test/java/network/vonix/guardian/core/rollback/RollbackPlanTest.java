@@ -267,10 +267,17 @@ class RollbackPlanTest {
 
     @Test
     void restoreOrdersInventoryReplacementOldestFirstWithoutChangingRollbackOrder() {
-        Action oldWithdraw = action(10L, 100L, ActionType.INVENTORY_WITHDRAW,
-                "minecraft:overworld", 0, 64, 0, "minecraft:diamond", null, 1, false);
-        Action newDeposit = action(11L, 100L, ActionType.INVENTORY_DEPOSIT,
-                "minecraft:overworld", 0, 64, 0, "minecraft:diamond", null, 1, false);
+        // Timestamps must fall inside the class-level filter window (last 24h);
+        // epoch-100 rows are filtered out entirely, which made this assert empty.
+        long base = System.currentTimeMillis() - 3_600_000L;
+        // Plan-time validation requires item identity for inventory rows: a
+        // deposit/withdraw without item NBT is refused before it can move the
+        // wrong stack. Supply NBT so these rows are plannable.
+        byte[] nbt = new byte[] {1, 2, 3};
+        Action oldWithdraw = actionWithItemNbt(10L, base, ActionType.INVENTORY_WITHDRAW,
+                "minecraft:overworld", 0, 64, 0, "minecraft:diamond", nbt);
+        Action newDeposit = actionWithItemNbt(11L, base, ActionType.INVENTORY_DEPOSIT,
+                "minecraft:overworld", 0, 64, 0, "minecraft:diamond", nbt);
 
         RollbackPlan restore = RollbackPlan.build(List.of(newDeposit, oldWithdraw), filter,
                 RollbackResult.Mode.RESTORE, UUID.randomUUID());
@@ -291,6 +298,17 @@ class RollbackPlanTest {
                 .containsExactly(ActionType.INVENTORY_DEPOSIT, ActionType.INVENTORY_WITHDRAW);
     }
 
+
+    private static Action actionWithItemNbt(long id, long ts, ActionType type,
+                                            String world, int x, int y, int z,
+                                            String targetId, byte[] itemNbt) {
+        return new Action(
+            id, ts, type,
+            UUID.randomUUID(), "Player",
+            world, x, y, z,
+            targetId, null, 1, false, null,
+            null, null, null, null, null, itemNbt, null, null, null, null);
+    }
 
     private static Action action(long id, long ts, ActionType type,
                                  String world, int x, int y, int z,
@@ -454,7 +472,7 @@ class RollbackPlanTest {
         List<Action> rows = new ArrayList<>();
         long id = 100;
         for (int i = 0; i < 30; i++) {
-            rows.add(action(id, 1_000L + i, ActionType.BLOCK_PLACE,
+            rows.add(action(id + i, 1_000L + i, ActionType.BLOCK_PLACE,
                 "w", i, 64, 0, "minecraft:stone", null, 1, false));
         }
         for (int i = 0; i < 12; i++) {
