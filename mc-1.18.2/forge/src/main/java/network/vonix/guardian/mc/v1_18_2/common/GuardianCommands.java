@@ -1152,20 +1152,28 @@ public final class GuardianCommands {
                     final String cap = applyLookupCap(g);
                     if (server == null) return;
                     server.execute(() -> {
-                        String hot = r.hotSwapped().isEmpty() ? "(none)" : String.join(", ", r.hotSwapped());
+                        // The core reload reports "lookup.defaultPageSize/maxRadius/maxResultRows"
+                        // as one hot-swapped bucket. Two of those take effect in-process;
+                        // maxResultRows only does because the cell pushes it onto the DAO
+                        // below. Strip the bucket name here so the line cannot read as
+                        // "the cap moved" before that push has been attempted.
+                        java.util.List<String> hotSwapped = new java.util.ArrayList<>(r.hotSwapped().size());
+                        for (String key : r.hotSwapped()) {
+                            hotSwapped.add("lookup.defaultPageSize/maxRadius/maxResultRows".equals(key)
+                                    ? "lookup.defaultPageSize/maxRadius" : key);
+                        }
+                        String hot = hotSwapped.isEmpty() ? "(none)" : String.join(", ", hotSwapped);
                         String rst = r.requiresRestart().isEmpty() ? "(none)" : String.join(", ", r.requiresRestart());
                         String err = r.errors().isEmpty() ? "(none)" : String.join(", ", r.errors());
                         send(src, ChatRenderer.primary(g.theme(),
-                                "[VonixGuardian] Hot-swapped: " + r.hotSwapped().size() + " " + hot));
+                                "[VonixGuardian] Hot-swapped: " + hotSwapped.size() + " " + hot));
                         send(src, ChatRenderer.warning(g.theme(),
                                 "[VonixGuardian] Requires restart: " + r.requiresRestart().size() + " " + rst));
-                        // lookup.maxResultRows is a cap bound into the DAO at open
-                        // time, not a value any query re-reads. Reporting it in the
-                        // core hot-swap list told the operator the cap had moved
-                        // when the enforcement point still held the boot value.
-                        // Push the cap onto the live DAO here and report the value
-                        // actually in force, which is the only number the operator
-                        // can act on.
+                        // lookup.maxResultRows is a cap bound into the JDBC DAO at open
+                        // time, not a value any query re-reads. applyLookupCap pushed the
+                        // configured value onto the live DAO on the worker thread; this
+                        // line reports the value the DAO returned, which is the only one
+                        // the operator can act on.
                         send(src, ChatRenderer.primary(g.theme(),
                                 "[VonixGuardian] Lookup row cap: " + cap));
                         if (r.errors().isEmpty()) {
