@@ -1107,8 +1107,12 @@ public final class GuardianCommands {
             MinecraftServer server = src.getServer();
             UUID actor = actorUuid(src);
             // The report reads the database. Do that off the server thread.
-            // Brand the first section only; repeating the name on every header
-            // pushed the useful text off the screen.
+            //
+            // Branding: exactly one line in the whole report carries the product
+            // name — the first section header. The old shape branded all 62 lines,
+            // which spent a third of the chat width saying the same thing and
+            // pushed the counters off the screen. The core renderer brands
+            // nothing, so this loop is the only place the name is added.
             submitAsync(src, g, () -> {
                 java.util.List<String> lines =
                         network.vonix.guardian.core.diagnostics.GuardianStatus.render(g);
