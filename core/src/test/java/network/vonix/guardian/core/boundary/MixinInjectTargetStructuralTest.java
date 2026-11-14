@@ -109,7 +109,15 @@ class MixinInjectTargetStructuralTest {
         // config that quietly dropped one of these would still pass the two
         // set comparisons above only if the file were deleted too.
         assertThat(registered).as("logging-coverage mixins")
-                .contains("SheepShearMixin", "CauldronUseMixin", "CakeEatMixin", "AnvilUseMixin");
+                .contains("SheepShearMixin", "CauldronUseMixin", "CakeEatMixin", "AnvilUseMixin")
+                // Lane 10 (group D): sponge, coral, plant growth, tamables.
+                // Same rationale — these are named so a config edit that drops
+                // one while leaving the class on disk cannot pass unnoticed.
+                .contains("SpongeAbsorbMixin", "WetSpongeDryMixin",
+                        "CoralBlockDeathMixin", "CoralPlantDeathMixin",
+                        "CoralFanDeathMixin", "CoralWallFanDeathMixin",
+                        "BambooGrowthMixin", "SugarCaneGrowthMixin", "ChorusGrowthMixin",
+                        "WolfTameMixin", "CatTameMixin", "CreeperIgniteMixin");
     }
 
     @Test
