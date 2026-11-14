@@ -267,8 +267,10 @@ class RollbackPlanTest {
 
     @Test
     void restoreOrdersInventoryReplacementOldestFirstWithoutChangingRollbackOrder() {
-        // Timestamps must fall inside the class-level filter window (last 24h);
-        // epoch-100 rows are filtered out entirely, which made this assert empty.
+        // Realistic timestamps for a fresh rollback. Note that build() itself
+        // never applies originalFilter — that happens in the DAO query — so the
+        // window matters only for the engine paths, but the relative order here
+        // still has to be sane for the interleaved case below.
         long base = System.currentTimeMillis() - 3_600_000L;
         // Plan-time validation requires item identity for inventory rows: a
         // deposit/withdraw without item NBT is refused before it can move the
@@ -284,10 +286,13 @@ class RollbackPlanTest {
         assertThat(restore.ordered()).extracting(Action::type)
                 .containsExactly(ActionType.INVENTORY_WITHDRAW, ActionType.INVENTORY_DEPOSIT);
 
-        Action world = action(20L, 110L, ActionType.BLOCK_PLACE,
+        Action world = action(20L, base + 10_000L, ActionType.BLOCK_PLACE,
                 "minecraft:overworld", 9, 64, 9, "minecraft:stone", null, 1, false);
         RollbackPlan interleaved = RollbackPlan.build(List.of(newDeposit, world, oldWithdraw), filter,
                 RollbackResult.Mode.RESTORE, UUID.randomUUID());
+        // The world row is the newest, so it keeps dispatch slot 0 while the two
+        // inventory slots behind it are rewritten oldest-first. An epoch-110
+        // timestamp here sorted the block row last and inverted this assertion.
         assertThat(interleaved.ordered()).extracting(Action::type)
                 .containsExactly(ActionType.BLOCK_PLACE, ActionType.INVENTORY_WITHDRAW,
                         ActionType.INVENTORY_DEPOSIT);
@@ -302,12 +307,22 @@ class RollbackPlanTest {
     private static Action actionWithItemNbt(long id, long ts, ActionType type,
                                             String world, int x, int y, int z,
                                             String targetId, byte[] itemNbt) {
+        // The canonical record has 24 components; after sourceTag come
+        // signSide, signDyeColor, signWaxed, oldBlockState, newBlockState,
+        // blockEntityNbt, itemNbt, entityNbt, pairId, inventorySlot. Item
+        // identity lives in the seventh of those. Dropping a placeholder moves
+        // the payload into blockEntityNbt and leaves itemNbt null, which
+        // plan-time validation correctly refuses — the fixture, not the engine,
+        // is what has to be right here.
         return new Action(
             id, ts, type,
             UUID.randomUUID(), "Player",
             world, x, y, z,
             targetId, null, 1, false, null,
-            null, null, null, null, null, itemNbt, null, null, null, null);
+            /*signSide*/ null, /*signDyeColor*/ null, /*signWaxed*/ null,
+            /*oldBlockState*/ null, /*newBlockState*/ null,
+            /*blockEntityNbt*/ null, /*itemNbt*/ itemNbt,
+            /*entityNbt*/ null, /*pairId*/ null, /*inventorySlot*/ null);
     }
 
     private static Action action(long id, long ts, ActionType type,
@@ -548,6 +563,29 @@ class RollbackPlanTest {
 
         assertThat(plan.plannedSteps()).isZero();
         assertThat(plan.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+        assertThat(plan.skippedEntries()).singleElement()
+            .satisfies(s -> assertThat(s.reason())
+                .isEqualTo(RollbackResult.SkipReason.MALFORMED_PAYLOAD));
+
+        // A payload parked in blockEntityNbt is NOT item identity. This is the
+        // exact shape a misaligned Action constructor call produces, and moving
+        // the wrong stack is the failure this validation exists to prevent, so
+        // a neighbouring NBT column must never satisfy it.
+        Action nbtInWrongSlot = new Action(
+            43L, 600L, ActionType.INVENTORY_DEPOSIT,
+            UUID.randomUUID(), "Player",
+            "w", 0, 64, 0, "minecraft:diamond", null, 1, false, null,
+            null, null, null,
+            null, null,
+            new byte[] {1, 2, 3}, /* blockEntityNbt, not itemNbt */
+            null, null, null, null);
+
+        RollbackPlan wrongSlot = RollbackPlan.build(List.of(nbtInWrongSlot), filter,
+            RollbackResult.Mode.ROLLBACK, null);
+
+        assertThat(wrongSlot.plannedSteps()).isZero();
+        assertThat(wrongSlot.skippedCount(RollbackResult.SkipReason.MALFORMED_PAYLOAD)).isEqualTo(1);
+        assertThat(wrongSlot.invalid()).extracting(Action::id).containsExactly(43L);
     }
 
     @Test

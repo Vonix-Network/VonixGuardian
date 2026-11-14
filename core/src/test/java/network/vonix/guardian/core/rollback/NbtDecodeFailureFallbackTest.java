@@ -244,10 +244,31 @@ class NbtDecodeFailureFallbackTest {
 
     @Test
     void legacy_void_compatibility_path_is_not_checked_success_evidence() {
+        // The pre-1.3.10 ABI methods are inert defaults. A checked call on an
+        // implementation that only provides the void methods must answer false
+        // AND must not reach the void method: a default that mutates and then
+        // reports failure moves the world while the engine records "not applied",
+        // so the change is invisible in the applied count and cannot be undone by
+        // re-running. Zero legacy calls is the stronger claim -- nothing was
+        // attempted, rather than attempted-and-forgotten.
         LegacyVoidMutator m = new LegacyVoidMutator();
-        boolean ok = m.trySetBlock("minecraft:overworld", 0, 64, 0, "minecraft:chest", null);
-        assertThat(ok).isFalse();
-        assertThat(m.legacyCalls).isEqualTo(1);
+
+        assertThat(m.trySetBlock("minecraft:overworld", 0, 64, 0, "minecraft:chest", null))
+                .as("checked block set on a void-only implementation is unsupported, not success evidence")
+                .isFalse();
+        assertThat(m.legacyCalls)
+                .as("a checked default must never reach the void path; that mutation would be uncounted")
+                .isZero();
+
+        // The NBT-failure case this class exists for: a payload-bearing request
+        // fails closed instead of falling back to the payload-stripping void path.
+        assertThat(m.trySetBlock("minecraft:overworld", 0, 64, 0, "minecraft:chest", null,
+                "facing=north", new byte[] {0x0A, 0x00, 0x00}))
+                .as("NBT decode failure must not fall through to the legacy void path")
+                .isFalse();
+        assertThat(m.legacyCalls)
+                .as("no legacy fallback after an NBT-bearing request either")
+                .isZero();
     }
 
     private QueryFilter rangeFilter() {

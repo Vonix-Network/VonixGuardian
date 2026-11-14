@@ -117,7 +117,12 @@ class DaoPurgeAndTargetContractTest {
 
         // chunkLimit larger than the eligible set -> short chunk -> final round,
         // which is where the sweep belongs.
-        long removed = dao.purgeOlderThan(T0 + 1, 50);
+        // The cutoff is EXCLUSIVE by contract (GuardianDao#purgeOlderThan:
+        // "rows strictly older are eligible"; docs/DATABASE.md documents purge as
+        // deleting rows older than a bound). Bob sits at T0 + 1, so the cutoff has
+        // to be T0 + 2 for him to be strictly older and actually deleted — with
+        // T0 + 1 he sits exactly ON the horizon and correctly survives.
+        long removed = dao.purgeOlderThan(T0 + 2, 50);
 
         assertThat(removed).isEqualTo(2);
         // Bob's owner rows are now unreferenced and must be gone; Alice keeps
