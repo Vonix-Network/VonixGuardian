@@ -73,13 +73,15 @@ public final class CommandHelp {
         List<String> lines = new ArrayList<>();
         lines.add("Permission nodes (" + nodes.size() + ") — grant these; permissions.perNodeOpLevels"
             + " uses the same strings:");
-        // Brace form keeps the large subtree on one line: vonixguardian.{base,lookup,…}
+        // Brace form: one line per subtree, so a wrapping chat line still groups
+        // the nodes that share a prefix.
         lines.add("  vonixguardian.{" + String.join(",", plain) + "}");
         List<String> exceptions = new ArrayList<>();
         for (String node : dotted) {
             exceptions.add(node.startsWith("command.") ? base + node : node);
         }
-        lines.add("  these four are not vonixguardian.<sub>: " + String.join(", ", exceptions) + ".");
+        lines.add("  " + exceptions.size() + " more are not vonixguardian.<sub>: "
+            + String.join(", ", exceptions) + ".");
         lines.add("  Reserved, enforced by nothing today: " + String.join(", ", unenforcedNodes()) + ".");
         return List.copyOf(lines);
     }

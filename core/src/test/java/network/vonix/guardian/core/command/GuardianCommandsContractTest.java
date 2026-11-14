@@ -110,38 +110,33 @@ class GuardianCommandsContractTest {
 
     @Test
     void everyCommandAliasResolvesToARealNode() {
-        // The cells pass the enumerated node, but an operator's config may still
+        // The cells gate on the enumerated node, but an operator's config may still
         // name the pre-1.1.7 `vonixguardian.command.<sub>` alias. Those aliases
         // must keep resolving, or an existing grant silently stops working.
         for (SubcommandSpec spec : CommandSpec.all()) {
-            String alias = CommandSpec.permissionNode(spec.name());
-            PermissionNode resolved = PermissionNode.fromNodeOrCommandAlias(alias);
+            String legacy = CommandSpec.permissionNode(spec.name());
+            PermissionNode resolved = PermissionNode.fromNodeOrCommandAlias(legacy);
             if (resolved == null) {
-                continue; // no alias for this subcommand; asserted below
+                continue; // no legacy alias; covered by the override test below
             }
-            assertThat(resolved.node())
-                    .as("%s must resolve to a node that is itself resolvable", alias)
-                    .isNotBlank();
-            assertThat(PermissionNode.fromNodeOrCommandAlias(resolved.node())).isSameAs(resolved);
+            assertThat(PermissionNode.fromNodeOrCommandAlias(resolved.node()))
+                    .as("%s resolves to %s, which must itself resolve", legacy, resolved)
+                    .isSameAs(resolved);
         }
     }
 
     @Test
-    void theSubcommandsWithNoPermissionAliasAreTheOnesGatedByAnotherNode() {
-        // apply/cancel are gated on the ROLLBACK/RESTORE node of the pending
-        // preview's own mode, and entitylog on CONFIG. They therefore have no
-        // node of their own by design. Pinning that here means a subcommand added
-        // without a node is a failure rather than a silent permission hole.
-        Set<String> noAlias = new TreeSet<>();
+    void everySubcommandResolvesToANodeTheServerActuallyEvaluates() {
+        // The node /vg help prints must be one a gate evaluates. A node string no
+        // enum constant owns falls through to the numeric op-level default, so a
+        // LuckPerms grant of the documented node would do nothing.
         for (SubcommandSpec spec : CommandSpec.all()) {
-            if (PermissionNode.fromNodeOrCommandAlias(CommandSpec.permissionNode(spec.name())) == null) {
-                noAlias.add(spec.name());
-            }
+            String node = CommandSpec.authoritativeNode(spec.name());
+            assertThat(PermissionNode.fromNodeOrCommandAlias(node))
+                    .as("%s advertises node %s, which no permission node parses to",
+                            spec.name(), node)
+                    .isNotNull();
         }
-        assertThat(noAlias)
-                .as("subcommand(s) with no permission node; if a new one appears, either give it "
-                        + "a node or document the node that gates it")
-                .containsExactlyInAnyOrder(CommandSpec.APPLY, CommandSpec.CANCEL, CommandSpec.ENTITYLOG);
     }
 
     @Test
