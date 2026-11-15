@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-11-15
+
+Rollback now completes on the paths that kept failing. A live batch went from **1 applied to 880
+applied**, and the two defect classes behind the remaining failures are closed.
+
+### Fixed
+
+- **Every `ENTITY_KILL` respawn failed** — all 74 failures in one batch were a single bug.
+  `EntitySentinel` records mobs as `#mob:minecraft:pillager`; the respawn path passed that
+  straight to `ResourceLocation.tryParse`, which cannot parse a leading `#`, so nothing was
+  ever respawned. Both the plain and NBT respawn paths now unwrap the sentinel first, in all
+  thirteen loader cells.
+- **`BURN` rollback cleared the wrong thing.** A burn row names the block that burned away, and
+  rollback cleared the position to air — which is already air, so every burn row reported
+  failure. It now restores the burnt block. Fire is conditional in vanilla: placed without
+  flammable support it is removed on the next tick, so a restore that does not hold is treated
+  as done rather than failed.
+- **`MALFORMED_PAYLOAD=434` named no cause.** It covered three unrelated problems and the real
+  answer was a config key, not corruption: `storage.persistNbt` was `false`, so inventory rows
+  were written without item identity and plan-time validation correctly refused them. Split
+  into `MISSING_ITEM_IDENTITY` ("no item NBT captured") and `MISSING_ACTOR` ("row has no actor,
+  cannot be aimed"), each with its own operator wording. `MALFORMED_PAYLOAD` now means only
+  genuine damage.
+
+### Added
+
+- **`scripts/gate-release.sh` — a headless release gate.** 2.3.1 shipped broken because a mixin
+  that fails to apply compiles perfectly, so build success proved nothing. The gate stands up a
+  throwaway Forge server, boots the jar, requires `Done` plus bootstrap plus `/vg` registration,
+  drives commands over RCON, asserts `#preview` mutates nothing, runs a real rollback and fails
+  on any unexplained mutation failure.
+  **Proven both ways:** 2.3.2 passes end to end; the shipped 2.3.1 fails at the boot stage with
+  the exact mixin error that took the live server down.
+
+### Verification
+
+- **1,531 core tests, 0 failures.**
+- **Boot-verified on a real Forge 1.18.2 server:** `VonixGuardian v2.3.2`, `bootstrap complete`,
+  `/vg command tree registered`, `Done`.
+- **Rollback exercised headlessly:** scene built over RCON, `#preview` confirmed non-mutating, a
+  real rollback ran with **0 mutation failures and 0 repair-required batches**.
+- All thirteen cells rebuilt; every jar verified `2.3.2`, server-only, zero client refs.
+
+### Not verified
+
+- **MySQL is still untested.** Every runtime check, including the gate, runs SQLite. The live
+  server that produced these batches is MySQL-backed.
+- The 434 rows already written without item identity **cannot be recovered** — the data was
+  never captured. Setting `storage.persistNbt: true` makes future rows restorable; existing ones
+  stay unrestorable by design.
+- The 657 `SUPERSEDED_POSITION` rows in one batch are correct accounting (older edits of a block
+  a newer planned row already restores), not a defect, but that has only been confirmed from one
+  world.
+
 ## [2.3.1hf] - 2026-11-14
 
 **Hotfix for the 1.18.2 Forge cell only.** 2.3.1 did not boot there: the block-write
