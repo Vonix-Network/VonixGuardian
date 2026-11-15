@@ -1063,6 +1063,8 @@ public final class GuardianCommands {
         return switch (reason) {
             case AUDIT_ONLY -> "audit-only chat/session";
             case INTERACTION_ONLY -> "clicks recorded; nothing to undo";
+            case MISSING_ITEM_IDENTITY -> "no item NBT captured (storage.persistNbt was off)";
+            case MISSING_ACTOR -> "row has no actor, cannot be aimed";
             case UNTRACKED_STATE -> "state not tracked";
             case SUPERSEDED_POSITION -> "superseded by a newer edit";
             case UNSUPPORTED_ENTITY -> "entity restore unsupported";

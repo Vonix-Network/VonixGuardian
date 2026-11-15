@@ -141,7 +141,7 @@ jobs:
             echo
             echo "### Highlights"
             echo
-            echo "Taken from CHANGELOG.md section [2.3.1]. Schema version is 9."
+            echo "Taken from CHANGELOG.md section [2.3.2]. Schema version is 9."
             echo
             awk 'BEGIN{p=0} /^## \[2\.3\.1\]/{p=1; next} /^## \[/{if(p) exit} p' CHANGELOG.md
             echo

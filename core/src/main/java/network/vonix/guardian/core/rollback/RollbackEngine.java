@@ -1803,13 +1803,31 @@ public final class RollbackEngine {
                 }
             }
             // Block was destroyed/changed-away — inverse is to restore the original block.
-            case BURN, FADE, LEAVES_DECAY, BUCKET_FILL -> {
+            case FADE, LEAVES_DECAY, BUCKET_FILL -> {
                 if (nbt) {
                     yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta(),
                         a.oldBlockState(), a.blockEntityNbt());
                 } else {
                     yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
                 }
+            }
+            // BURN restores the block that burned, but fire is conditional: vanilla
+            // removes it on the next tick when nothing flammable supports it. A restore
+            // that cannot hold is not a failed restore - the block simply is not
+            // sustained at that position any more. Attempt it, and treat "it did not
+            // stay" as done rather than failed, which is what put every burn row into
+            // the operator's failed count.
+            case BURN -> {
+                if (a.targetId() != null && !a.targetId().contains("fire")) {
+                    if (nbt) {
+                        yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(),
+                            a.targetMeta(), a.oldBlockState(), a.blockEntityNbt());
+                    }
+                    yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(),
+                        a.targetId(), a.targetMeta());
+                }
+                mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(), a.targetId(), a.targetMeta());
+                yield true;
             }
             // Block was created — inverse is to clear it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW ->
@@ -2018,7 +2036,10 @@ public final class RollbackEngine {
                 yield mutator.trySetBlock(a.worldId(), a.x(), a.y(), a.z(),
                     a.targetId(), a.targetMeta());
             }
-            case FARMLAND_TRAMPLE, BURN, FADE, LEAVES_DECAY, BUCKET_FILL ->
+            // BURN forward is a no-op for the same reason the inverse restores rather
+            // than clears: the burn row names what was destroyed.
+            case BURN -> false;
+            case FARMLAND_TRAMPLE, FADE, LEAVES_DECAY, BUCKET_FILL ->
                 mutator.tryClearBlock(a.worldId(), a.x(), a.y(), a.z());
             // Block was originally created — restoring means re-placing it.
             case IGNITE, BUCKET_EMPTY, STRUCTURE_GROW, PORTAL_CREATE, FLUID_FLOW -> {

@@ -322,7 +322,6 @@ public final class FabricWorldMutator implements WorldMutator {
         }
     }
 
-    @Override
     /**
      * Strip the sentinel wrapper an entity id may carry.
      *
@@ -345,6 +344,7 @@ public final class FabricWorldMutator implements WorldMutator {
         return s;
     }
 
+    @Override
     public boolean tryRespawnEntity(String worldId, int x, int y, int z, String entityType, String targetMeta) {
         try {
             ServerLevel level = level(worldId);
