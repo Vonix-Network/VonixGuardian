@@ -1,0 +1,31 @@
+modLoader="javafml"
+loaderVersion="[40,)"
+license="MIT"
+# issueTrackerURL is intentionally omitted until the owner publishes a tracker.
+
+[[mods]]
+modId="threadedhorizons"
+version="${version}"
+displayName="Threaded Horizons"
+# displayURL and updateJSONURL are intentionally omitted; no public project exists yet.
+logoFile="threadedhorizons.png"
+authors="Vonix"
+description='''
+A Minecraft 1.18.2 Forge mod that parallelizes chunk generation, chunk I/O, lighting, and scheduling, and includes the related thread-safety, failsafe, and client option work from its upstream sources.
+
+This is an independent derivative project. License and exact source attribution are in LICENSE and NOTICE.md.
+'''
+
+[[dependencies.threadedhorizons]]
+modId="forge"
+mandatory=true
+versionRange="[40.3.11,41)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.threadedhorizons]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.18.2,1.19)"
+ordering="NONE"
+side="BOTH"
